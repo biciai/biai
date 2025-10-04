@@ -114,7 +114,8 @@ export class DatasetServiceV2 {
 
     // Update dataset timestamp
     await clickhouseClient.command({
-      query: `ALTER TABLE biai.datasets_metadata UPDATE updated_at = now() WHERE dataset_id = '${datasetId}'`
+      query: 'ALTER TABLE biai.datasets_metadata UPDATE updated_at = now() WHERE dataset_id = {datasetId:String}',
+      query_params: { datasetId }
     })
 
     return {

@@ -60,6 +60,12 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Table name is required' })
     }
 
+    // Validate table name (alphanumeric and underscores only)
+    if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
+      await unlink(req.file.path)
+      return res.status(400).json({ error: 'Table name must contain only letters, numbers, and underscores' })
+    }
+
     const parsedData = await parseCSVFile(
       req.file.path,
       parseInt(skipRows, 10),
