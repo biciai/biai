@@ -1,4 +1,4 @@
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import Plot from 'react-plotly.js'
 
 const sampleData = [
   { name: 'Jan', revenue: 4000, users: 2400 },
@@ -15,17 +15,36 @@ function Dashboard() {
       <h2 style={{ marginBottom: '2rem' }}>Dashboard</h2>
       <div style={{ background: 'white', padding: '2rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
         <h3 style={{ marginBottom: '1rem' }}>Sample Chart</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={sampleData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="name" />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Line type="monotone" dataKey="revenue" stroke="#8884d8" />
-            <Line type="monotone" dataKey="users" stroke="#82ca9d" />
-          </LineChart>
-        </ResponsiveContainer>
+        <Plot
+          data={[
+            {
+              type: 'scatter',
+              mode: 'lines+markers',
+              name: 'Revenue',
+              x: sampleData.map(d => d.name),
+              y: sampleData.map(d => d.revenue),
+              line: { color: '#8884d8' }
+            },
+            {
+              type: 'scatter',
+              mode: 'lines+markers',
+              name: 'Users',
+              x: sampleData.map(d => d.name),
+              y: sampleData.map(d => d.users),
+              line: { color: '#82ca9d' }
+            }
+          ]}
+          layout={{
+            height: 300,
+            margin: { t: 20, b: 40, l: 60, r: 20 },
+            xaxis: { title: 'Month' },
+            yaxis: { title: 'Value' },
+            showlegend: true,
+            legend: { x: 1, xanchor: 'right', y: 1 }
+          }}
+          config={{ responsive: true, displayModeBar: false }}
+          style={{ width: '100%', height: '300px' }}
+        />
       </div>
     </div>
   )

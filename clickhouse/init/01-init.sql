@@ -46,6 +46,14 @@ CREATE TABLE IF NOT EXISTS dataset_columns (
     column_index UInt32,
     is_nullable Boolean,
     description String,
+    display_type String DEFAULT 'auto',
+    unique_value_count UInt32 DEFAULT 0,
+    null_count UInt32 DEFAULT 0,
+    min_value Nullable(String),
+    max_value Nullable(String),
+    suggested_chart String DEFAULT '',
+    display_priority Int32 DEFAULT 0,
+    is_hidden Boolean DEFAULT false,
     created_at DateTime DEFAULT now()
 ) ENGINE = MergeTree()
 ORDER BY (dataset_id, table_id, column_index);

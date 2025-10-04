@@ -154,20 +154,34 @@ function DatasetDetail() {
 
   return (
     <div>
-      <button
-        onClick={() => navigate('/datasets')}
-        style={{
-          marginBottom: '1rem',
-          padding: '0.5rem 1rem',
-          background: '#666',
-          color: 'white',
-          border: 'none',
-          borderRadius: '4px',
-          cursor: 'pointer'
-        }}
-      >
-        ← Back to Datasets
-      </button>
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+        <button
+          onClick={() => navigate('/datasets')}
+          style={{
+            padding: '0.5rem 1rem',
+            background: '#666',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer'
+          }}
+        >
+          ← Back to Datasets
+        </button>
+        <button
+          onClick={() => navigate(`/datasets/${id}/explore`)}
+          style={{
+            padding: '0.5rem 1rem',
+            background: '#2196F3',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer'
+          }}
+        >
+          📊 Explore Data
+        </button>
+      </div>
 
       <div style={{ marginBottom: '2rem', background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
         <h2 style={{ marginTop: 0 }}>{dataset.name}</h2>

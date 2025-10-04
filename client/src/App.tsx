@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
 import Datasets from './pages/Datasets'
 import DatasetDetail from './pages/DatasetDetail'
+import DatasetExplorer from './pages/DatasetExplorer'
 import Reports from './pages/Reports'
 import Settings from './pages/Settings'
 
@@ -23,6 +24,7 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/datasets" element={<Datasets />} />
             <Route path="/datasets/:id" element={<DatasetDetail />} />
+            <Route path="/datasets/:id/explore" element={<DatasetExplorer />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>

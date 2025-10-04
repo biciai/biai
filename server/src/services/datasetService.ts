@@ -1,6 +1,7 @@
 import clickhouseClient from '../config/clickhouse.js'
 import { v4 as uuidv4 } from 'uuid'
 import { ColumnMetadata, ParsedData } from './fileParser.js'
+import { analyzeColumn } from './columnAnalyzer.js'
 
 export interface TableRelationship {
   foreign_key: string
@@ -127,16 +128,35 @@ export class DatasetService {
       format: 'JSONEachRow'
     })
 
-    // Store column metadata
-    const columnValues = parsedData.columns.map(col => ({
-      dataset_id: datasetId,
-      table_id: tableId,
-      column_name: col.name,
-      column_type: col.type,
-      column_index: col.index,
-      is_nullable: col.nullable,
-      description: ''
-    }))
+    // Store column metadata with analysis
+    const columnValues = []
+    for (const col of parsedData.columns) {
+      // Analyze column to get metadata
+      const analysis = await analyzeColumn(
+        clickhouseTableName,
+        col.name,
+        col.type,
+        parsedData.rowCount
+      )
+
+      columnValues.push({
+        dataset_id: datasetId,
+        table_id: tableId,
+        column_name: col.name,
+        column_type: col.type,
+        column_index: col.index,
+        is_nullable: col.nullable,
+        description: '',
+        display_type: analysis.display_type,
+        unique_value_count: analysis.unique_value_count,
+        null_count: analysis.null_count,
+        min_value: analysis.min_value,
+        max_value: analysis.max_value,
+        suggested_chart: analysis.suggested_chart,
+        display_priority: analysis.display_priority,
+        is_hidden: analysis.is_hidden
+      })
+    }
 
     await clickhouseClient.insert({
       table: 'dataset_columns',
