@@ -19,7 +19,7 @@ interface Dataset {
   updatedAt: string
 }
 
-function DatasetsV2() {
+function Datasets() {
   const navigate = useNavigate()
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [loading, setLoading] = useState(true)
@@ -246,4 +246,4 @@ function DatasetsV2() {
   )
 }
 
-export default DatasetsV2
+export default Datasets

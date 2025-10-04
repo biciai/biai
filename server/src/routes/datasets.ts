@@ -1,7 +1,7 @@
 import express from 'express'
 import multer from 'multer'
 import { parseCSVFile } from '../services/fileParser.js'
-import datasetService from '../services/datasetServiceV2.js'
+import datasetService from '../services/datasetService.js'
 import { unlink } from 'fs/promises'
 
 const router = express.Router()

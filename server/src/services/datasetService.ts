@@ -25,7 +25,7 @@ export interface Dataset {
   tables?: DatasetTable[]
 }
 
-export class DatasetServiceV2 {
+export class DatasetService {
   // Create a new empty dataset
   async createDataset(
     name: string,
@@ -302,4 +302,4 @@ export class DatasetServiceV2 {
   }
 }
 
-export default new DatasetServiceV2()
+export default new DatasetService()

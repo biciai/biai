@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import apiRoutes from './routes/api.js'
-import datasetsRoutes from './routes/datasetsV2.js'
+import datasetsRoutes from './routes/datasets.js'
 
 dotenv.config()
 
