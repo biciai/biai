@@ -2,6 +2,13 @@ import clickhouseClient from '../config/clickhouse.js'
 import { v4 as uuidv4 } from 'uuid'
 import { ColumnMetadata, ParsedData } from './fileParser.js'
 
+export interface TableRelationship {
+  foreign_key: string
+  referenced_table: string
+  referenced_column: string
+  type?: string
+}
+
 export interface DatasetTable {
   table_id: string
   table_name: string
@@ -12,6 +19,8 @@ export interface DatasetTable {
   clickhouse_table_name: string
   schema_json: string
   primary_key?: string
+  custom_metadata?: string
+  relationships?: TableRelationship[]
   created_at: Date
 }
 
@@ -19,6 +28,11 @@ export interface Dataset {
   dataset_id: string
   dataset_name: string
   description: string
+  tags?: string[]
+  source?: string
+  citation?: string
+  references?: string[]
+  custom_metadata?: string
   created_by: string
   created_at: Date
   updated_at: Date
@@ -30,7 +44,12 @@ export class DatasetService {
   async createDataset(
     name: string,
     description: string = '',
-    createdBy: string = 'system'
+    createdBy: string = 'system',
+    tags: string[] = [],
+    source: string = '',
+    citation: string = '',
+    references: string[] = [],
+    customMetadata: Record<string, any> = {}
   ): Promise<Dataset> {
     const datasetId = uuidv4()
 
@@ -40,6 +59,11 @@ export class DatasetService {
         dataset_id: datasetId,
         dataset_name: name,
         description: description,
+        tags: tags,
+        source: source,
+        citation: citation,
+        references: references,
+        custom_metadata: JSON.stringify(customMetadata),
         created_by: createdBy
       }],
       format: 'JSONEachRow'
@@ -49,6 +73,11 @@ export class DatasetService {
       dataset_id: datasetId,
       dataset_name: name,
       description,
+      tags,
+      source,
+      citation,
+      references,
+      custom_metadata: JSON.stringify(customMetadata),
       created_by: createdBy,
       created_at: new Date(),
       updated_at: new Date(),
@@ -64,7 +93,9 @@ export class DatasetService {
     filename: string,
     fileType: string,
     parsedData: ParsedData,
-    primaryKey?: string
+    primaryKey?: string,
+    customMetadata: Record<string, any> = {},
+    relationships: TableRelationship[] = []
   ): Promise<DatasetTable> {
     const tableId = uuidv4()
     const clickhouseTableName = `dataset_${datasetId.replace(/-/g, '_')}_${tableName.replace(/[^a-z0-9_]/g, '_').toLowerCase()}`
@@ -90,7 +121,8 @@ export class DatasetService {
         row_count: parsedData.rowCount,
         clickhouse_table_name: clickhouseTableName,
         schema_json: schemaJson,
-        primary_key: primaryKey || null
+        primary_key: primaryKey || null,
+        custom_metadata: JSON.stringify(customMetadata)
       }],
       format: 'JSONEachRow'
     })
@@ -112,6 +144,24 @@ export class DatasetService {
       format: 'JSONEachRow'
     })
 
+    // Store relationships
+    if (relationships && relationships.length > 0) {
+      const relationshipValues = relationships.map(rel => ({
+        dataset_id: datasetId,
+        table_id: tableId,
+        foreign_key: rel.foreign_key,
+        referenced_table: rel.referenced_table,
+        referenced_column: rel.referenced_column,
+        relationship_type: rel.type || 'many-to-one'
+      }))
+
+      await clickhouseClient.insert({
+        table: 'table_relationships',
+        values: relationshipValues,
+        format: 'JSONEachRow'
+      })
+    }
+
     // Update dataset timestamp
     await clickhouseClient.command({
       query: 'ALTER TABLE biai.datasets_metadata UPDATE updated_at = now() WHERE dataset_id = {datasetId:String}',
@@ -128,6 +178,8 @@ export class DatasetService {
       clickhouse_table_name: clickhouseTableName,
       schema_json: schemaJson,
       primary_key: primaryKey,
+      custom_metadata: JSON.stringify(customMetadata),
+      relationships: relationships,
       created_at: new Date()
     }
   }
@@ -226,7 +278,26 @@ export class DatasetService {
       format: 'JSONEachRow'
     })
 
-    return await result.json<DatasetTable[]>()
+    const tables = await result.json<DatasetTable[]>()
+
+    // Load relationships for each table
+    for (const table of tables) {
+      const relResult = await clickhouseClient.query({
+        query: 'SELECT * FROM biai.table_relationships WHERE table_id = {tableId:String}',
+        query_params: { tableId: table.table_id },
+        format: 'JSONEachRow'
+      })
+
+      const relationships = await relResult.json<any[]>()
+      table.relationships = relationships.map(rel => ({
+        foreign_key: rel.foreign_key,
+        referenced_table: rel.referenced_table,
+        referenced_column: rel.referenced_column,
+        type: rel.relationship_type
+      }))
+    }
+
+    return tables
   }
 
   async getTableData(datasetId: string, tableId: string, limit: number = 100, offset: number = 0): Promise<any[]> {
@@ -269,6 +340,11 @@ export class DatasetService {
     })
 
     await clickhouseClient.command({
+      query: 'DELETE FROM biai.table_relationships WHERE dataset_id = {datasetId:String}',
+      query_params: { datasetId }
+    })
+
+    await clickhouseClient.command({
       query: 'DELETE FROM biai.datasets_metadata WHERE dataset_id = {datasetId:String}',
       query_params: { datasetId }
     })
@@ -297,6 +373,11 @@ export class DatasetService {
 
     await clickhouseClient.command({
       query: 'DELETE FROM biai.dataset_columns WHERE table_id = {tableId:String}',
+      query_params: { tableId }
+    })
+
+    await clickhouseClient.command({
+      query: 'DELETE FROM biai.table_relationships WHERE table_id = {tableId:String}',
       query_params: { tableId }
     })
   }

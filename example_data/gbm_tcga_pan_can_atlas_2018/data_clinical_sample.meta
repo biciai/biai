@@ -1,0 +1,13 @@
+data_file: data_clinical_sample.txt
+table_name: samples
+display_name: Clinical Samples
+skip_rows: 4
+delimiter: tab
+primary_key: sample_id
+relationship:
+  foreign_key: patient_id
+  references_table: patients
+  references_column: patient_id
+  type: many-to-one
+genetic_alteration_type: CLINICAL
+datatype: SAMPLE_ATTRIBUTES

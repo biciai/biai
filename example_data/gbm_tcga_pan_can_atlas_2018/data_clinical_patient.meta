@@ -1,0 +1,8 @@
+data_file: data_clinical_patient.txt
+table_name: patients
+display_name: Clinical Patients
+skip_rows: 4
+delimiter: tab
+primary_key: patient_id
+genetic_alteration_type: CLINICAL
+datatype: PATIENT_ATTRIBUTES

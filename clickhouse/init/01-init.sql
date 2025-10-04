@@ -9,6 +9,11 @@ CREATE TABLE IF NOT EXISTS datasets_metadata (
     dataset_id String,
     dataset_name String,
     description String,
+    tags Array(String) DEFAULT [],
+    source String DEFAULT '',
+    citation String DEFAULT '',
+    references Array(String) DEFAULT [],
+    custom_metadata String DEFAULT '{}',
     created_by String,
     created_at DateTime DEFAULT now(),
     updated_at DateTime DEFAULT now()
@@ -27,6 +32,7 @@ CREATE TABLE IF NOT EXISTS dataset_tables (
     clickhouse_table_name String,
     schema_json String,
     primary_key Nullable(String),
+    custom_metadata String DEFAULT '{}',
     created_at DateTime DEFAULT now()
 ) ENGINE = MergeTree()
 ORDER BY (dataset_id, created_at);
@@ -43,3 +49,15 @@ CREATE TABLE IF NOT EXISTS dataset_columns (
     created_at DateTime DEFAULT now()
 ) ENGINE = MergeTree()
 ORDER BY (dataset_id, table_id, column_index);
+
+-- Table relationships (foreign keys)
+CREATE TABLE IF NOT EXISTS table_relationships (
+    dataset_id String,
+    table_id String,
+    foreign_key String,
+    referenced_table String,
+    referenced_column String,
+    relationship_type String DEFAULT 'many-to-one',
+    created_at DateTime DEFAULT now()
+) ENGINE = MergeTree()
+ORDER BY (dataset_id, table_id);

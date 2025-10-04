@@ -55,23 +55,28 @@ biai/
 │   └── package.json
 ├── server/                     # Node.js backend
 │   ├── src/
-│   │   ├── routes/            # API endpoints (datasetsV2, queries)
-│   │   ├── services/          # Business logic (datasetServiceV2, fileParser)
+│   │   ├── routes/            # API endpoints (datasets, queries)
+│   │   ├── services/          # Business logic (datasetService, fileParser, metadataParser)
 │   │   └── config/            # ClickHouse configuration
 │   └── package.json
 ├── clickhouse/                 # ClickHouse initialization scripts
 │   └── init/01-init.sql       # Database schema
-├── example_data/               # Sample TCGA clinical data
+├── example_data/               # Sample TCGA clinical data with .meta files
 └── docker-compose.yml          # Docker services
 ```
 
 ## Features
 
 - **Multi-table Datasets**: Create datasets with multiple related tables
+- **Metadata-Driven Uploads**: Configure datasets using `.meta` files with support for:
+  - Dataset metadata (name, description, tags, source, citation, references)
+  - Table metadata (primary keys, relationships, custom fields)
+  - Nested object and array formats
+- **Table Relationships**: Define and track foreign key relationships between tables
 - **Dynamic Schema**: Automatic type inference from CSV/TSV files
 - **File Upload**: Support for CSV, TSV with configurable delimiters
 - **Data Preview**: View table data with pagination
-- **Metadata Management**: Track columns, types, primary keys
+- **Custom Metadata**: Store domain-specific fields alongside standard metadata
 
 ## Available Scripts
 
@@ -96,15 +101,57 @@ biai/
 
 ## Example Data
 
-The project includes TCGA GBM clinical data in `example_data/`. Upload it using:
+The project includes TCGA GBM clinical data with metadata in `example_data/gbm_tcga_pan_can_atlas_2018/`:
+- `dataset.meta` - Dataset-level metadata (name, tags, citations, etc.)
+- `data_clinical_patient.meta` - Table metadata for patients table
+- `data_clinical_sample.meta` - Table metadata for samples table (includes relationship to patients)
+
+Upload using the metadata-driven script:
 ```bash
-node upload-tcga-dataset.js
+node upload-dataset-with-metadata.js example_data/gbm_tcga_pan_can_atlas_2018
 ```
+
+### Metadata File Format
+
+Dataset metadata (`dataset.meta`):
+```
+name: Dataset Name
+description: Dataset description
+tags: tag1,tag2,tag3
+source: Data source
+citation: Citation info
+references:
+  - pmid:12345678
+  - doi:10.1234/example
+```
+
+Table metadata (`table_name.meta`):
+```
+data_file: data_file.txt
+table_name: table_name
+display_name: Human Readable Name
+skip_rows: 4
+delimiter: tab
+primary_key: id_column
+relationship:
+  foreign_key: foreign_id
+  references_table: other_table
+  references_column: id
+  type: many-to-one
+```
+
+## Database Schema
+
+The system uses ClickHouse with the following metadata tables:
+- `datasets_metadata` - Dataset info (name, description, tags, source, citation, references, custom metadata)
+- `dataset_tables` - Table info (name, row count, schema, primary key, custom metadata)
+- `dataset_columns` - Column info (name, type, nullability)
+- `table_relationships` - Foreign key relationships between tables
 
 ## Next Steps
 
-- Add table relationship/join visualization
-- Implement query builder for cross-table analysis
+- Implement query builder for cross-table analysis using relationships
 - Add data export functionality
 - Build custom dashboards from uploaded data
 - Add authentication and multi-user support
+- Visualize table relationships as entity-relationship diagrams

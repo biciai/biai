@@ -13,6 +13,10 @@ interface Dataset {
   id: string
   name: string
   description: string
+  tags?: string[]
+  source?: string
+  citation?: string
+  references?: string[]
   tableCount: number
   tables: DatasetTable[]
   createdAt: string
@@ -178,7 +182,36 @@ function Datasets() {
                 <div style={{ flex: 1 }}>
                   <h3 style={{ margin: '0 0 0.5rem 0' }}>{dataset.name}</h3>
                   {dataset.description && (
-                    <p style={{ margin: '0 0 0.5rem 0', color: '#666' }}>{dataset.description}</p>
+                    <p style={{ margin: '0 0 0.5rem 0', color: '#666' }} dangerouslySetInnerHTML={{ __html: dataset.description }}></p>
+                  )}
+                  {dataset.tags && dataset.tags.length > 0 && (
+                    <div style={{ margin: '0.5rem 0', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      {dataset.tags.map((tag, i) => (
+                        <span
+                          key={i}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#e3f2fd',
+                            color: '#1976d2',
+                            borderRadius: '4px',
+                            fontSize: '0.75rem',
+                            fontWeight: 500
+                          }}
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {dataset.source && (
+                    <div style={{ fontSize: '0.875rem', color: '#666', margin: '0.5rem 0' }}>
+                      <strong>Source:</strong> {dataset.source}
+                    </div>
+                  )}
+                  {dataset.citation && (
+                    <div style={{ fontSize: '0.875rem', color: '#666', margin: '0.5rem 0' }}>
+                      <strong>Citation:</strong> {dataset.citation}
+                    </div>
                   )}
                   <div style={{ fontSize: '0.875rem', color: '#999' }}>
                     <span>{dataset.tableCount} table{dataset.tableCount !== 1 ? 's' : ''}</span>

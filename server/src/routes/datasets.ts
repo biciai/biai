@@ -23,13 +23,13 @@ const upload = multer({
 // Create a new dataset
 router.post('/', async (req, res) => {
   try {
-    const { name, description = '' } = req.body
+    const { name, description = '', tags = [], source = '', citation = '', references = [], customMetadata = {} } = req.body
 
     if (!name) {
       return res.status(400).json({ error: 'Dataset name is required' })
     }
 
-    const dataset = await datasetService.createDataset(name, description)
+    const dataset = await datasetService.createDataset(name, description, 'system', tags, source, citation, references, customMetadata)
 
     res.json({
       success: true,
@@ -37,6 +37,10 @@ router.post('/', async (req, res) => {
         id: dataset.dataset_id,
         name: dataset.dataset_name,
         description: dataset.description,
+        tags: dataset.tags,
+        source: dataset.source,
+        citation: dataset.citation,
+        references: dataset.references,
         createdAt: dataset.created_at
       }
     })
@@ -53,7 +57,7 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' })
     }
 
-    const { tableName, displayName, skipRows = '0', delimiter = '\t', primaryKey } = req.body
+    const { tableName, displayName, skipRows = '0', delimiter = '\t', primaryKey, customMetadata = '{}', relationships = '[]' } = req.body
 
     if (!tableName) {
       await unlink(req.file.path)
@@ -72,6 +76,17 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
       delimiter
     )
 
+    // Parse JSON fields
+    let parsedCustomMetadata = {}
+    let parsedRelationships = []
+    try {
+      parsedCustomMetadata = JSON.parse(customMetadata)
+      parsedRelationships = JSON.parse(relationships)
+    } catch (e) {
+      await unlink(req.file.path)
+      return res.status(400).json({ error: 'Invalid JSON in customMetadata or relationships' })
+    }
+
     const table = await datasetService.addTableToDataset(
       req.params.id,
       tableName,
@@ -79,7 +94,9 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
       req.file.originalname,
       req.file.mimetype,
       parsedData,
-      primaryKey
+      primaryKey,
+      parsedCustomMetadata,
+      parsedRelationships
     )
 
     await unlink(req.file.path)
@@ -117,6 +134,10 @@ router.get('/', async (req, res) => {
         id: d.dataset_id,
         name: d.dataset_name,
         description: d.description,
+        tags: d.tags,
+        source: d.source,
+        citation: d.citation,
+        references: d.references,
         tableCount: d.tables?.length || 0,
         tables: d.tables?.map(t => ({
           id: t.table_id,
@@ -147,6 +168,11 @@ router.get('/:id', async (req, res) => {
         id: dataset.dataset_id,
         name: dataset.dataset_name,
         description: dataset.description,
+        tags: dataset.tags,
+        source: dataset.source,
+        citation: dataset.citation,
+        references: dataset.references,
+        customMetadata: dataset.custom_metadata,
         tables: dataset.tables?.map(t => ({
           id: t.table_id,
           name: t.table_name,
@@ -155,6 +181,8 @@ router.get('/:id', async (req, res) => {
           rowCount: t.row_count,
           columns: JSON.parse(t.schema_json),
           primaryKey: t.primary_key,
+          customMetadata: t.custom_metadata,
+          relationships: t.relationships,
           createdAt: t.created_at
         })),
         createdBy: dataset.created_by,

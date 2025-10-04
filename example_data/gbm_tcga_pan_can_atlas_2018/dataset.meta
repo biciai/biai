@@ -1,0 +1,22 @@
+name: Glioblastoma Multiforme (TCGA, PanCancer Atlas)
+description: Glioblastoma Multiforme TCGA PanCancer data. The original data is <a href="https://gdc.cancer.gov/about-data/publications/pancanatlas">here</a>. The publications are <a href="https://www.cell.com/pb-assets/consortium/pancanceratlas/pancani3/index.html">here</a>.
+tags: cancer,glioblastoma,tcga,genomics,clinical
+source: The Cancer Genome Atlas (TCGA) PanCancer Atlas
+citation: TCGA, Cell 2018
+references:
+  - pmid:29625048
+  - pmid:29596782
+  - pmid:29622463
+  - pmid:29617662
+  - pmid:29625055
+  - pmid:29625050
+  - pmid:30643250
+  - pmid:32214244
+  - pmid:29625049
+  - pmid:29850653
+  - pmid:36334560
+  - doi:10.1016/j.cell.2018.03.022
+type_of_cancer: gbm
+groups: PUBLIC,PANCAN
+dataset_stable_id: gbm_tcga_pan_can_atlas_2018
+short_name: GBM (TCGA PanCan)

@@ -8,6 +8,13 @@ interface Column {
   nullable: boolean
 }
 
+interface Relationship {
+  foreign_key: string
+  referenced_table: string
+  referenced_column: string
+  type?: string
+}
+
 interface Table {
   id: string
   name: string
@@ -16,6 +23,8 @@ interface Table {
   rowCount: number
   columns: Column[]
   primaryKey?: string
+  relationships?: Relationship[]
+  customMetadata?: string
   createdAt: string
 }
 
@@ -23,6 +32,11 @@ interface Dataset {
   id: string
   name: string
   description: string
+  tags?: string[]
+  source?: string
+  citation?: string
+  references?: string[]
+  customMetadata?: string
   tables: Table[]
   createdAt: string
   updatedAt: string
@@ -155,9 +169,65 @@ function DatasetDetail() {
         ← Back to Datasets
       </button>
 
-      <div style={{ marginBottom: '2rem' }}>
-        <h2>{dataset.name}</h2>
-        {dataset.description && <p style={{ color: '#666' }}>{dataset.description}</p>}
+      <div style={{ marginBottom: '2rem', background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+        <h2 style={{ marginTop: 0 }}>{dataset.name}</h2>
+        {dataset.description && <p style={{ color: '#666' }} dangerouslySetInnerHTML={{ __html: dataset.description }}></p>}
+
+        {dataset.tags && dataset.tags.length > 0 && (
+          <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <strong style={{ marginRight: '0.5rem' }}>Tags:</strong>
+            {dataset.tags.map((tag, i) => (
+              <span
+                key={i}
+                style={{
+                  padding: '0.25rem 0.5rem',
+                  background: '#e3f2fd',
+                  color: '#1976d2',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  fontWeight: 500
+                }}
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {dataset.source && (
+          <div style={{ marginTop: '0.75rem', fontSize: '0.875rem', color: '#666' }}>
+            <strong>Source:</strong> {dataset.source}
+          </div>
+        )}
+
+        {dataset.citation && (
+          <div style={{ marginTop: '0.5rem', fontSize: '0.875rem', color: '#666' }}>
+            <strong>Citation:</strong> {dataset.citation}
+          </div>
+        )}
+
+        {dataset.references && dataset.references.length > 0 && (
+          <div style={{ marginTop: '0.75rem', fontSize: '0.875rem', color: '#666' }}>
+            <strong>References:</strong>
+            <ul style={{ margin: '0.5rem 0 0 1.5rem', padding: 0 }}>
+              {dataset.references.map((ref, i) => (
+                <li key={i} style={{ marginBottom: '0.25rem' }}>
+                  {ref.startsWith('pmid:') ? (
+                    <a href={`https://pubmed.ncbi.nlm.nih.gov/${ref.substring(5)}/`} target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>
+                      {ref}
+                    </a>
+                  ) : ref.startsWith('doi:') ? (
+                    <a href={`https://doi.org/${ref.substring(4)}`} target="_blank" rel="noopener noreferrer" style={{ color: '#1976d2' }}>
+                      {ref}
+                    </a>
+                  ) : (
+                    ref
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       <div style={{ marginBottom: '2rem' }}>
@@ -299,6 +369,16 @@ function DatasetDetail() {
                       </>
                     )}
                   </div>
+                  {table.relationships && table.relationships.length > 0 && (
+                    <div style={{ fontSize: '0.875rem', color: '#666', marginTop: '0.5rem' }}>
+                      <strong>Relationships:</strong>
+                      {table.relationships.map((rel, i) => (
+                        <div key={i} style={{ marginLeft: '1rem', marginTop: '0.25rem' }}>
+                          {rel.foreign_key} → {rel.referenced_table}.{rel.referenced_column} ({rel.type || 'many-to-one'})
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
