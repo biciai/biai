@@ -1,30 +1,36 @@
+import { describe, test, expect, beforeEach, vi } from 'vitest'
 import request from 'supertest'
 import express from 'express'
 
 // Mock the services
-jest.mock('../../services/datasetService.js', () => ({
+vi.mock('../../services/datasetService.js', () => ({
   default: {
-    createDataset: jest.fn(),
-    listDatasets: jest.fn(),
-    getDataset: jest.fn(),
-    getTableColumns: jest.fn(),
-    updateColumnMetadata: jest.fn(),
-    deleteDataset: jest.fn()
+    createDataset: vi.fn(),
+    listDatasets: vi.fn(),
+    getDataset: vi.fn(),
+    getTableColumns: vi.fn(),
+    updateColumnMetadata: vi.fn(),
+    deleteDataset: vi.fn()
   }
 }))
 
-import datasetService from '../../services/datasetService.js'
 import datasetsRouter from '../datasets.js'
+import datasetService from '../../services/datasetService.js'
+
+const mockCreateDataset = vi.mocked(datasetService.createDataset)
+const mockListDatasets = vi.mocked(datasetService.listDatasets)
+const mockGetDataset = vi.mocked(datasetService.getDataset)
+const mockGetTableColumns = vi.mocked(datasetService.getTableColumns)
+const mockUpdateColumnMetadata = vi.mocked(datasetService.updateColumnMetadata)
+const mockDeleteDataset = vi.mocked(datasetService.deleteDataset)
 
 const app = express()
 app.use(express.json())
 app.use('/api/datasets', datasetsRouter)
 
 describe('Datasets API Routes', () => {
-  const mockDatasetService = datasetService as jest.Mocked<typeof datasetService>
-
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   describe('POST /api/datasets', () => {
@@ -38,7 +44,7 @@ describe('Datasets API Routes', () => {
         updated_at: new Date()
       }
 
-      mockDatasetService.createDataset.mockResolvedValue(mockDataset as any)
+      mockCreateDataset.mockResolvedValue(mockDataset as any)
 
       const response = await request(app)
         .post('/api/datasets')
@@ -51,7 +57,7 @@ describe('Datasets API Routes', () => {
       expect(response.status).toBe(200)
       expect(response.body.success).toBe(true)
       expect(response.body.dataset.name).toBe('Test Dataset')
-      expect(mockDatasetService.createDataset).toHaveBeenCalledWith(
+      expect(mockCreateDataset).toHaveBeenCalledWith(
         'Test Dataset',
         'Test description',
         'system',
@@ -98,7 +104,7 @@ describe('Datasets API Routes', () => {
         }
       ]
 
-      mockDatasetService.listDatasets.mockResolvedValue(mockDatasets as any)
+      mockListDatasets.mockResolvedValue(mockDatasets as any)
 
       const response = await request(app).get('/api/datasets')
 
@@ -120,17 +126,17 @@ describe('Datasets API Routes', () => {
         updated_at: new Date()
       }
 
-      mockDatasetService.getDataset.mockResolvedValue(mockDataset as any)
+      mockGetDataset.mockResolvedValue(mockDataset as any)
 
       const response = await request(app).get('/api/datasets/test-id')
 
       expect(response.status).toBe(200)
       expect(response.body.dataset.name).toBe('Test Dataset')
-      expect(mockDatasetService.getDataset).toHaveBeenCalledWith('test-id')
+      expect(mockGetDataset).toHaveBeenCalledWith('test-id')
     })
 
     test('should return 404 if dataset not found', async () => {
-      mockDatasetService.getDataset.mockResolvedValue(null)
+      mockGetDataset.mockResolvedValue(null)
 
       const response = await request(app).get('/api/datasets/nonexistent')
 
@@ -158,7 +164,7 @@ describe('Datasets API Routes', () => {
         }
       ]
 
-      mockDatasetService.getTableColumns.mockResolvedValue(mockColumns as any)
+      mockGetTableColumns.mockResolvedValue(mockColumns as any)
 
       const response = await request(app)
         .get('/api/datasets/dataset-id/tables/table-id/columns')
@@ -166,13 +172,13 @@ describe('Datasets API Routes', () => {
       expect(response.status).toBe(200)
       expect(response.body.columns).toHaveLength(2)
       expect(response.body.columns[0].column_name).toBe('id')
-      expect(mockDatasetService.getTableColumns).toHaveBeenCalledWith('dataset-id', 'table-id')
+      expect(mockGetTableColumns).toHaveBeenCalledWith('dataset-id', 'table-id')
     })
   })
 
   describe('PATCH /api/datasets/:id/tables/:tableId/columns/:columnName', () => {
     test('should update column metadata', async () => {
-      mockDatasetService.updateColumnMetadata.mockResolvedValue(undefined)
+      mockUpdateColumnMetadata.mockResolvedValue(undefined)
 
       const response = await request(app)
         .patch('/api/datasets/dataset-id/tables/table-id/columns/age')
@@ -184,7 +190,7 @@ describe('Datasets API Routes', () => {
 
       expect(response.status).toBe(200)
       expect(response.body.success).toBe(true)
-      expect(mockDatasetService.updateColumnMetadata).toHaveBeenCalledWith(
+      expect(mockUpdateColumnMetadata).toHaveBeenCalledWith(
         'dataset-id',
         'table-id',
         'age',
@@ -198,7 +204,7 @@ describe('Datasets API Routes', () => {
     })
 
     test('should update display type', async () => {
-      mockDatasetService.updateColumnMetadata.mockResolvedValue(undefined)
+      mockUpdateColumnMetadata.mockResolvedValue(undefined)
 
       const response = await request(app)
         .patch('/api/datasets/dataset-id/tables/table-id/columns/status')
@@ -207,7 +213,7 @@ describe('Datasets API Routes', () => {
         })
 
       expect(response.status).toBe(200)
-      expect(mockDatasetService.updateColumnMetadata).toHaveBeenCalledWith(
+      expect(mockUpdateColumnMetadata).toHaveBeenCalledWith(
         'dataset-id',
         'table-id',
         'status',
@@ -220,20 +226,20 @@ describe('Datasets API Routes', () => {
 
   describe('DELETE /api/datasets/:id', () => {
     test('should delete dataset', async () => {
-      mockDatasetService.deleteDataset.mockResolvedValue(undefined)
+      mockDeleteDataset.mockResolvedValue(undefined)
 
       const response = await request(app).delete('/api/datasets/test-id')
 
       expect(response.status).toBe(200)
       expect(response.body.success).toBe(true)
       expect(response.body.message).toBe('Dataset deleted successfully')
-      expect(mockDatasetService.deleteDataset).toHaveBeenCalledWith('test-id')
+      expect(mockDeleteDataset).toHaveBeenCalledWith('test-id')
     })
   })
 
   describe('Error Handling', () => {
     test('should handle service errors gracefully', async () => {
-      mockDatasetService.listDatasets.mockRejectedValue(new Error('Database error'))
+      mockListDatasets.mockRejectedValue(new Error('Database error'))
 
       const response = await request(app).get('/api/datasets')
 

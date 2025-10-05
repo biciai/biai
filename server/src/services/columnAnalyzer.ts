@@ -79,7 +79,10 @@ async function getColumnStats(
     format: 'JSONEachRow'
   })
   const countData = await countResult.json<any[]>()
-  const counts = countData[0] || { unique_count: 0, null_count: 0, total_count: 0 }
+  const counts: { unique_count: number; null_count: number; total_count: number } =
+    (countData && countData.length > 0 && countData[0])
+      ? countData[0] as { unique_count: number; null_count: number; total_count: number }
+      : { unique_count: 0, null_count: 0, total_count: 0 }
 
   // Get sample values (up to 100)
   const whereCondition = isNumericType
@@ -98,7 +101,7 @@ async function getColumnStats(
     format: 'JSONEachRow'
   })
   const sampleData = await sampleResult.json<any[]>()
-  const sampleValues = sampleData.map(row => row[columnName])
+  const sampleValues = sampleData.map((row: any) => row[columnName])
 
   // Get min/max for numeric columns
   let minValue = null
@@ -118,9 +121,9 @@ async function getColumnStats(
       format: 'JSONEachRow'
     })
     const minMaxData = await minMaxResult.json<any[]>()
-    if (minMaxData[0]) {
-      minValue = minMaxData[0].min_val
-      maxValue = minMaxData[0].max_val
+    if (minMaxData && minMaxData.length > 0 && minMaxData[0]) {
+      minValue = (minMaxData[0] as any).min_val
+      maxValue = (minMaxData[0] as any).max_val
     }
   }
 

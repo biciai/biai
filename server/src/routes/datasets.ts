@@ -9,7 +9,7 @@ const router = express.Router()
 const upload = multer({
   dest: 'uploads/',
   limits: { fileSize: 50 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
+  fileFilter: (_req, file, cb) => {
     const allowedTypes = ['.csv', '.txt', '.tsv']
     const ext = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf('.'))
     if (allowedTypes.includes(ext)) {
@@ -31,7 +31,7 @@ router.post('/', async (req, res) => {
 
     const dataset = await datasetService.createDataset(name, description, 'system', tags, source, citation, references, customMetadata)
 
-    res.json({
+    return res.json({
       success: true,
       dataset: {
         id: dataset.dataset_id,
@@ -46,7 +46,7 @@ router.post('/', async (req, res) => {
     })
   } catch (error: any) {
     console.error('Create dataset error:', error)
-    res.status(500).json({ error: 'Failed to create dataset', message: error.message })
+    return res.status(500).json({ error: 'Failed to create dataset', message: error.message })
   }
 })
 
@@ -122,7 +122,7 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
 
     await unlink(req.file.path)
 
-    res.json({
+    return res.json({
       success: true,
       table: {
         id: table.table_id,
@@ -142,12 +142,12 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
       } catch (e) {}
     }
 
-    res.status(500).json({ error: 'Failed to add table', message: error.message })
+    return res.status(500).json({ error: 'Failed to add table', message: error.message })
   }
 })
 
 // List all datasets
-router.get('/', async (req, res) => {
+router.get('/', async (_req, res) => {
   try {
     const datasets = await datasetService.listDatasets()
     res.json({
@@ -184,7 +184,7 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Dataset not found' })
     }
 
-    res.json({
+    return res.json({
       dataset: {
         id: dataset.dataset_id,
         name: dataset.dataset_name,
@@ -213,7 +213,7 @@ router.get('/:id', async (req, res) => {
     })
   } catch (error: any) {
     console.error('Get dataset error:', error)
-    res.status(500).json({ error: 'Failed to get dataset', message: error.message })
+    return res.status(500).json({ error: 'Failed to get dataset', message: error.message })
   }
 })
 
