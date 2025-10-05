@@ -57,7 +57,16 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' })
     }
 
-    const { tableName, displayName, skipRows = '0', delimiter = '\t', primaryKey, customMetadata = '{}', relationships = '[]' } = req.body
+    const {
+      tableName,
+      displayName,
+      skipRows = '0',
+      delimiter = '\t',
+      primaryKey,
+      customMetadata = '{}',
+      relationships = '[]',
+      columnMetadataConfig = '{}'
+    } = req.body
 
     if (!tableName) {
       await unlink(req.file.path)
@@ -70,10 +79,22 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Table name must contain only letters, numbers, and underscores' })
     }
 
+    // Parse column metadata config
+    let parsedColumnMetadataConfig
+    try {
+      const config = JSON.parse(columnMetadataConfig)
+      if (Object.keys(config).length > 0) {
+        parsedColumnMetadataConfig = config
+      }
+    } catch (e) {
+      // Ignore parse errors, just don't use column metadata
+    }
+
     const parsedData = await parseCSVFile(
       req.file.path,
       parseInt(skipRows, 10),
-      delimiter
+      delimiter,
+      parsedColumnMetadataConfig
     )
 
     // Parse JSON fields
@@ -213,6 +234,39 @@ router.get('/:id/tables/:tableId/data', async (req, res) => {
   } catch (error: any) {
     console.error('Get table data error:', error)
     res.status(500).json({ error: 'Failed to get table data', message: error.message })
+  }
+})
+
+// Get table column metadata
+router.get('/:id/tables/:tableId/columns', async (req, res) => {
+  try {
+    const columns = await datasetService.getTableColumns(req.params.id, req.params.tableId)
+
+    res.json({
+      columns
+    })
+  } catch (error: any) {
+    console.error('Get table columns error:', error)
+    res.status(500).json({ error: 'Failed to get table columns', message: error.message })
+  }
+})
+
+// Update column metadata
+router.patch('/:id/tables/:tableId/columns/:columnName', async (req, res) => {
+  try {
+    const { displayName, description, isHidden, displayType } = req.body
+
+    await datasetService.updateColumnMetadata(
+      req.params.id,
+      req.params.tableId,
+      req.params.columnName,
+      { displayName, description, isHidden, displayType }
+    )
+
+    res.json({ success: true, message: 'Column metadata updated' })
+  } catch (error: any) {
+    console.error('Update column metadata error:', error)
+    res.status(500).json({ error: 'Failed to update column metadata', message: error.message })
   }
 })
 

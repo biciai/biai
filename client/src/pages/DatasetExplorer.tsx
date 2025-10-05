@@ -9,6 +9,25 @@ interface Column {
   nullable: boolean
 }
 
+interface ColumnMetadata {
+  column_name: string
+  column_type: string
+  column_index: number
+  is_nullable: boolean
+  display_name: string
+  description: string
+  user_data_type: string
+  user_priority: number | null
+  display_type: string
+  unique_value_count: number
+  null_count: number
+  min_value: string | null
+  max_value: string | null
+  suggested_chart: string
+  display_priority: number
+  is_hidden: boolean
+}
+
 interface Table {
   id: string
   name: string
@@ -32,6 +51,7 @@ function DatasetExplorer() {
   const [dataset, setDataset] = useState<Dataset | null>(null)
   const [loading, setLoading] = useState(true)
   const [tableData, setTableData] = useState<Record<string, any[]>>({})
+  const [columnMetadata, setColumnMetadata] = useState<Record<string, ColumnMetadata[]>>({})
   const [selectedFilters, setSelectedFilters] = useState<Record<string, Set<string>>>({})
 
   useEffect(() => {
@@ -44,9 +64,10 @@ function DatasetExplorer() {
       const response = await api.get(`/datasets/${id}`)
       setDataset(response.data.dataset)
 
-      // Load all table data
+      // Load all table data and column metadata
       for (const table of response.data.dataset.tables) {
         await loadTableData(table.id, table.name)
+        await loadColumnMetadata(table.id, table.name)
       }
     } catch (error) {
       console.error('Failed to load dataset:', error)
@@ -61,6 +82,15 @@ function DatasetExplorer() {
       setTableData(prev => ({ ...prev, [tableName]: response.data.data }))
     } catch (error) {
       console.error('Failed to load table data:', error)
+    }
+  }
+
+  const loadColumnMetadata = async (tableId: string, tableName: string) => {
+    try {
+      const response = await api.get(`/datasets/${id}/tables/${tableId}/columns`)
+      setColumnMetadata(prev => ({ ...prev, [tableName]: response.data.columns }))
+    } catch (error) {
+      console.error('Failed to load column metadata:', error)
     }
   }
 
@@ -101,6 +131,17 @@ function DatasetExplorer() {
     setSelectedFilters({})
   }
 
+  const getColumnMetadata = (tableName: string, columnName: string): ColumnMetadata | undefined => {
+    const metadata = columnMetadata[tableName]
+    if (!metadata) return undefined
+    return metadata.find(col => col.column_name === columnName)
+  }
+
+  const getDisplayTitle = (tableName: string, columnName: string): string => {
+    const metadata = getColumnMetadata(tableName, columnName)
+    return metadata?.display_name || columnName.replace(/_/g, ' ')
+  }
+
   const renderPieChart = (title: string, tableName: string, field: string) => {
     const data = getFilteredData(tableName)
     if (!data.length) return null
@@ -120,6 +161,7 @@ function DatasetExplorer() {
     const values = sortedEntries.map(([, count]) => count)
 
     const isFiltered = selectedFilters[field]?.size > 0
+    const metadata = getColumnMetadata(tableName, field)
 
     return (
       <div style={{
@@ -129,10 +171,18 @@ function DatasetExplorer() {
         boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
         border: isFiltered ? '2px solid #2196F3' : '2px solid transparent'
       }}>
-        <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', fontWeight: 600 }}>
+        <h4
+          style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', fontWeight: 600, cursor: metadata?.description ? 'help' : 'default' }}
+          title={metadata?.description || ''}
+        >
           {title}
           {isFiltered && <span style={{ color: '#2196F3', marginLeft: '0.5rem' }}>●</span>}
         </h4>
+        {metadata?.description && (
+          <div style={{ fontSize: '0.75rem', color: '#666', marginBottom: '0.5rem', fontStyle: 'italic' }}>
+            {metadata.description}
+          </div>
+        )}
         <Plot
           data={[{
             type: 'pie',
@@ -446,12 +496,13 @@ function DatasetExplorer() {
 
             const uniqueValues = new Set(sampleValues)
             const isNumeric = sampleValues.every(v => !isNaN(Number(v)))
+            const displayTitle = getDisplayTitle(table.name, col.name)
 
             // Categorical data with few unique values -> Pie chart
             if (!isNumeric && uniqueValues.size <= 8 && uniqueValues.size > 1) {
               charts.push(
                 <div key={`${table.name}_${col.name}`}>
-                  {renderPieChart(col.name.replace(/_/g, ' '), table.name, col.name)}
+                  {renderPieChart(displayTitle, table.name, col.name)}
                 </div>
               )
             }
@@ -459,7 +510,7 @@ function DatasetExplorer() {
             else if (!isNumeric && uniqueValues.size > 8 && uniqueValues.size <= 50) {
               charts.push(
                 <div key={`${table.name}_${col.name}`}>
-                  {renderBarChart(col.name.replace(/_/g, ' '), table.name, col.name, 10)}
+                  {renderBarChart(displayTitle, table.name, col.name, 10)}
                 </div>
               )
             }
@@ -467,7 +518,7 @@ function DatasetExplorer() {
             else if (isNumeric && uniqueValues.size > 10) {
               charts.push(
                 <div key={`${table.name}_${col.name}`}>
-                  {renderHistogram(col.name.replace(/_/g, ' '), table.name, col.name)}
+                  {renderHistogram(displayTitle, table.name, col.name)}
                 </div>
               )
             }

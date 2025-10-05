@@ -7,6 +7,10 @@ export interface ColumnMetadata {
   type: 'String' | 'Int32' | 'Float64' | 'DateTime' | 'Boolean'
   nullable: boolean
   index: number
+  displayName?: string
+  description?: string
+  userDataType?: string
+  userPriority?: number
 }
 
 export interface ParsedData {
@@ -49,13 +53,22 @@ function inferType(values: string[]): 'String' | 'Int32' | 'Float64' | 'DateTime
   return 'String'
 }
 
+export interface ColumnMetadataConfig {
+  displayNameRow?: number
+  descriptionRow?: number
+  dataTypeRow?: number
+  priorityRow?: number
+}
+
 export async function parseCSVFile(
   filePath: string,
   skipRows: number = 0,
-  delimiter: string = '\t'
+  delimiter: string = '\t',
+  columnMetadataConfig?: ColumnMetadataConfig
 ): Promise<ParsedData> {
   return new Promise((resolve, reject) => {
     const rows: any[][] = []
+    const allRows: any[][] = [] // Store all rows including metadata
     let headers: string[] = []
     let headerRowIndex = skipRows
     let rowIndex = 0
@@ -70,6 +83,7 @@ export async function parseCSVFile(
       .pipe(parser)
       .on('data', (row: string[]) => {
         rowIndex++
+        allRows.push(row) // Store every row
 
         // Skip metadata rows
         if (rowIndex <= skipRows) {
@@ -91,12 +105,35 @@ export async function parseCSVFile(
           const sampleValues = rows.slice(0, sampleSize).map(row => row[index] || '')
           const hasNulls = sampleValues.some(v => v === '' || v === null || v === undefined || v.toLowerCase() === 'na')
 
-          return {
+          const column: ColumnMetadata = {
             name: name.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
             type: inferType(sampleValues),
             nullable: hasNulls,
             index
           }
+
+          // Extract column metadata from specified rows
+          if (columnMetadataConfig) {
+            if (columnMetadataConfig.displayNameRow !== undefined && allRows[columnMetadataConfig.displayNameRow]) {
+              const displayName = allRows[columnMetadataConfig.displayNameRow][index]
+              column.displayName = displayName?.replace(/^#/, '').trim()
+            }
+            if (columnMetadataConfig.descriptionRow !== undefined && allRows[columnMetadataConfig.descriptionRow]) {
+              const description = allRows[columnMetadataConfig.descriptionRow][index]
+              column.description = description?.replace(/^#/, '').trim()
+            }
+            if (columnMetadataConfig.dataTypeRow !== undefined && allRows[columnMetadataConfig.dataTypeRow]) {
+              const dataType = allRows[columnMetadataConfig.dataTypeRow][index]
+              column.userDataType = dataType?.replace(/^#/, '').trim()
+            }
+            if (columnMetadataConfig.priorityRow !== undefined && allRows[columnMetadataConfig.priorityRow]) {
+              const priority = allRows[columnMetadataConfig.priorityRow][index]
+              const priorityStr = priority?.replace(/^#/, '').trim()
+              column.userPriority = priorityStr ? parseInt(priorityStr, 10) : undefined
+            }
+          }
+
+          return column
         })
 
         resolve({

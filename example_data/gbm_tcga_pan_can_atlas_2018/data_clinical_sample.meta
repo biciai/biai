@@ -11,3 +11,8 @@ relationship:
   type: many-to-one
 genetic_alteration_type: CLINICAL
 datatype: SAMPLE_ATTRIBUTES
+# Column metadata row configuration (0-indexed, relative to start of file)
+column_display_name_row: 0
+column_description_row: 1
+column_datatype_row: 2
+column_priority_row: 3

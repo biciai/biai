@@ -58,11 +58,18 @@ async function getColumnStats(
   columnName: string,
   columnType: string
 ): Promise<ColumnStats> {
+  // Handle nullable types
+  const isNumericType = columnType.includes('Int') || columnType.includes('Float') || columnType.includes('Decimal')
+
   // Get unique count and null count
+  const nullCondition = isNumericType
+    ? `isNull(${columnName})`
+    : `isNull(${columnName}) OR ${columnName} = ''`
+
   const countQuery = `
     SELECT
       uniqExact(${columnName}) as unique_count,
-      countIf(isNull(${columnName}) OR ${columnName} = '') as null_count,
+      countIf(${nullCondition}) as null_count,
       count() as total_count
     FROM biai.${tableName}
   `
@@ -75,10 +82,14 @@ async function getColumnStats(
   const counts = countData[0] || { unique_count: 0, null_count: 0, total_count: 0 }
 
   // Get sample values (up to 100)
+  const whereCondition = isNumericType
+    ? `${columnName} IS NOT NULL`
+    : `${columnName} IS NOT NULL AND ${columnName} != ''`
+
   const sampleQuery = `
     SELECT DISTINCT ${columnName}
     FROM biai.${tableName}
-    WHERE ${columnName} IS NOT NULL AND ${columnName} != ''
+    WHERE ${whereCondition}
     LIMIT 100
   `
 

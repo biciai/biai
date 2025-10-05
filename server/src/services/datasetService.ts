@@ -139,6 +139,9 @@ export class DatasetService {
         parsedData.rowCount
       )
 
+      // Use user-provided priority if available, otherwise use calculated priority
+      const finalPriority = col.userPriority !== undefined ? col.userPriority : analysis.display_priority
+
       columnValues.push({
         dataset_id: datasetId,
         table_id: tableId,
@@ -146,14 +149,17 @@ export class DatasetService {
         column_type: col.type,
         column_index: col.index,
         is_nullable: col.nullable,
-        description: '',
+        display_name: col.displayName || '',
+        description: col.description || '',
+        user_data_type: col.userDataType || '',
+        user_priority: col.userPriority !== undefined ? col.userPriority : null,
         display_type: analysis.display_type,
         unique_value_count: analysis.unique_value_count,
         null_count: analysis.null_count,
         min_value: analysis.min_value,
         max_value: analysis.max_value,
         suggested_chart: analysis.suggested_chart,
-        display_priority: analysis.display_priority,
+        display_priority: finalPriority,
         is_hidden: analysis.is_hidden
       })
     }
@@ -336,6 +342,90 @@ export class DatasetService {
     })
 
     return await result.json()
+  }
+
+  async getTableColumns(datasetId: string, tableId: string): Promise<any[]> {
+    const result = await clickhouseClient.query({
+      query: `
+        SELECT
+          column_name,
+          column_type,
+          column_index,
+          is_nullable,
+          display_name,
+          description,
+          user_data_type,
+          user_priority,
+          display_type,
+          unique_value_count,
+          null_count,
+          min_value,
+          max_value,
+          suggested_chart,
+          display_priority,
+          is_hidden
+        FROM biai.dataset_columns
+        WHERE dataset_id = {datasetId:String} AND table_id = {tableId:String}
+        ORDER BY column_index, created_at DESC
+        LIMIT 1 BY column_name
+      `,
+      query_params: { datasetId, tableId },
+      format: 'JSONEachRow'
+    })
+
+    return await result.json()
+  }
+
+  async updateColumnMetadata(
+    datasetId: string,
+    tableId: string,
+    columnName: string,
+    updates: { displayName?: string; description?: string; isHidden?: boolean; displayType?: string }
+  ): Promise<void> {
+    if (Object.keys(updates).length === 0) return
+
+    // Get the current row (latest version if there are duplicates)
+    const result = await clickhouseClient.query({
+      query: `
+        SELECT *
+        FROM biai.dataset_columns
+        WHERE dataset_id = {datasetId:String}
+          AND table_id = {tableId:String}
+          AND column_name = {columnName:String}
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      query_params: { datasetId, tableId, columnName },
+      format: 'JSONEachRow'
+    })
+
+    const rows = await result.json<any[]>()
+    if (rows.length === 0) throw new Error('Column not found')
+
+    const currentRow = rows[0]
+
+    // Apply updates - create a new row with updated timestamp
+    const updatedRow = {
+      ...currentRow,
+      display_name: updates.displayName !== undefined ? updates.displayName : currentRow.display_name,
+      description: updates.description !== undefined ? updates.description : currentRow.description,
+      is_hidden: updates.isHidden !== undefined ? updates.isHidden : currentRow.is_hidden,
+      display_type: updates.displayType !== undefined ? updates.displayType : currentRow.display_type,
+      created_at: Math.floor(Date.now() / 1000)  // New timestamp to mark this as the latest version
+    }
+
+    // Insert the updated row (old rows will remain but queries will get the latest)
+    await clickhouseClient.insert({
+      table: 'dataset_columns',
+      values: [updatedRow],
+      format: 'JSONEachRow'
+    })
+
+    // Clean up old versions asynchronously (non-blocking)
+    clickhouseClient.command({
+      query: 'ALTER TABLE biai.dataset_columns DELETE WHERE dataset_id = {datasetId:String} AND table_id = {tableId:String} AND column_name = {columnName:String} AND created_at < {timestamp:UInt32}',
+      query_params: { datasetId, tableId, columnName, timestamp: updatedRow.created_at }
+    }).catch(err => console.error('Cleanup error:', err))
   }
 
   async deleteDataset(datasetId: string): Promise<void> {
