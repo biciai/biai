@@ -217,6 +217,25 @@ async function uploadDatasetWithMetadata(datasetDir) {
         formData.append('relationships', JSON.stringify(relationships))
       }
 
+      // Add column metadata configuration if present
+      const columnMetadataConfig = {}
+      if (tableMeta.column_display_name_row !== undefined) {
+        columnMetadataConfig.displayNameRow = tableMeta.column_display_name_row
+      }
+      if (tableMeta.column_description_row !== undefined) {
+        columnMetadataConfig.descriptionRow = tableMeta.column_description_row
+      }
+      if (tableMeta.column_datatype_row !== undefined) {
+        columnMetadataConfig.dataTypeRow = tableMeta.column_datatype_row
+      }
+      if (tableMeta.column_priority_row !== undefined) {
+        columnMetadataConfig.priorityRow = tableMeta.column_priority_row
+      }
+
+      if (Object.keys(columnMetadataConfig).length > 0) {
+        formData.append('columnMetadataConfig', JSON.stringify(columnMetadataConfig))
+      }
+
       // Upload table
       const tableResponse = await axios.post(
         `${API_URL}/datasets/${datasetId}/tables`,

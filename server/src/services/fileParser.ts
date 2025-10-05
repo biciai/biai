@@ -70,7 +70,6 @@ export async function parseCSVFile(
     const rows: any[][] = []
     const allRows: any[][] = [] // Store all rows including metadata
     let headers: string[] = []
-    let headerRowIndex = skipRows
     let rowIndex = 0
 
     const parser = parse({
