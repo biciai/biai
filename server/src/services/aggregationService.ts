@@ -38,7 +38,114 @@ export interface ColumnAggregation {
   histogram?: HistogramBin[]
 }
 
+export interface Filter {
+  // Simple filter (leaf node)
+  column?: string
+  operator?: 'eq' | 'in' | 'gt' | 'lt' | 'gte' | 'lte' | 'between'
+  value?: any
+
+  // Logical operators (internal nodes)
+  and?: Filter[]
+  or?: Filter[]
+  not?: Filter
+}
+
 class AggregationService {
+  /**
+   * Build WHERE clause from filters (supports AND, OR, NOT)
+   */
+  private buildWhereClause(filters: Filter[] | Filter): string {
+    if (!filters) {
+      return ''
+    }
+
+    // Handle array of filters (legacy format)
+    if (Array.isArray(filters)) {
+      if (filters.length === 0) return ''
+      const filterTree: Filter = filters.length === 1 ? filters[0] : { and: filters }
+      const condition = this.buildFilterCondition(filterTree)
+      return condition ? `AND (${condition})` : ''
+    }
+
+    // Handle single filter object (new format)
+    const condition = this.buildFilterCondition(filters)
+    return condition ? `AND (${condition})` : ''
+  }
+
+  /**
+   * Recursively build filter condition from filter tree
+   */
+  private buildFilterCondition(filter: Filter): string {
+    // Handle logical operators
+    if (filter.and) {
+      const conditions = filter.and
+        .map(f => this.buildFilterCondition(f))
+        .filter(c => c !== '')
+      if (conditions.length === 0) return ''
+      if (conditions.length === 1) return conditions[0]
+      return `(${conditions.join(' AND ')})`
+    }
+
+    if (filter.or) {
+      const conditions = filter.or
+        .map(f => this.buildFilterCondition(f))
+        .filter(c => c !== '')
+      if (conditions.length === 0) return ''
+      if (conditions.length === 1) return conditions[0]
+      return `(${conditions.join(' OR ')})`
+    }
+
+    if (filter.not) {
+      const condition = this.buildFilterCondition(filter.not)
+      if (!condition) return ''
+      return `NOT (${condition})`
+    }
+
+    // Handle simple filter (leaf node)
+    if (!filter.column || !filter.operator) {
+      return ''
+    }
+
+    const col = filter.column
+
+    switch (filter.operator) {
+      case 'eq':
+        // Handle empty string case
+        if (filter.value === '(Empty)') {
+          return `${col} = ''`
+        }
+        return typeof filter.value === 'string'
+          ? `${col} = '${filter.value.replace(/'/g, "''")}'`
+          : `${col} = ${filter.value}`
+
+      case 'in':
+        const values = Array.isArray(filter.value) ? filter.value : [filter.value]
+        const inValues = values.map(v => {
+          if (v === '(Empty)') return "''"
+          return typeof v === 'string' ? `'${v.replace(/'/g, "''")}'` : v
+        }).join(', ')
+        return `${col} IN (${inValues})`
+
+      case 'gt':
+        return `${col} > ${filter.value}`
+
+      case 'lt':
+        return `${col} < ${filter.value}`
+
+      case 'gte':
+        return `${col} >= ${filter.value}`
+
+      case 'lte':
+        return `${col} <= ${filter.value}`
+
+      case 'between':
+        return `${col} BETWEEN ${filter.value[0]} AND ${filter.value[1]}`
+
+      default:
+        return ''
+    }
+  }
+
   /**
    * Get aggregated data for a column based on its display type
    */
@@ -46,7 +153,8 @@ class AggregationService {
     datasetId: string,
     tableId: string,
     columnName: string,
-    displayType: string
+    displayType: string,
+    filters: Filter[] | Filter = []
   ): Promise<ColumnAggregation> {
     // Get the ClickHouse table name
     const tableResult = await clickhouseClient.query({
@@ -68,6 +176,24 @@ class AggregationService {
 
     const clickhouseTableName = tables[0].clickhouse_table_name
     const totalRows = tables[0].row_count
+    const whereClause = this.buildWhereClause(filters)
+
+    // Get filtered row count if filters are applied
+    let filteredTotalRows = totalRows
+    const hasFilters = Array.isArray(filters) ? filters.length > 0 : (filters && Object.keys(filters).length > 0)
+    if (hasFilters && whereClause) {
+      const countQuery = `
+        SELECT count() AS filtered_count
+        FROM biai.${clickhouseTableName}
+        WHERE 1=1 ${whereClause}
+      `
+      const countResult = await clickhouseClient.query({
+        query: countQuery,
+        format: 'JSONEachRow'
+      })
+      const countData = await countResult.json<any[]>()
+      filteredTotalRows = countData[0].filtered_count
+    }
 
     // Get basic stats (null count, unique count)
     const basicStatsQuery = `
@@ -75,6 +201,7 @@ class AggregationService {
         countIf(isNull(${columnName})) AS null_count,
         uniqExact(${columnName}) AS unique_count
       FROM biai.${clickhouseTableName}
+      WHERE 1=1 ${whereClause}
     `
 
     const basicStatsResult = await clickhouseClient.query({
@@ -88,7 +215,7 @@ class AggregationService {
     const aggregation: ColumnAggregation = {
       column_name: columnName,
       display_type: displayType,
-      total_rows: totalRows,
+      total_rows: filteredTotalRows,
       null_count,
       unique_count
     }
@@ -98,16 +225,21 @@ class AggregationService {
       aggregation.categories = await this.getCategoricalAggregation(
         clickhouseTableName,
         columnName,
-        totalRows
+        filteredTotalRows,
+        50,
+        whereClause
       )
     } else if (displayType === 'numeric') {
       aggregation.numeric_stats = await this.getNumericStats(
         clickhouseTableName,
-        columnName
+        columnName,
+        whereClause
       )
       aggregation.histogram = await this.getHistogram(
         clickhouseTableName,
-        columnName
+        columnName,
+        20,
+        whereClause
       )
     }
 
@@ -121,7 +253,8 @@ class AggregationService {
     tableName: string,
     columnName: string,
     totalRows: number,
-    limit: number = 50
+    limit: number = 50,
+    whereClause: string = ''
   ): Promise<CategoryCount[]> {
     const query = `
       SELECT
@@ -130,6 +263,7 @@ class AggregationService {
         count() * 100.0 / ${totalRows} AS percentage
       FROM biai.${tableName}
       WHERE ${columnName} IS NOT NULL
+        ${whereClause}
       GROUP BY ${columnName}
       ORDER BY count DESC
       LIMIT ${limit}
@@ -148,7 +282,8 @@ class AggregationService {
    */
   private async getNumericStats(
     tableName: string,
-    columnName: string
+    columnName: string,
+    whereClause: string = ''
   ): Promise<NumericStats> {
     const query = `
       SELECT
@@ -161,6 +296,7 @@ class AggregationService {
         quantile(0.75)(${columnName}) AS q75
       FROM biai.${tableName}
       WHERE ${columnName} IS NOT NULL
+        ${whereClause}
     `
 
     const result = await clickhouseClient.query({
@@ -178,7 +314,8 @@ class AggregationService {
   private async getHistogram(
     tableName: string,
     columnName: string,
-    bins: number = 20
+    bins: number = 20,
+    whereClause: string = ''
   ): Promise<HistogramBin[]> {
     // First get min and max to calculate bin width
     const minMaxQuery = `
@@ -188,6 +325,7 @@ class AggregationService {
         count() AS total_count
       FROM biai.${tableName}
       WHERE ${columnName} IS NOT NULL
+        ${whereClause}
     `
 
     const minMaxResult = await clickhouseClient.query({
@@ -220,6 +358,7 @@ class AggregationService {
         count() * 100.0 / ${total_count} AS percentage
       FROM biai.${tableName}
       WHERE ${columnName} IS NOT NULL
+        ${whereClause}
       GROUP BY bin_index, bin_start, bin_end
       ORDER BY bin_index
     `
@@ -243,7 +382,8 @@ class AggregationService {
    */
   async getTableAggregations(
     datasetId: string,
-    tableId: string
+    tableId: string,
+    filters: Filter[] | Filter = []
   ): Promise<ColumnAggregation[]> {
     // Get column metadata
     const columnsResult = await clickhouseClient.query({
@@ -271,7 +411,8 @@ class AggregationService {
           datasetId,
           tableId,
           col.column_name,
-          col.display_type
+          col.display_type,
+          filters
         )
       )
     )
