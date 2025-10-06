@@ -193,6 +193,29 @@ function DatasetExplorer() {
     return filters.some(f => f.column === column && f.operator === 'eq' && f.value === value)
   }
 
+  const toggleRangeFilter = (column: string, binStart: number, binEnd: number) => {
+    // Check if this exact range filter exists
+    const existingFilterIndex = filters.findIndex(
+      f => f.column === column && f.operator === 'between' &&
+           Array.isArray(f.value) && f.value[0] === binStart && f.value[1] === binEnd
+    )
+
+    if (existingFilterIndex >= 0) {
+      // Remove the filter
+      setFilters(filters.filter((_, i) => i !== existingFilterIndex))
+    } else {
+      // Add the filter
+      setFilters([...filters, { column, operator: 'between', value: [binStart, binEnd] }])
+    }
+  }
+
+  const isRangeFiltered = (column: string, binStart: number, binEnd: number): boolean => {
+    return filters.some(
+      f => f.column === column && f.operator === 'between' &&
+           Array.isArray(f.value) && f.value[0] === binStart && f.value[1] === binEnd
+    )
+  }
+
   const renderPieChart = (title: string, tableName: string, field: string) => {
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
@@ -246,11 +269,13 @@ function DatasetExplorer() {
             margin: { t: 0, b: 0, l: 0, r: 0 },
             showlegend: false,
             paper_bgcolor: 'transparent',
-            plot_bgcolor: 'transparent'
+            plot_bgcolor: 'transparent',
+            dragmode: false
           }}
           config={{
             displayModeBar: false,
-            responsive: true
+            responsive: true,
+            staticPlot: false
           }}
           style={{ width: '100%', height: '300px', cursor: 'pointer' }}
           onClick={(data) => {
@@ -270,6 +295,7 @@ function DatasetExplorer() {
 
     const labels = aggregation.categories.map(c => String(c.value))
     const values = aggregation.categories.map(c => c.count)
+    const originalValues = aggregation.categories.map(c => c.value)
 
     const metadata = getColumnMetadata(tableName, field)
 
@@ -317,17 +343,34 @@ function DatasetExplorer() {
             xaxis: { tickangle: -45, automargin: true },
             yaxis: { title: 'Count', automargin: true },
             paper_bgcolor: 'transparent',
-            plot_bgcolor: 'transparent'
+            plot_bgcolor: 'transparent',
+            dragmode: 'select',
+            selectdirection: 'h'
           }}
           config={{
             displayModeBar: false,
-            responsive: true
+            responsive: true,
+            staticPlot: false,
+            scrollZoom: false
           }}
           style={{ width: '100%', height: '300px', cursor: 'pointer' }}
           onClick={(data) => {
             if (data.points && data.points.length > 0) {
-              const clickedValue = data.points[0].x
+              const pointIndex = data.points[0].pointIndex
+              const clickedValue = originalValues[pointIndex]
               toggleFilter(field, clickedValue)
+            }
+          }}
+          onSelected={(data) => {
+            if (data && data.points && data.points.length > 0) {
+              // Get all selected values
+              const selectedValues = data.points.map(p => originalValues[p.pointIndex])
+              // Clear existing filters for this column
+              setFilters(filters.filter(f => f.column !== field))
+              // Add IN filter with selected values
+              if (selectedValues.length > 0) {
+                setFilters(prev => [...prev.filter(f => f.column !== field), { column: field, operator: 'in', value: selectedValues }])
+              }
             }
           }}
         />
@@ -370,7 +413,19 @@ function DatasetExplorer() {
             x: xValues,
             y: yValues,
             width: binWidth * 0.9,
-            marker: { color: '#4CAF50' },
+            marker: {
+              color: aggregation.histogram.map(bin =>
+                isRangeFiltered(field, bin.bin_start, bin.bin_end) ? '#2E7D32' : '#4CAF50'
+              ),
+              line: {
+                color: aggregation.histogram.map(bin =>
+                  isRangeFiltered(field, bin.bin_start, bin.bin_end) ? '#000' : undefined
+                ),
+                width: aggregation.histogram.map(bin =>
+                  isRangeFiltered(field, bin.bin_start, bin.bin_end) ? 2 : 0
+                )
+              }
+            },
             hovertemplate: 'Range: [%{customdata[0]:.2f}, %{customdata[1]:.2f}]<br>Count: %{y}<extra></extra>',
             customdata: aggregation.histogram.map(bin => [bin.bin_start, bin.bin_end])
           }]}
@@ -381,13 +436,33 @@ function DatasetExplorer() {
             yaxis: { title: 'Count', automargin: true },
             paper_bgcolor: 'transparent',
             plot_bgcolor: 'transparent',
-            bargap: 0.1
+            bargap: 0.1,
+            dragmode: 'select',
+            selectdirection: 'h'
           }}
           config={{
             displayModeBar: false,
-            responsive: true
+            responsive: true,
+            staticPlot: false,
+            scrollZoom: false
           }}
-          style={{ width: '100%', height: '300px' }}
+          style={{ width: '100%', height: '300px', cursor: 'pointer' }}
+          onClick={(data) => {
+            if (data.points && data.points.length > 0) {
+              const pointIndex = data.points[0].pointIndex
+              const bin = aggregation.histogram[pointIndex]
+              toggleRangeFilter(field, bin.bin_start, bin.bin_end)
+            }
+          }}
+          onSelected={(data) => {
+            if (data && data.range && data.range.x) {
+              const [minX, maxX] = data.range.x
+              // Clear existing filters for this column
+              setFilters(filters.filter(f => f.column !== field))
+              // Add BETWEEN filter with selected range
+              setFilters(prev => [...prev.filter(f => f.column !== field), { column: field, operator: 'between', value: [minX, maxX] }])
+            }
+          }}
         />
       </div>
     )
@@ -446,37 +521,50 @@ function DatasetExplorer() {
             </button>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-            {filters.map((filter, idx) => (
-              <div
-                key={idx}
-                style={{
-                  background: 'white',
-                  padding: '0.25rem 0.75rem',
-                  borderRadius: '4px',
-                  fontSize: '0.875rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  border: '1px solid #2196F3'
-                }}
-              >
-                <span><strong>{filter.column}:</strong> {String(filter.value)}</span>
-                <button
-                  onClick={() => toggleFilter(filter.column!, filter.value)}
+            {filters.map((filter, idx) => {
+              let displayValue = String(filter.value)
+              let removeHandler = () => setFilters(filters.filter((_, i) => i !== idx))
+
+              if (filter.operator === 'between' && Array.isArray(filter.value)) {
+                displayValue = `[${typeof filter.value[0] === 'number' ? filter.value[0].toFixed(2) : filter.value[0]}, ${typeof filter.value[1] === 'number' ? filter.value[1].toFixed(2) : filter.value[1]}]`
+              } else if (filter.operator === 'in' && Array.isArray(filter.value)) {
+                displayValue = `{${filter.value.slice(0, 3).join(', ')}${filter.value.length > 3 ? '...' : ''}}`
+              } else if (filter.operator === 'eq') {
+                displayValue = String(filter.value)
+              }
+
+              return (
+                <div
+                  key={idx}
                   style={{
-                    background: 'none',
-                    border: 'none',
-                    color: '#666',
-                    cursor: 'pointer',
-                    padding: '0',
-                    fontSize: '1rem',
-                    lineHeight: '1'
+                    background: 'white',
+                    padding: '0.25rem 0.75rem',
+                    borderRadius: '4px',
+                    fontSize: '0.875rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    border: '1px solid #2196F3'
                   }}
                 >
-                  ×
-                </button>
-              </div>
-            ))}
+                  <span><strong>{filter.column}:</strong> {displayValue}</span>
+                  <button
+                    onClick={removeHandler}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#666',
+                      cursor: 'pointer',
+                      padding: '0',
+                      fontSize: '1rem',
+                      lineHeight: '1'
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
