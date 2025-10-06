@@ -2,6 +2,7 @@ import express from 'express'
 import multer from 'multer'
 import { parseCSVFile } from '../services/fileParser.js'
 import datasetService from '../services/datasetService.js'
+import aggregationService from '../services/aggregationService.js'
 import { unlink } from 'fs/promises'
 
 const router = express.Router()
@@ -289,6 +290,48 @@ router.delete('/:id/tables/:tableId', async (req, res) => {
   } catch (error: any) {
     console.error('Delete table error:', error)
     res.status(500).json({ error: 'Failed to delete table', message: error.message })
+  }
+})
+
+// Get aggregated data for all columns in a table
+router.get('/:id/tables/:tableId/aggregations', async (req, res) => {
+  try {
+    const aggregations = await aggregationService.getTableAggregations(
+      req.params.id,
+      req.params.tableId
+    )
+
+    return res.json({
+      aggregations
+    })
+  } catch (error: any) {
+    console.error('Get table aggregations error:', error)
+    return res.status(500).json({ error: 'Failed to get table aggregations', message: error.message })
+  }
+})
+
+// Get aggregated data for a specific column
+router.get('/:id/tables/:tableId/columns/:columnName/aggregation', async (req, res) => {
+  try {
+    const { displayType } = req.query
+
+    if (!displayType) {
+      return res.status(400).json({ error: 'displayType query parameter is required' })
+    }
+
+    const aggregation = await aggregationService.getColumnAggregation(
+      req.params.id,
+      req.params.tableId,
+      req.params.columnName,
+      displayType as string
+    )
+
+    return res.json({
+      aggregation
+    })
+  } catch (error: any) {
+    console.error('Get column aggregation error:', error)
+    return res.status(500).json({ error: 'Failed to get column aggregation', message: error.message })
   }
 })
 
