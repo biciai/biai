@@ -62,6 +62,15 @@ interface ColumnAggregation {
   histogram?: HistogramBin[]
 }
 
+interface Filter {
+  column?: string
+  operator?: 'eq' | 'in' | 'gt' | 'lt' | 'gte' | 'lte' | 'between'
+  value?: any
+  and?: Filter[]
+  or?: Filter[]
+  not?: Filter
+}
+
 interface Table {
   id: string
   name: string
@@ -86,11 +95,26 @@ function DatasetExplorer() {
   const [loading, setLoading] = useState(true)
   const [columnMetadata, setColumnMetadata] = useState<Record<string, ColumnMetadata[]>>({})
   const [aggregations, setAggregations] = useState<Record<string, ColumnAggregation[]>>({})
+  const [filters, setFilters] = useState<Filter[]>([])
 
 
   useEffect(() => {
     loadDataset()
   }, [id])
+
+  useEffect(() => {
+    // Reload aggregations when filters change
+    if (dataset) {
+      reloadAggregations()
+    }
+  }, [filters])
+
+  const reloadAggregations = async () => {
+    if (!dataset) return
+    for (const table of dataset.tables) {
+      await loadTableAggregations(table.id, table.name)
+    }
+  }
 
   const loadDataset = async () => {
     try {
@@ -112,7 +136,8 @@ function DatasetExplorer() {
 
   const loadTableAggregations = async (tableId: string, tableName: string) => {
     try {
-      const response = await api.get(`/datasets/${id}/tables/${tableId}/aggregations`)
+      const params = filters.length > 0 ? { filters: JSON.stringify(filters) } : {}
+      const response = await api.get(`/datasets/${id}/tables/${tableId}/aggregations`, { params })
       setAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
     } catch (error) {
       console.error('Failed to load table aggregations:', error)
@@ -143,6 +168,29 @@ function DatasetExplorer() {
   const getDisplayTitle = (tableName: string, columnName: string): string => {
     const metadata = getColumnMetadata(tableName, columnName)
     return metadata?.display_name || columnName.replace(/_/g, ' ')
+  }
+
+  const toggleFilter = (column: string, value: string | number) => {
+    // Check if this exact filter exists
+    const existingFilterIndex = filters.findIndex(
+      f => f.column === column && f.operator === 'eq' && f.value === value
+    )
+
+    if (existingFilterIndex >= 0) {
+      // Remove the filter
+      setFilters(filters.filter((_, i) => i !== existingFilterIndex))
+    } else {
+      // Add the filter
+      setFilters([...filters, { column, operator: 'eq', value }])
+    }
+  }
+
+  const clearFilters = () => {
+    setFilters([])
+  }
+
+  const isValueFiltered = (column: string, value: string | number): boolean => {
+    return filters.some(f => f.column === column && f.operator === 'eq' && f.value === value)
   }
 
   const renderPieChart = (title: string, tableName: string, field: string) => {
@@ -178,7 +226,17 @@ function DatasetExplorer() {
             labels,
             values,
             marker: {
-              colors: ['#2196F3', '#4CAF50', '#FF9800', '#F44336', '#9C27B0', '#00BCD4', '#FFEB3B', '#795548']
+              colors: labels.map(label =>
+                isValueFiltered(field, label) ? '#1976D2' : undefined
+              ),
+              line: {
+                color: labels.map(label =>
+                  isValueFiltered(field, label) ? '#000' : undefined
+                ),
+                width: labels.map(label =>
+                  isValueFiltered(field, label) ? 2 : 0
+                )
+              }
             },
             textinfo: 'label+percent',
             hovertemplate: '%{label}<br>Count: %{value}<br>%{percent}<extra></extra>'
@@ -194,7 +252,13 @@ function DatasetExplorer() {
             displayModeBar: false,
             responsive: true
           }}
-          style={{ width: '100%', height: '300px' }}
+          style={{ width: '100%', height: '300px', cursor: 'pointer' }}
+          onClick={(data) => {
+            if (data.points && data.points.length > 0) {
+              const clickedValue = data.points[0].label
+              toggleFilter(field, clickedValue)
+            }
+          }}
         />
       </div>
     )
@@ -232,7 +296,19 @@ function DatasetExplorer() {
             type: 'bar',
             x: labels,
             y: values,
-            marker: { color: '#2196F3' },
+            marker: {
+              color: labels.map(label =>
+                isValueFiltered(field, label) ? '#1976D2' : '#2196F3'
+              ),
+              line: {
+                color: labels.map(label =>
+                  isValueFiltered(field, label) ? '#000' : undefined
+                ),
+                width: labels.map(label =>
+                  isValueFiltered(field, label) ? 2 : 0
+                )
+              }
+            },
             hovertemplate: '%{x}<br>Count: %{y}<extra></extra>'
           }]}
           layout={{
@@ -247,7 +323,13 @@ function DatasetExplorer() {
             displayModeBar: false,
             responsive: true
           }}
-          style={{ width: '100%', height: '300px' }}
+          style={{ width: '100%', height: '300px', cursor: 'pointer' }}
+          onClick={(data) => {
+            if (data.points && data.points.length > 0) {
+              const clickedValue = data.points[0].x
+              toggleFilter(field, clickedValue)
+            }
+          }}
         />
       </div>
     )
@@ -336,6 +418,68 @@ function DatasetExplorer() {
       >
         ← Back to Dataset
       </button>
+
+      {/* Active Filters */}
+      {filters.length > 0 && (
+        <div style={{
+          marginBottom: '1rem',
+          background: '#E3F2FD',
+          padding: '1rem',
+          borderRadius: '8px',
+          border: '1px solid #2196F3'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+            <strong style={{ fontSize: '0.875rem' }}>Active Filters:</strong>
+            <button
+              onClick={clearFilters}
+              style={{
+                padding: '0.25rem 0.75rem',
+                background: '#f44336',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '0.75rem'
+              }}
+            >
+              Clear All
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            {filters.map((filter, idx) => (
+              <div
+                key={idx}
+                style={{
+                  background: 'white',
+                  padding: '0.25rem 0.75rem',
+                  borderRadius: '4px',
+                  fontSize: '0.875rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  border: '1px solid #2196F3'
+                }}
+              >
+                <span><strong>{filter.column}:</strong> {String(filter.value)}</span>
+                <button
+                  onClick={() => toggleFilter(filter.column!, filter.value)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#666',
+                    cursor: 'pointer',
+                    padding: '0',
+                    fontSize: '1rem',
+                    lineHeight: '1'
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div style={{ marginBottom: '2rem', background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
