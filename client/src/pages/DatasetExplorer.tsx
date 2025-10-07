@@ -235,24 +235,38 @@ function DatasetExplorer() {
 
     const metadata = getColumnMetadata(tableName, field)
 
+    const tooltipText = [
+      metadata?.display_name || title,
+      `ID: ${field}`,
+      metadata?.description || ''
+    ].filter(Boolean).join('\n')
+
     return (
       <div style={{
         background: 'white',
-        padding: '1rem',
+        padding: '0.5rem',
         borderRadius: '8px',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+        width: '175px',
+        height: '175px',
+        boxSizing: 'border-box',
+        flexShrink: 0
       }}>
         <h4
-          style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', fontWeight: 600, cursor: metadata?.description ? 'help' : 'default' }}
-          title={metadata?.description || ''}
+          style={{
+            margin: '0 0 0.25rem 0',
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            cursor: 'help',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            height: '1rem'
+          }}
+          title={tooltipText}
         >
-          {title}
+          {metadata?.display_name || title}
         </h4>
-        {metadata?.description && (
-          <div style={{ fontSize: '0.75rem', color: '#666', marginBottom: '0.5rem', fontStyle: 'italic' }}>
-            {metadata.description}
-          </div>
-        )}
         <Plot
           data={[{
             type: 'pie',
@@ -272,11 +286,12 @@ function DatasetExplorer() {
               }
             },
             textinfo: 'label+percent',
+            textfont: { size: 9 },
             hovertemplate: '%{label}<br>Count: %{value}<br>%{percent}<extra></extra>'
           }]}
           layout={{
-            height: 300,
-            margin: { t: 0, b: 0, l: 0, r: 0 },
+            height: 135,
+            margin: { t: 5, b: 5, l: 5, r: 5 },
             showlegend: false,
             paper_bgcolor: 'transparent',
             plot_bgcolor: 'transparent',
@@ -287,7 +302,7 @@ function DatasetExplorer() {
             responsive: true,
             staticPlot: false
           }}
-          style={{ width: '100%', height: '300px', cursor: 'pointer' }}
+          style={{ width: '165px', height: '135px', cursor: 'pointer' }}
           onClick={(data) => {
             if (data?.points?.[0]) {
               const point = data.points[0]
@@ -318,24 +333,38 @@ function DatasetExplorer() {
 
     const metadata = getColumnMetadata(tableName, field)
 
+    const tooltipText = [
+      metadata?.display_name || title,
+      `ID: ${field}`,
+      metadata?.description || ''
+    ].filter(Boolean).join('\n')
+
     return (
       <div style={{
         background: 'white',
-        padding: '1rem',
+        padding: '0.5rem',
         borderRadius: '8px',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+        width: '358px',
+        height: '175px',
+        boxSizing: 'border-box',
+        flexShrink: 0
       }}>
         <h4
-          style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', fontWeight: 600, cursor: metadata?.description ? 'help' : 'default' }}
-          title={metadata?.description || ''}
+          style={{
+            margin: '0 0 0.25rem 0',
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            cursor: 'help',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            height: '1rem'
+          }}
+          title={tooltipText}
         >
-          {title}
+          {metadata?.display_name || title}
         </h4>
-        {metadata?.description && (
-          <div style={{ fontSize: '0.75rem', color: '#666', marginBottom: '0.5rem', fontStyle: 'italic' }}>
-            {metadata.description}
-          </div>
-        )}
         <Plot
           data={[{
             type: 'bar',
@@ -357,10 +386,10 @@ function DatasetExplorer() {
             hovertemplate: '%{x}<br>Count: %{y}<extra></extra>'
           }]}
           layout={{
-            height: 300,
-            margin: { t: 10, b: 80, l: 40, r: 10 },
-            xaxis: { tickangle: -45, automargin: true },
-            yaxis: { title: 'Count', automargin: true },
+            height: 135,
+            margin: { t: 5, b: 40, l: 30, r: 5 },
+            xaxis: { tickangle: -45, automargin: true, tickfont: { size: 9 } },
+            yaxis: { title: 'Count', automargin: true, tickfont: { size: 9 }, titlefont: { size: 10 } },
             paper_bgcolor: 'transparent',
             plot_bgcolor: 'transparent',
             dragmode: 'select',
@@ -372,7 +401,7 @@ function DatasetExplorer() {
             staticPlot: false,
             scrollZoom: false
           }}
-          style={{ width: '100%', height: '300px', cursor: 'pointer' }}
+          style={{ width: '348px', height: '135px', cursor: 'pointer' }}
           onClick={(data) => {
             if (data?.points?.[0]) {
               const pointIndex = data.points[0].pointIndex
@@ -406,29 +435,51 @@ function DatasetExplorer() {
 
     const metadata = getColumnMetadata(tableName, field)
 
+    const statsText = [
+      `Mean: ${aggregation.numeric_stats.mean !== null ? aggregation.numeric_stats.mean.toFixed(2) : 'N/A'}`,
+      `Median: ${aggregation.numeric_stats.median !== null ? aggregation.numeric_stats.median.toFixed(2) : 'N/A'}`,
+      `Range: [${aggregation.numeric_stats.min !== null ? aggregation.numeric_stats.min.toFixed(2) : 'N/A'}, ${aggregation.numeric_stats.max !== null ? aggregation.numeric_stats.max.toFixed(2) : 'N/A'}]`
+    ].join(' | ')
+
+    const tooltipText = [
+      metadata?.display_name || title,
+      `ID: ${field}`,
+      metadata?.description || '',
+      '',
+      statsText
+    ].filter(Boolean).join('\n')
+
     // Convert histogram bins to bar chart data
     const xValues = aggregation.histogram.map(bin => (bin.bin_start + bin.bin_end) / 2)
     const yValues = aggregation.histogram.map(bin => bin.count)
     const binWidth = aggregation.histogram[0] ? aggregation.histogram[0].bin_end - aggregation.histogram[0].bin_start : 1
 
     return (
-      <div style={{ background: 'white', padding: '1rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+      <div style={{
+        background: 'white',
+        padding: '0.5rem',
+        borderRadius: '8px',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+        width: '358px',
+        height: '175px',
+        boxSizing: 'border-box',
+        flexShrink: 0
+      }}>
         <h4
-          style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', fontWeight: 600, cursor: metadata?.description ? 'help' : 'default' }}
-          title={metadata?.description || ''}
+          style={{
+            margin: '0 0 0.25rem 0',
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            cursor: 'help',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            height: '1rem'
+          }}
+          title={tooltipText}
         >
-          {title}
+          {metadata?.display_name || title}
         </h4>
-        {metadata?.description && (
-          <div style={{ fontSize: '0.75rem', color: '#666', marginBottom: '0.5rem', fontStyle: 'italic' }}>
-            {metadata.description}
-          </div>
-        )}
-        <div style={{ fontSize: '0.75rem', color: '#666', marginBottom: '0.5rem' }}>
-          Mean: {aggregation.numeric_stats.mean !== null ? aggregation.numeric_stats.mean.toFixed(2) : 'N/A'} |
-          Median: {aggregation.numeric_stats.median !== null ? aggregation.numeric_stats.median.toFixed(2) : 'N/A'} |
-          Range: [{aggregation.numeric_stats.min !== null ? aggregation.numeric_stats.min.toFixed(2) : 'N/A'}, {aggregation.numeric_stats.max !== null ? aggregation.numeric_stats.max.toFixed(2) : 'N/A'}]
-        </div>
         <Plot
           data={[{
             type: 'bar',
@@ -452,10 +503,10 @@ function DatasetExplorer() {
             customdata: aggregation.histogram.map(bin => [bin.bin_start, bin.bin_end])
           }]}
           layout={{
-            height: 300,
-            margin: { t: 10, b: 40, l: 40, r: 10 },
-            xaxis: { title: field, automargin: true },
-            yaxis: { title: 'Count', automargin: true },
+            height: 135,
+            margin: { t: 5, b: 30, l: 30, r: 5 },
+            xaxis: { title: field, automargin: true, tickfont: { size: 9 }, titlefont: { size: 10 } },
+            yaxis: { title: 'Count', automargin: true, tickfont: { size: 9 }, titlefont: { size: 10 } },
             paper_bgcolor: 'transparent',
             plot_bgcolor: 'transparent',
             bargap: 0.1,
@@ -468,7 +519,7 @@ function DatasetExplorer() {
             staticPlot: false,
             scrollZoom: false
           }}
-          style={{ width: '100%', height: '300px', cursor: 'pointer' }}
+          style={{ width: '348px', height: '135px', cursor: 'pointer' }}
           onClick={(data) => {
             if (data?.points?.[0] && aggregation.histogram) {
               const pointIndex = data.points[0].pointIndex
@@ -617,9 +668,9 @@ function DatasetExplorer() {
 
       {/* Chart Grid */}
       <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))',
-        gap: '1rem',
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '0.5rem',
         marginBottom: '2rem'
       }}>
         {/* Render charts based on aggregations */}
