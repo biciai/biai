@@ -62,6 +62,15 @@ interface ColumnAggregation {
   histogram?: HistogramBin[]
 }
 
+interface Filter {
+  column?: string
+  operator?: 'eq' | 'in' | 'gt' | 'lt' | 'gte' | 'lte' | 'between'
+  value?: any
+  and?: Filter[]
+  or?: Filter[]
+  not?: Filter
+}
+
 interface Table {
   id: string
   name: string
@@ -86,11 +95,26 @@ function DatasetExplorer() {
   const [loading, setLoading] = useState(true)
   const [columnMetadata, setColumnMetadata] = useState<Record<string, ColumnMetadata[]>>({})
   const [aggregations, setAggregations] = useState<Record<string, ColumnAggregation[]>>({})
+  const [filters, setFilters] = useState<Filter[]>([])
 
 
   useEffect(() => {
     loadDataset()
   }, [id])
+
+  useEffect(() => {
+    // Reload aggregations when filters change
+    if (dataset) {
+      reloadAggregations()
+    }
+  }, [filters])
+
+  const reloadAggregations = async () => {
+    if (!dataset) return
+    for (const table of dataset.tables) {
+      await loadTableAggregations(table.id, table.name)
+    }
+  }
 
   const loadDataset = async () => {
     try {
@@ -112,7 +136,8 @@ function DatasetExplorer() {
 
   const loadTableAggregations = async (tableId: string, tableName: string) => {
     try {
-      const response = await api.get(`/datasets/${id}/tables/${tableId}/aggregations`)
+      const params = filters.length > 0 ? { filters: JSON.stringify(filters) } : {}
+      const response = await api.get(`/datasets/${id}/tables/${tableId}/aggregations`, { params })
       setAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
     } catch (error) {
       console.error('Failed to load table aggregations:', error)
@@ -145,56 +170,150 @@ function DatasetExplorer() {
     return metadata?.display_name || columnName.replace(/_/g, ' ')
   }
 
+  const toggleFilter = (column: string, value: string | number) => {
+    // Backend returns "N/A" for empty strings/nulls, convert back
+    const filterValue = value === 'N/A' ? '' : value
+
+    // Check if this exact filter exists
+    const existingFilterIndex = filters.findIndex(
+      f => f.column === column && f.operator === 'eq' && f.value === filterValue
+    )
+
+    if (existingFilterIndex >= 0) {
+      // Remove the filter
+      setFilters(filters.filter((_, i) => i !== existingFilterIndex))
+    } else {
+      // Add the filter
+      setFilters([...filters, { column, operator: 'eq', value: filterValue }])
+    }
+  }
+
+  const clearFilters = () => {
+    setFilters([])
+  }
+
+  const isValueFiltered = (column: string, value: string | number): boolean => {
+    // Backend returns "N/A" for empty strings/nulls
+    const compareValue = value === 'N/A' ? '' : value
+    return filters.some(f => f.column === column && f.operator === 'eq' && f.value === compareValue)
+  }
+
+  const toggleRangeFilter = (column: string, binStart: number, binEnd: number) => {
+    // Check if this exact range filter exists
+    const existingFilterIndex = filters.findIndex(
+      f => f.column === column && f.operator === 'between' &&
+           Array.isArray(f.value) && f.value[0] === binStart && f.value[1] === binEnd
+    )
+
+    if (existingFilterIndex >= 0) {
+      // Remove the filter
+      setFilters(filters.filter((_, i) => i !== existingFilterIndex))
+    } else {
+      // Add the filter
+      setFilters([...filters, { column, operator: 'between', value: [binStart, binEnd] }])
+    }
+  }
+
+  const isRangeFiltered = (column: string, binStart: number, binEnd: number): boolean => {
+    return filters.some(
+      f => f.column === column && f.operator === 'between' &&
+           Array.isArray(f.value) && f.value[0] === binStart && f.value[1] === binEnd
+    )
+  }
+
   const renderPieChart = (title: string, tableName: string, field: string) => {
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
 
     const labels = aggregation.categories.map(c => String(c.value))
     const values = aggregation.categories.map(c => c.count)
+    // Backend returns "N/A" for both empty strings and nulls
+    // We'll convert N/A to empty string for filtering (more common case)
+    const originalValues = aggregation.categories.map(c =>
+      c.value === 'N/A' ? '' : c.value
+    )
 
     const metadata = getColumnMetadata(tableName, field)
+
+    const tooltipText = [
+      metadata?.display_name || title,
+      `ID: ${field}`,
+      metadata?.description || ''
+    ].filter(Boolean).join('\n')
 
     return (
       <div style={{
         background: 'white',
-        padding: '1rem',
+        padding: '0.5rem',
         borderRadius: '8px',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+        width: '175px',
+        height: '175px',
+        boxSizing: 'border-box',
+        flexShrink: 0
       }}>
         <h4
-          style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', fontWeight: 600, cursor: metadata?.description ? 'help' : 'default' }}
-          title={metadata?.description || ''}
+          style={{
+            margin: '0 0 0.25rem 0',
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            cursor: 'help',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            height: '1rem'
+          }}
+          title={tooltipText}
         >
-          {title}
+          {metadata?.display_name || title}
         </h4>
-        {metadata?.description && (
-          <div style={{ fontSize: '0.75rem', color: '#666', marginBottom: '0.5rem', fontStyle: 'italic' }}>
-            {metadata.description}
-          </div>
-        )}
         <Plot
           data={[{
             type: 'pie',
             labels,
             values,
             marker: {
-              colors: ['#2196F3', '#4CAF50', '#FF9800', '#F44336', '#9C27B0', '#00BCD4', '#FFEB3B', '#795548']
+              colors: originalValues.map(value =>
+                isValueFiltered(field, value) ? '#1976D2' : undefined
+              ),
+              line: {
+                color: originalValues.map(value =>
+                  isValueFiltered(field, value) ? '#000' : undefined
+                ),
+                width: originalValues.map(value =>
+                  isValueFiltered(field, value) ? 2 : 0
+                )
+              }
             },
             textinfo: 'label+percent',
+            textfont: { size: 9 },
             hovertemplate: '%{label}<br>Count: %{value}<br>%{percent}<extra></extra>'
           }]}
           layout={{
-            height: 300,
-            margin: { t: 0, b: 0, l: 0, r: 0 },
+            height: 135,
+            margin: { t: 5, b: 5, l: 5, r: 5 },
             showlegend: false,
             paper_bgcolor: 'transparent',
-            plot_bgcolor: 'transparent'
+            plot_bgcolor: 'transparent',
+            dragmode: false
           }}
           config={{
             displayModeBar: false,
-            responsive: true
+            responsive: true,
+            staticPlot: false
           }}
-          style={{ width: '100%', height: '300px' }}
+          style={{ width: '165px', height: '135px', cursor: 'pointer' }}
+          onClick={(data) => {
+            if (data?.points?.[0]) {
+              const point = data.points[0]
+              // Use pointNumber or pointIndex depending on what's available
+              const index = point.pointNumber !== undefined ? point.pointNumber : point.pointIndex
+              if (index !== undefined && index >= 0 && index < originalValues.length) {
+                const clickedValue = originalValues[index]
+                toggleFilter(field, clickedValue)
+              }
+            }
+          }}
         />
       </div>
     )
@@ -206,48 +325,105 @@ function DatasetExplorer() {
 
     const labels = aggregation.categories.map(c => String(c.value))
     const values = aggregation.categories.map(c => c.count)
+    // Backend returns "N/A" for both empty strings and nulls
+    // We'll convert N/A to empty string for filtering (more common case)
+    const originalValues = aggregation.categories.map(c =>
+      c.value === 'N/A' ? '' : c.value
+    )
 
     const metadata = getColumnMetadata(tableName, field)
+
+    const tooltipText = [
+      metadata?.display_name || title,
+      `ID: ${field}`,
+      metadata?.description || ''
+    ].filter(Boolean).join('\n')
 
     return (
       <div style={{
         background: 'white',
-        padding: '1rem',
+        padding: '0.5rem',
         borderRadius: '8px',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+        width: '358px',
+        height: '175px',
+        boxSizing: 'border-box',
+        flexShrink: 0
       }}>
         <h4
-          style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', fontWeight: 600, cursor: metadata?.description ? 'help' : 'default' }}
-          title={metadata?.description || ''}
+          style={{
+            margin: '0 0 0.25rem 0',
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            cursor: 'help',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            height: '1rem'
+          }}
+          title={tooltipText}
         >
-          {title}
+          {metadata?.display_name || title}
         </h4>
-        {metadata?.description && (
-          <div style={{ fontSize: '0.75rem', color: '#666', marginBottom: '0.5rem', fontStyle: 'italic' }}>
-            {metadata.description}
-          </div>
-        )}
         <Plot
           data={[{
             type: 'bar',
             x: labels,
             y: values,
-            marker: { color: '#2196F3' },
+            marker: {
+              color: originalValues.map(value =>
+                isValueFiltered(field, value) ? '#1976D2' : '#2196F3'
+              ),
+              line: {
+                color: originalValues.map(value =>
+                  isValueFiltered(field, value) ? '#000' : undefined
+                ),
+                width: originalValues.map(value =>
+                  isValueFiltered(field, value) ? 2 : 0
+                )
+              }
+            },
             hovertemplate: '%{x}<br>Count: %{y}<extra></extra>'
           }]}
           layout={{
-            height: 300,
-            margin: { t: 10, b: 80, l: 40, r: 10 },
-            xaxis: { tickangle: -45, automargin: true },
-            yaxis: { title: 'Count', automargin: true },
+            height: 135,
+            margin: { t: 5, b: 40, l: 30, r: 5 },
+            xaxis: { tickangle: -45, automargin: true, tickfont: { size: 9 } },
+            yaxis: { title: 'Count', automargin: true, tickfont: { size: 9 }, titlefont: { size: 10 } },
             paper_bgcolor: 'transparent',
-            plot_bgcolor: 'transparent'
+            plot_bgcolor: 'transparent',
+            dragmode: 'select',
+            selectdirection: 'h'
           }}
           config={{
             displayModeBar: false,
-            responsive: true
+            responsive: true,
+            staticPlot: false,
+            scrollZoom: false
           }}
-          style={{ width: '100%', height: '300px' }}
+          style={{ width: '348px', height: '135px', cursor: 'pointer' }}
+          onClick={(data) => {
+            if (data?.points?.[0]) {
+              const pointIndex = data.points[0].pointIndex
+              if (pointIndex !== undefined && pointIndex >= 0 && pointIndex < originalValues.length) {
+                const clickedValue = originalValues[pointIndex]
+                toggleFilter(field, clickedValue)
+              }
+            }
+          }}
+          onSelected={(data) => {
+            if (data?.points && data.points.length > 0) {
+              // Get all selected values
+              const selectedValues = data.points
+                .map(p => p.pointIndex)
+                .filter(idx => idx !== undefined && idx >= 0 && idx < originalValues.length)
+                .map(idx => originalValues[idx])
+              // Add IN filter with selected values
+              if (selectedValues.length > 0) {
+                setFilters(prev => [...prev.filter(f => f.column !== field), { column: field, operator: 'in', value: selectedValues }])
+              }
+            }
+          }}
         />
       </div>
     )
@@ -259,53 +435,107 @@ function DatasetExplorer() {
 
     const metadata = getColumnMetadata(tableName, field)
 
+    const statsText = [
+      `Mean: ${aggregation.numeric_stats.mean !== null ? aggregation.numeric_stats.mean.toFixed(2) : 'N/A'}`,
+      `Median: ${aggregation.numeric_stats.median !== null ? aggregation.numeric_stats.median.toFixed(2) : 'N/A'}`,
+      `Range: [${aggregation.numeric_stats.min !== null ? aggregation.numeric_stats.min.toFixed(2) : 'N/A'}, ${aggregation.numeric_stats.max !== null ? aggregation.numeric_stats.max.toFixed(2) : 'N/A'}]`
+    ].join(' | ')
+
+    const tooltipText = [
+      metadata?.display_name || title,
+      `ID: ${field}`,
+      metadata?.description || '',
+      '',
+      statsText
+    ].filter(Boolean).join('\n')
+
     // Convert histogram bins to bar chart data
     const xValues = aggregation.histogram.map(bin => (bin.bin_start + bin.bin_end) / 2)
     const yValues = aggregation.histogram.map(bin => bin.count)
     const binWidth = aggregation.histogram[0] ? aggregation.histogram[0].bin_end - aggregation.histogram[0].bin_start : 1
 
     return (
-      <div style={{ background: 'white', padding: '1rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+      <div style={{
+        background: 'white',
+        padding: '0.5rem',
+        borderRadius: '8px',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+        width: '358px',
+        height: '175px',
+        boxSizing: 'border-box',
+        flexShrink: 0
+      }}>
         <h4
-          style={{ margin: '0 0 0.5rem 0', fontSize: '0.875rem', fontWeight: 600, cursor: metadata?.description ? 'help' : 'default' }}
-          title={metadata?.description || ''}
+          style={{
+            margin: '0 0 0.25rem 0',
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            cursor: 'help',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            height: '1rem'
+          }}
+          title={tooltipText}
         >
-          {title}
+          {metadata?.display_name || title}
         </h4>
-        {metadata?.description && (
-          <div style={{ fontSize: '0.75rem', color: '#666', marginBottom: '0.5rem', fontStyle: 'italic' }}>
-            {metadata.description}
-          </div>
-        )}
-        <div style={{ fontSize: '0.75rem', color: '#666', marginBottom: '0.5rem' }}>
-          Mean: {aggregation.numeric_stats.mean.toFixed(2)} |
-          Median: {aggregation.numeric_stats.median.toFixed(2)} |
-          Range: [{aggregation.numeric_stats.min.toFixed(2)}, {aggregation.numeric_stats.max.toFixed(2)}]
-        </div>
         <Plot
           data={[{
             type: 'bar',
             x: xValues,
             y: yValues,
             width: binWidth * 0.9,
-            marker: { color: '#4CAF50' },
+            marker: {
+              color: aggregation.histogram.map(bin =>
+                isRangeFiltered(field, bin.bin_start, bin.bin_end) ? '#2E7D32' : '#4CAF50'
+              ),
+              line: {
+                color: aggregation.histogram.map(bin =>
+                  isRangeFiltered(field, bin.bin_start, bin.bin_end) ? '#000' : undefined
+                ),
+                width: aggregation.histogram.map(bin =>
+                  isRangeFiltered(field, bin.bin_start, bin.bin_end) ? 2 : 0
+                )
+              }
+            },
             hovertemplate: 'Range: [%{customdata[0]:.2f}, %{customdata[1]:.2f}]<br>Count: %{y}<extra></extra>',
             customdata: aggregation.histogram.map(bin => [bin.bin_start, bin.bin_end])
           }]}
           layout={{
-            height: 300,
-            margin: { t: 10, b: 40, l: 40, r: 10 },
-            xaxis: { title: field, automargin: true },
-            yaxis: { title: 'Count', automargin: true },
+            height: 135,
+            margin: { t: 5, b: 30, l: 30, r: 5 },
+            xaxis: { title: field, automargin: true, tickfont: { size: 9 }, titlefont: { size: 10 } },
+            yaxis: { title: 'Count', automargin: true, tickfont: { size: 9 }, titlefont: { size: 10 } },
             paper_bgcolor: 'transparent',
             plot_bgcolor: 'transparent',
-            bargap: 0.1
+            bargap: 0.1,
+            dragmode: 'select',
+            selectdirection: 'h'
           }}
           config={{
             displayModeBar: false,
-            responsive: true
+            responsive: true,
+            staticPlot: false,
+            scrollZoom: false
           }}
-          style={{ width: '100%', height: '300px' }}
+          style={{ width: '348px', height: '135px', cursor: 'pointer' }}
+          onClick={(data) => {
+            if (data?.points?.[0] && aggregation.histogram) {
+              const pointIndex = data.points[0].pointIndex
+              if (pointIndex !== undefined && pointIndex >= 0 && pointIndex < aggregation.histogram.length) {
+                const bin = aggregation.histogram[pointIndex]
+                toggleRangeFilter(field, bin.bin_start, bin.bin_end)
+              }
+            }
+          }}
+          onSelected={(data) => {
+            if (data?.range?.x && Array.isArray(data.range.x) && data.range.x.length >= 2) {
+              const [minX, maxX] = data.range.x
+              // Add BETWEEN filter with selected range
+              setFilters(prev => [...prev.filter(f => f.column !== field), { column: field, operator: 'between', value: [minX, maxX] }])
+            }
+          }}
         />
       </div>
     )
@@ -322,24 +552,116 @@ function DatasetExplorer() {
 
   return (
     <div>
-      <button
-        onClick={() => navigate(`/datasets/${id}`)}
-        style={{
+      {/* Active Filters */}
+      {filters.length > 0 && (
+        <div style={{
           marginBottom: '1rem',
-          padding: '0.5rem 1rem',
-          background: '#666',
-          color: 'white',
-          border: 'none',
-          borderRadius: '4px',
-          cursor: 'pointer'
-        }}
-      >
-        ← Back to Dataset
-      </button>
+          background: '#E3F2FD',
+          padding: '1rem',
+          borderRadius: '8px',
+          border: '1px solid #2196F3'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+            <strong style={{ fontSize: '0.875rem' }}>Active Filters:</strong>
+            <button
+              onClick={clearFilters}
+              style={{
+                padding: '0.25rem 0.75rem',
+                background: '#f44336',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '0.75rem'
+              }}
+            >
+              Clear All
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            {filters.map((filter, idx) => {
+              let displayValue = String(filter.value)
+              let removeHandler = () => setFilters(filters.filter((_, i) => i !== idx))
+
+              if (filter.operator === 'between' && Array.isArray(filter.value)) {
+                displayValue = `[${typeof filter.value[0] === 'number' ? filter.value[0].toFixed(2) : filter.value[0]}, ${typeof filter.value[1] === 'number' ? filter.value[1].toFixed(2) : filter.value[1]}]`
+              } else if (filter.operator === 'in' && Array.isArray(filter.value)) {
+                const displayVals = filter.value.map(v => {
+                  if (v === '') return '(Empty)'
+                  if (v === ' ') return '(Space)'
+                  return v
+                })
+                displayValue = `{${displayVals.slice(0, 3).join(', ')}${filter.value.length > 3 ? '...' : ''}}`
+              } else if (filter.operator === 'eq') {
+                if (filter.value === '') displayValue = '(Empty)'
+                else if (filter.value === ' ') displayValue = '(Space)'
+                else displayValue = String(filter.value)
+              }
+
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    background: 'white',
+                    padding: '0.25rem 0.75rem',
+                    borderRadius: '4px',
+                    fontSize: '0.875rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    border: '1px solid #2196F3'
+                  }}
+                >
+                  <span><strong>{filter.column}:</strong> {displayValue}</span>
+                  <button
+                    onClick={removeHandler}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#666',
+                      cursor: 'pointer',
+                      padding: '0',
+                      fontSize: '1rem',
+                      lineHeight: '1'
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Header */}
-      <div style={{ marginBottom: '2rem', background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-        <h2 style={{ marginTop: 0 }}>{dataset.name}</h2>
+      <div style={{ marginBottom: '2rem', background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', position: 'relative' }}>
+        <button
+          onClick={() => navigate(`/datasets/${id}/manage`)}
+          style={{
+            position: 'absolute',
+            top: '1.5rem',
+            right: '1.5rem',
+            padding: '0.5rem',
+            background: '#757575',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '1.2rem',
+            lineHeight: '1',
+            width: '32px',
+            height: '32px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+          title="Manage dataset"
+        >
+          ✎
+        </button>
+
+        <h2 style={{ marginTop: 0, paddingRight: '3rem' }}>{dataset.name}</h2>
         {dataset.description && (
           <p style={{ color: '#666', margin: '0.5rem 0' }} dangerouslySetInnerHTML={{ __html: dataset.description }}></p>
         )}
@@ -356,9 +678,9 @@ function DatasetExplorer() {
 
       {/* Chart Grid */}
       <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))',
-        gap: '1rem',
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '0.5rem',
         marginBottom: '2rem'
       }}>
         {/* Render charts based on aggregations */}

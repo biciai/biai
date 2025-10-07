@@ -51,7 +51,7 @@ interface ColumnMetadata {
   suggested_chart: string
 }
 
-function DatasetDetail() {
+function DatasetManage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [dataset, setDataset] = useState<Dataset | null>(null)
@@ -197,7 +197,7 @@ function DatasetDetail() {
     <div>
       <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
         <button
-          onClick={() => navigate('/datasets')}
+          onClick={() => navigate(-1)}
           style={{
             padding: '0.5rem 1rem',
             background: '#666',
@@ -207,10 +207,10 @@ function DatasetDetail() {
             cursor: 'pointer'
           }}
         >
-          ← Back to Datasets
+          ← Back
         </button>
         <button
-          onClick={() => navigate(`/datasets/${id}/explore`)}
+          onClick={() => navigate(`/datasets/${id}`)}
           style={{
             padding: '0.5rem 1rem',
             background: '#2196F3',
@@ -221,6 +221,30 @@ function DatasetDetail() {
           }}
         >
           📊 Explore Data
+        </button>
+        <button
+          onClick={async () => {
+            if (confirm('Are you sure you want to delete this dataset and all its tables?')) {
+              try {
+                await api.delete(`/datasets/${id}`)
+                navigate('/datasets')
+              } catch (error) {
+                console.error('Delete failed:', error)
+                alert('Failed to delete dataset')
+              }
+            }
+          }}
+          style={{
+            padding: '0.5rem 1rem',
+            background: '#f44336',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            marginLeft: 'auto'
+          }}
+        >
+          Delete Dataset
         </button>
       </div>
 
@@ -677,4 +701,4 @@ function DatasetDetail() {
   )
 }
 
-export default DatasetDetail
+export default DatasetManage

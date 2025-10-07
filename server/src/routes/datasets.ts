@@ -296,9 +296,20 @@ router.delete('/:id/tables/:tableId', async (req, res) => {
 // Get aggregated data for all columns in a table
 router.get('/:id/tables/:tableId/aggregations', async (req, res) => {
   try {
+    // Parse filters from query string
+    let filters = []
+    if (req.query.filters) {
+      try {
+        filters = JSON.parse(req.query.filters as string)
+      } catch (e) {
+        return res.status(400).json({ error: 'Invalid filters JSON' })
+      }
+    }
+
     const aggregations = await aggregationService.getTableAggregations(
       req.params.id,
-      req.params.tableId
+      req.params.tableId,
+      filters
     )
 
     return res.json({
