@@ -241,7 +241,7 @@ function Datasets() {
                     }}
                     title="Manage dataset"
                   >
-                    ⋮
+                    ✎
                   </button>
                 </div>
               </div>

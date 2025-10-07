@@ -658,7 +658,7 @@ function DatasetExplorer() {
           }}
           title="Manage dataset"
         >
-          ⋮
+          ✎
         </button>
 
         <h2 style={{ marginTop: 0, paddingRight: '3rem' }}>{dataset.name}</h2>
