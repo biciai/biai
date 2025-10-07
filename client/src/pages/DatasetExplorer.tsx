@@ -552,21 +552,6 @@ function DatasetExplorer() {
 
   return (
     <div>
-      <button
-        onClick={() => navigate(`/datasets/${id}`)}
-        style={{
-          marginBottom: '1rem',
-          padding: '0.5rem 1rem',
-          background: '#666',
-          color: 'white',
-          border: 'none',
-          borderRadius: '4px',
-          cursor: 'pointer'
-        }}
-      >
-        ← Back to Dataset
-      </button>
-
       {/* Active Filters */}
       {filters.length > 0 && (
         <div style={{
@@ -650,8 +635,33 @@ function DatasetExplorer() {
       )}
 
       {/* Header */}
-      <div style={{ marginBottom: '2rem', background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-        <h2 style={{ marginTop: 0 }}>{dataset.name}</h2>
+      <div style={{ marginBottom: '2rem', background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', position: 'relative' }}>
+        <button
+          onClick={() => navigate(`/datasets/${id}/manage`)}
+          style={{
+            position: 'absolute',
+            top: '1.5rem',
+            right: '1.5rem',
+            padding: '0.5rem',
+            background: '#757575',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '1.2rem',
+            lineHeight: '1',
+            width: '32px',
+            height: '32px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+          title="Manage dataset"
+        >
+          ⋮
+        </button>
+
+        <h2 style={{ marginTop: 0, paddingRight: '3rem' }}>{dataset.name}</h2>
         {dataset.description && (
           <p style={{ color: '#666', margin: '0.5rem 0' }} dangerouslySetInnerHTML={{ __html: dataset.description }}></p>
         )}
