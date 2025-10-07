@@ -63,7 +63,7 @@ function Datasets() {
       setDescription('')
 
       // Navigate to the new dataset to add tables
-      navigate(`/datasets/${response.data.dataset.id}`)
+      navigate(`/datasets/${response.data.dataset.id}/manage`)
     } catch (error: any) {
       console.error('Create failed:', error)
       alert('Create failed: ' + (error.response?.data?.message || error.message))
@@ -210,7 +210,7 @@ function Datasets() {
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
-                    onClick={() => navigate(`/datasets/${dataset.id}/explore`)}
+                    onClick={() => navigate(`/datasets/${dataset.id}`)}
                     style={{
                       padding: '0.5rem 1rem',
                       background: '#2196F3',
@@ -223,7 +223,7 @@ function Datasets() {
                     📊 Explore Data
                   </button>
                   <button
-                    onClick={() => navigate(`/datasets/${dataset.id}`)}
+                    onClick={() => navigate(`/datasets/${dataset.id}/manage`)}
                     style={{
                       padding: '0.5rem',
                       background: '#757575',

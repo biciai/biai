@@ -1,6 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom'
 import Datasets from './pages/Datasets'
-import DatasetDetail from './pages/DatasetDetail'
+import DatasetManage from './pages/DatasetManage'
 import DatasetExplorer from './pages/DatasetExplorer'
 import Reports from './pages/Reports'
 import Settings from './pages/Settings'
@@ -20,8 +20,8 @@ function App() {
         <main>
           <Routes>
             <Route path="/" element={<Datasets />} />
-            <Route path="/datasets/:id" element={<DatasetDetail />} />
-            <Route path="/datasets/:id/explore" element={<DatasetExplorer />} />
+            <Route path="/datasets/:id" element={<DatasetExplorer />} />
+            <Route path="/datasets/:id/manage" element={<DatasetManage />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>

@@ -51,7 +51,7 @@ interface ColumnMetadata {
   suggested_chart: string
 }
 
-function DatasetDetail() {
+function DatasetManage() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [dataset, setDataset] = useState<Dataset | null>(null)
@@ -210,7 +210,7 @@ function DatasetDetail() {
           ← Back to Datasets
         </button>
         <button
-          onClick={() => navigate(`/datasets/${id}/explore`)}
+          onClick={() => navigate(`/datasets/${id}`)}
           style={{
             padding: '0.5rem 1rem',
             background: '#2196F3',
@@ -701,4 +701,4 @@ function DatasetDetail() {
   )
 }
 
-export default DatasetDetail
+export default DatasetManage
