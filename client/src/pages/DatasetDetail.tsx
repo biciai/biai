@@ -222,6 +222,30 @@ function DatasetDetail() {
         >
           📊 Explore Data
         </button>
+        <button
+          onClick={async () => {
+            if (confirm('Are you sure you want to delete this dataset and all its tables?')) {
+              try {
+                await api.delete(`/datasets/${id}`)
+                navigate('/datasets')
+              } catch (error) {
+                console.error('Delete failed:', error)
+                alert('Failed to delete dataset')
+              }
+            }
+          }}
+          style={{
+            padding: '0.5rem 1rem',
+            background: '#f44336',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            marginLeft: 'auto'
+          }}
+        >
+          Delete Dataset
+        </button>
       </div>
 
       <div style={{ marginBottom: '2rem', background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>

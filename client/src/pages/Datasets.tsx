@@ -72,17 +72,6 @@ function Datasets() {
     }
   }
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this dataset and all its tables?')) return
-
-    try {
-      await api.delete(`/datasets/${id}`)
-      await loadDatasets()
-    } catch (error) {
-      console.error('Delete failed:', error)
-      alert('Failed to delete dataset')
-    }
-  }
 
   return (
     <div>
@@ -221,7 +210,7 @@ function Datasets() {
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
-                    onClick={() => navigate(`/datasets/${dataset.id}`)}
+                    onClick={() => navigate(`/datasets/${dataset.id}/explore`)}
                     style={{
                       padding: '0.5rem 1rem',
                       background: '#2196F3',
@@ -231,20 +220,28 @@ function Datasets() {
                       cursor: 'pointer'
                     }}
                   >
-                    View
+                    📊 Explore Data
                   </button>
                   <button
-                    onClick={() => handleDelete(dataset.id)}
+                    onClick={() => navigate(`/datasets/${dataset.id}`)}
                     style={{
-                      padding: '0.5rem 1rem',
-                      background: '#f44336',
+                      padding: '0.5rem',
+                      background: '#757575',
                       color: 'white',
                       border: 'none',
                       borderRadius: '4px',
-                      cursor: 'pointer'
+                      cursor: 'pointer',
+                      fontSize: '1.2rem',
+                      lineHeight: '1',
+                      width: '32px',
+                      height: '32px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
                     }}
+                    title="Manage dataset"
                   >
-                    Delete
+                    ⋮
                   </button>
                 </div>
               </div>
