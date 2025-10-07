@@ -197,7 +197,7 @@ function DatasetManage() {
     <div>
       <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
         <button
-          onClick={() => navigate('/datasets')}
+          onClick={() => navigate(`/datasets/${id}`)}
           style={{
             padding: '0.5rem 1rem',
             background: '#666',
@@ -207,20 +207,7 @@ function DatasetManage() {
             cursor: 'pointer'
           }}
         >
-          ← Back to Datasets
-        </button>
-        <button
-          onClick={() => navigate(`/datasets/${id}`)}
-          style={{
-            padding: '0.5rem 1rem',
-            background: '#2196F3',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer'
-          }}
-        >
-          📊 Explore Data
+          ← Back to Explore
         </button>
         <button
           onClick={async () => {
