@@ -52,23 +52,95 @@ export interface Filter {
 
 class AggregationService {
   /**
+   * Get all column names for a table
+   */
+  private async getTableColumns(clickhouseTableName: string): Promise<Set<string>> {
+    try {
+      const result = await clickhouseClient.query({
+        query: `SELECT name FROM system.columns WHERE database = 'biai' AND table = '${clickhouseTableName}'`,
+        format: 'JSONEachRow'
+      })
+      const columns = await result.json<{ name: string }[]>()
+      return new Set(columns.map(c => c.name))
+    } catch (error) {
+      console.error('Error getting table columns:', error)
+      return new Set()
+    }
+  }
+
+  /**
+   * Filter out columns that don't exist in the table
+   */
+  private filterExistingColumns(filter: Filter, validColumns: Set<string>): Filter | null {
+    // Handle logical operators recursively
+    if (filter.and && Array.isArray(filter.and)) {
+      const filtered = filter.and
+        .map(f => this.filterExistingColumns(f, validColumns))
+        .filter(f => f !== null) as Filter[]
+      if (filtered.length === 0) return null
+      if (filtered.length === 1) return filtered[0]
+      return { and: filtered }
+    }
+
+    if (filter.or && Array.isArray(filter.or)) {
+      const filtered = filter.or
+        .map(f => this.filterExistingColumns(f, validColumns))
+        .filter(f => f !== null) as Filter[]
+      if (filtered.length === 0) return null
+      if (filtered.length === 1) return filtered[0]
+      return { or: filtered }
+    }
+
+    if (filter.not) {
+      const filtered = this.filterExistingColumns(filter.not, validColumns)
+      if (!filtered) return null
+      return { not: filtered }
+    }
+
+    // Handle simple filter - check if column exists
+    if (filter.column) {
+      if (!validColumns.has(filter.column)) {
+        return null // Skip this filter
+      }
+    }
+
+    return filter
+  }
+
+  /**
    * Build WHERE clause from filters (supports AND, OR, NOT)
    */
-  private buildWhereClause(filters: Filter[] | Filter): string {
+  private buildWhereClause(filters: Filter[] | Filter, validColumns?: Set<string>): string {
     if (!filters) {
       return ''
     }
 
+    // Filter out columns that don't exist in the table
+    let filteredFilters = filters
+    if (validColumns) {
+      if (Array.isArray(filters)) {
+        const filtered = filters
+          .map(f => this.filterExistingColumns(f, validColumns))
+          .filter(f => f !== null) as Filter[]
+        if (filtered.length === 0) return ''
+        filteredFilters = filtered
+      } else {
+        const filtered = this.filterExistingColumns(filters, validColumns)
+        if (!filtered) return ''
+        filteredFilters = filtered
+      }
+    }
+
     // Handle array of filters (legacy format)
-    if (Array.isArray(filters)) {
-      if (filters.length === 0) return ''
-      const filterTree: Filter = filters.length === 1 ? filters[0] : { and: filters }
+    if (Array.isArray(filteredFilters)) {
+      if (filteredFilters.length === 0) return ''
+      const filterTree: Filter = filteredFilters.length === 1 ? filteredFilters[0] : { and: filteredFilters }
       const condition = this.buildFilterCondition(filterTree)
       return condition ? `AND (${condition})` : ''
     }
 
     // Handle single filter object (new format)
-    const condition = this.buildFilterCondition(filters)
+    const condition = this.buildFilterCondition(filteredFilters)
     return condition ? `AND (${condition})` : ''
   }
 
@@ -77,7 +149,7 @@ class AggregationService {
    */
   private buildFilterCondition(filter: Filter): string {
     // Handle logical operators
-    if (filter.and) {
+    if (filter.and && Array.isArray(filter.and)) {
       const conditions = filter.and
         .map(f => this.buildFilterCondition(f))
         .filter(c => c !== '')
@@ -86,7 +158,7 @@ class AggregationService {
       return `(${conditions.join(' AND ')})`
     }
 
-    if (filter.or) {
+    if (filter.or && Array.isArray(filter.or)) {
       const conditions = filter.or
         .map(f => this.buildFilterCondition(f))
         .filter(c => c !== '')
@@ -176,7 +248,10 @@ class AggregationService {
 
     const clickhouseTableName = tables[0].clickhouse_table_name
     const totalRows = tables[0].row_count
-    const whereClause = this.buildWhereClause(filters)
+
+    // Get valid columns for this table
+    const validColumns = await this.getTableColumns(clickhouseTableName)
+    const whereClause = this.buildWhereClause(filters, validColumns)
 
     // Get filtered row count if filters are applied
     let filteredTotalRows = totalRows
@@ -258,11 +333,11 @@ class AggregationService {
   ): Promise<CategoryCount[]> {
     const query = `
       SELECT
-        if(${columnName} = '', '(Empty)', ${columnName}) AS value,
+        if(${columnName} = '' OR ${columnName} IS NULL, 'N/A', ${columnName}) AS value,
         count() AS count,
         count() * 100.0 / ${totalRows} AS percentage
       FROM biai.${tableName}
-      WHERE ${columnName} IS NOT NULL
+      WHERE 1=1
         ${whereClause}
       GROUP BY ${columnName}
       ORDER BY count DESC

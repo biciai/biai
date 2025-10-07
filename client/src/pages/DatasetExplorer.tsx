@@ -171,9 +171,12 @@ function DatasetExplorer() {
   }
 
   const toggleFilter = (column: string, value: string | number) => {
+    // Backend returns "N/A" for empty strings/nulls, convert back
+    const filterValue = value === 'N/A' ? '' : value
+
     // Check if this exact filter exists
     const existingFilterIndex = filters.findIndex(
-      f => f.column === column && f.operator === 'eq' && f.value === value
+      f => f.column === column && f.operator === 'eq' && f.value === filterValue
     )
 
     if (existingFilterIndex >= 0) {
@@ -181,7 +184,7 @@ function DatasetExplorer() {
       setFilters(filters.filter((_, i) => i !== existingFilterIndex))
     } else {
       // Add the filter
-      setFilters([...filters, { column, operator: 'eq', value }])
+      setFilters([...filters, { column, operator: 'eq', value: filterValue }])
     }
   }
 
@@ -190,7 +193,9 @@ function DatasetExplorer() {
   }
 
   const isValueFiltered = (column: string, value: string | number): boolean => {
-    return filters.some(f => f.column === column && f.operator === 'eq' && f.value === value)
+    // Backend returns "N/A" for empty strings/nulls
+    const compareValue = value === 'N/A' ? '' : value
+    return filters.some(f => f.column === column && f.operator === 'eq' && f.value === compareValue)
   }
 
   const toggleRangeFilter = (column: string, binStart: number, binEnd: number) => {
@@ -222,6 +227,11 @@ function DatasetExplorer() {
 
     const labels = aggregation.categories.map(c => String(c.value))
     const values = aggregation.categories.map(c => c.count)
+    // Backend returns "N/A" for both empty strings and nulls
+    // We'll convert N/A to empty string for filtering (more common case)
+    const originalValues = aggregation.categories.map(c =>
+      c.value === 'N/A' ? '' : c.value
+    )
 
     const metadata = getColumnMetadata(tableName, field)
 
@@ -249,15 +259,15 @@ function DatasetExplorer() {
             labels,
             values,
             marker: {
-              colors: labels.map(label =>
-                isValueFiltered(field, label) ? '#1976D2' : undefined
+              colors: originalValues.map(value =>
+                isValueFiltered(field, value) ? '#1976D2' : undefined
               ),
               line: {
-                color: labels.map(label =>
-                  isValueFiltered(field, label) ? '#000' : undefined
+                color: originalValues.map(value =>
+                  isValueFiltered(field, value) ? '#000' : undefined
                 ),
-                width: labels.map(label =>
-                  isValueFiltered(field, label) ? 2 : 0
+                width: originalValues.map(value =>
+                  isValueFiltered(field, value) ? 2 : 0
                 )
               }
             },
@@ -279,9 +289,14 @@ function DatasetExplorer() {
           }}
           style={{ width: '100%', height: '300px', cursor: 'pointer' }}
           onClick={(data) => {
-            if (data.points && data.points.length > 0) {
-              const clickedValue = data.points[0].label
-              toggleFilter(field, clickedValue)
+            if (data?.points?.[0]) {
+              const point = data.points[0]
+              // Use pointNumber or pointIndex depending on what's available
+              const index = point.pointNumber !== undefined ? point.pointNumber : point.pointIndex
+              if (index !== undefined && index >= 0 && index < originalValues.length) {
+                const clickedValue = originalValues[index]
+                toggleFilter(field, clickedValue)
+              }
             }
           }}
         />
@@ -295,7 +310,11 @@ function DatasetExplorer() {
 
     const labels = aggregation.categories.map(c => String(c.value))
     const values = aggregation.categories.map(c => c.count)
-    const originalValues = aggregation.categories.map(c => c.value)
+    // Backend returns "N/A" for both empty strings and nulls
+    // We'll convert N/A to empty string for filtering (more common case)
+    const originalValues = aggregation.categories.map(c =>
+      c.value === 'N/A' ? '' : c.value
+    )
 
     const metadata = getColumnMetadata(tableName, field)
 
@@ -323,15 +342,15 @@ function DatasetExplorer() {
             x: labels,
             y: values,
             marker: {
-              color: labels.map(label =>
-                isValueFiltered(field, label) ? '#1976D2' : '#2196F3'
+              color: originalValues.map(value =>
+                isValueFiltered(field, value) ? '#1976D2' : '#2196F3'
               ),
               line: {
-                color: labels.map(label =>
-                  isValueFiltered(field, label) ? '#000' : undefined
+                color: originalValues.map(value =>
+                  isValueFiltered(field, value) ? '#000' : undefined
                 ),
-                width: labels.map(label =>
-                  isValueFiltered(field, label) ? 2 : 0
+                width: originalValues.map(value =>
+                  isValueFiltered(field, value) ? 2 : 0
                 )
               }
             },
@@ -355,18 +374,21 @@ function DatasetExplorer() {
           }}
           style={{ width: '100%', height: '300px', cursor: 'pointer' }}
           onClick={(data) => {
-            if (data.points && data.points.length > 0) {
+            if (data?.points?.[0]) {
               const pointIndex = data.points[0].pointIndex
-              const clickedValue = originalValues[pointIndex]
-              toggleFilter(field, clickedValue)
+              if (pointIndex !== undefined && pointIndex >= 0 && pointIndex < originalValues.length) {
+                const clickedValue = originalValues[pointIndex]
+                toggleFilter(field, clickedValue)
+              }
             }
           }}
           onSelected={(data) => {
-            if (data && data.points && data.points.length > 0) {
+            if (data?.points && data.points.length > 0) {
               // Get all selected values
-              const selectedValues = data.points.map(p => originalValues[p.pointIndex])
-              // Clear existing filters for this column
-              setFilters(filters.filter(f => f.column !== field))
+              const selectedValues = data.points
+                .map(p => p.pointIndex)
+                .filter(idx => idx !== undefined && idx >= 0 && idx < originalValues.length)
+                .map(idx => originalValues[idx])
               // Add IN filter with selected values
               if (selectedValues.length > 0) {
                 setFilters(prev => [...prev.filter(f => f.column !== field), { column: field, operator: 'in', value: selectedValues }])
@@ -403,9 +425,9 @@ function DatasetExplorer() {
           </div>
         )}
         <div style={{ fontSize: '0.75rem', color: '#666', marginBottom: '0.5rem' }}>
-          Mean: {aggregation.numeric_stats.mean.toFixed(2)} |
-          Median: {aggregation.numeric_stats.median.toFixed(2)} |
-          Range: [{aggregation.numeric_stats.min.toFixed(2)}, {aggregation.numeric_stats.max.toFixed(2)}]
+          Mean: {aggregation.numeric_stats.mean !== null ? aggregation.numeric_stats.mean.toFixed(2) : 'N/A'} |
+          Median: {aggregation.numeric_stats.median !== null ? aggregation.numeric_stats.median.toFixed(2) : 'N/A'} |
+          Range: [{aggregation.numeric_stats.min !== null ? aggregation.numeric_stats.min.toFixed(2) : 'N/A'}, {aggregation.numeric_stats.max !== null ? aggregation.numeric_stats.max.toFixed(2) : 'N/A'}]
         </div>
         <Plot
           data={[{
@@ -448,17 +470,17 @@ function DatasetExplorer() {
           }}
           style={{ width: '100%', height: '300px', cursor: 'pointer' }}
           onClick={(data) => {
-            if (data.points && data.points.length > 0) {
+            if (data?.points?.[0] && aggregation.histogram) {
               const pointIndex = data.points[0].pointIndex
-              const bin = aggregation.histogram[pointIndex]
-              toggleRangeFilter(field, bin.bin_start, bin.bin_end)
+              if (pointIndex !== undefined && pointIndex >= 0 && pointIndex < aggregation.histogram.length) {
+                const bin = aggregation.histogram[pointIndex]
+                toggleRangeFilter(field, bin.bin_start, bin.bin_end)
+              }
             }
           }}
           onSelected={(data) => {
-            if (data && data.range && data.range.x) {
+            if (data?.range?.x && Array.isArray(data.range.x) && data.range.x.length >= 2) {
               const [minX, maxX] = data.range.x
-              // Clear existing filters for this column
-              setFilters(filters.filter(f => f.column !== field))
               // Add BETWEEN filter with selected range
               setFilters(prev => [...prev.filter(f => f.column !== field), { column: field, operator: 'between', value: [minX, maxX] }])
             }
@@ -528,9 +550,16 @@ function DatasetExplorer() {
               if (filter.operator === 'between' && Array.isArray(filter.value)) {
                 displayValue = `[${typeof filter.value[0] === 'number' ? filter.value[0].toFixed(2) : filter.value[0]}, ${typeof filter.value[1] === 'number' ? filter.value[1].toFixed(2) : filter.value[1]}]`
               } else if (filter.operator === 'in' && Array.isArray(filter.value)) {
-                displayValue = `{${filter.value.slice(0, 3).join(', ')}${filter.value.length > 3 ? '...' : ''}}`
+                const displayVals = filter.value.map(v => {
+                  if (v === '') return '(Empty)'
+                  if (v === ' ') return '(Space)'
+                  return v
+                })
+                displayValue = `{${displayVals.slice(0, 3).join(', ')}${filter.value.length > 3 ? '...' : ''}}`
               } else if (filter.operator === 'eq') {
-                displayValue = String(filter.value)
+                if (filter.value === '') displayValue = '(Empty)'
+                else if (filter.value === ' ') displayValue = '(Space)'
+                else displayValue = String(filter.value)
               }
 
               return (
