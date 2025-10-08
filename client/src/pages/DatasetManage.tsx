@@ -52,6 +52,13 @@ interface ColumnMetadata {
   suggested_chart: string
 }
 
+interface ColumnMetadataUpdate {
+  displayName?: string
+  description?: string
+  isHidden?: boolean
+  displayType?: string
+}
+
 function DatasetManage() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -177,7 +184,7 @@ function DatasetManage() {
     }
   }
 
-  const updateColumnMetadata = async (columnName: string, updates: Partial<ColumnMetadata>) => {
+  const updateColumnMetadata = async (columnName: string, updates: ColumnMetadataUpdate) => {
     if (!editingTableId) return
 
     try {
