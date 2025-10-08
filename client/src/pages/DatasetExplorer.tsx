@@ -273,6 +273,9 @@ function DatasetExplorer() {
             type: 'pie',
             labels,
             values,
+            textinfo: 'label+percent',
+            textposition: 'inside',
+            insidetextorientation: 'radial',
             marker: {
               colors: originalValues.map(value =>
                 isValueFiltered(field, value) ? '#1976D2' : undefined
@@ -286,7 +289,6 @@ function DatasetExplorer() {
                 )
               }
             },
-            textinfo: 'label+percent',
             textfont: { size: 9 },
             hovertemplate: '%{label}<br>Count: %{value}<br>%{percent}<extra></extra>'
           }]}
