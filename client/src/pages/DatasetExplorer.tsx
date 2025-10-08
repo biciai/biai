@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import Plot from 'react-plotly.js'
+import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
 
 interface Column {
@@ -663,7 +664,10 @@ function DatasetExplorer() {
 
         <h2 style={{ marginTop: 0, paddingRight: '3rem' }}>{dataset.name}</h2>
         {dataset.description && (
-          <p style={{ color: '#666', margin: '0.5rem 0' }} dangerouslySetInnerHTML={{ __html: dataset.description }}></p>
+          <SafeHtml
+            html={dataset.description}
+            style={{ color: '#666', margin: '0.5rem 0', display: 'block' }}
+          />
         )}
 
         <div style={{ display: 'flex', gap: '2rem', marginTop: '1rem', fontSize: '0.875rem' }}>

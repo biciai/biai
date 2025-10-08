@@ -52,6 +52,31 @@ export interface Filter {
 
 class AggregationService {
   /**
+   * Ensure numeric filter values are safe for interpolation
+   */
+  private ensureNumeric(value: unknown, operator: string): number {
+    if (typeof value === 'number') {
+      if (Number.isFinite(value)) {
+        return value
+      }
+      throw new Error(`Invalid numeric value provided for ${operator} filter`)
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      if (trimmed.length === 0) {
+        throw new Error(`Invalid numeric value provided for ${operator} filter`)
+      }
+      const parsed = Number(trimmed)
+      if (Number.isFinite(parsed)) {
+        return parsed
+      }
+    }
+
+    throw new Error(`Invalid numeric value provided for ${operator} filter`)
+  }
+
+  /**
    * Get all column names for a table
    */
   private async getTableColumns(clickhouseTableName: string): Promise<Set<string>> {
@@ -186,32 +211,56 @@ class AggregationService {
         if (filter.value === '(Empty)') {
           return `${col} = ''`
         }
-        return typeof filter.value === 'string'
-          ? `${col} = '${filter.value.replace(/'/g, "''")}'`
-          : `${col} = ${filter.value}`
+        if (filter.value === null) {
+          return `isNull(${col})`
+        }
+        if (typeof filter.value === 'number') {
+          if (!Number.isFinite(filter.value)) {
+            throw new Error('Invalid value provided for eq filter')
+          }
+          return `${col} = ${filter.value}`
+        }
+        if (typeof filter.value === 'string') {
+          return `${col} = '${filter.value.replace(/'/g, "''")}'`
+        }
+        throw new Error('Invalid value provided for eq filter')
 
       case 'in':
         const values = Array.isArray(filter.value) ? filter.value : [filter.value]
         const inValues = values.map(v => {
           if (v === '(Empty)') return "''"
-          return typeof v === 'string' ? `'${v.replace(/'/g, "''")}'` : v
+          if (v === null) return 'NULL'
+          if (typeof v === 'number') {
+            if (!Number.isFinite(v)) {
+              throw new Error('Invalid numeric value provided for in filter')
+            }
+            return `${v}`
+          }
+          if (typeof v === 'string') {
+            return `'${v.replace(/'/g, "''")}'`
+          }
+          throw new Error('Invalid value provided for in filter')
         }).join(', ')
         return `${col} IN (${inValues})`
 
       case 'gt':
-        return `${col} > ${filter.value}`
+        return `${col} > ${this.ensureNumeric(filter.value, 'gt')}`
 
       case 'lt':
-        return `${col} < ${filter.value}`
+        return `${col} < ${this.ensureNumeric(filter.value, 'lt')}`
 
       case 'gte':
-        return `${col} >= ${filter.value}`
+        return `${col} >= ${this.ensureNumeric(filter.value, 'gte')}`
 
       case 'lte':
-        return `${col} <= ${filter.value}`
+        return `${col} <= ${this.ensureNumeric(filter.value, 'lte')}`
 
       case 'between':
-        return `${col} BETWEEN ${filter.value[0]} AND ${filter.value[1]}`
+        if (!Array.isArray(filter.value) || filter.value.length !== 2) {
+          throw new Error('Between filter requires an array with exactly two values')
+        }
+        const [start, end] = filter.value.map(v => this.ensureNumeric(v, 'between'))
+        return `${col} BETWEEN ${start} AND ${end}`
 
       default:
         return ''
@@ -335,7 +384,7 @@ class AggregationService {
       SELECT
         if(${columnName} = '' OR ${columnName} IS NULL, 'N/A', ${columnName}) AS value,
         count() AS count,
-        count() * 100.0 / ${totalRows} AS percentage
+        if(${totalRows} = 0, 0, count() * 100.0 / ${totalRows}) AS percentage
       FROM biai.${tableName}
       WHERE 1=1
         ${whereClause}
