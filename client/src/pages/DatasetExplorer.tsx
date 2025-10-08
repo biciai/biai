@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import Plot from 'react-plotly.js'
+import type { PlotMouseEvent, PlotSelectionEvent } from 'plotly.js'
 import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
 
@@ -453,58 +454,92 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
     })
   }
 
-  const niceHistogramWidths = [1, 2, 5, 10, 20, 25, 50, 100, 250, 500, 1000, 2000, 5000]
+  const getNiceBinWidth = (range: number, desiredBins: number): number => {
+    if (!Number.isFinite(range) || range <= 0) {
+      return 1
+    }
 
-const getDisplayHistogram = (
-  histogram: HistogramBin[] | undefined,
-  stats: NumericStats | undefined
-): HistogramBin[] => {
-  if (!histogram || histogram.length === 0) return []
-  if (!stats || stats.min === null || stats.max === null) return histogram
+    const target = range / Math.max(desiredBins, 1)
+    if (!Number.isFinite(target) || target <= 0) {
+      return range
+    }
 
-  const min = stats.min
-  const max = stats.max
-  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return histogram
+    const exponent = Math.floor(Math.log10(target))
+    const scaled = target / Math.pow(10, exponent)
 
-  const totalCount = histogram.reduce((sum, bin) => sum + bin.count, 0)
-  if (!Number.isFinite(totalCount) || totalCount === 0) return histogram
+    let niceScaled: number
+    if (scaled <= 1) {
+      niceScaled = 1
+    } else if (scaled <= 2) {
+      niceScaled = 2
+    } else if (scaled <= 5) {
+      niceScaled = 5
+    } else {
+      niceScaled = 10
+    }
 
-  const range = max - min
-  const rawWidth = range / Math.max(histogram.length, 1)
-  let width = niceHistogramWidths.find(w => w >= rawWidth) ?? niceHistogramWidths[niceHistogramWidths.length - 1]
-
-  while (range / width > 50 && width < niceHistogramWidths[niceHistogramWidths.length - 1]) {
-    const idxWidth = niceHistogramWidths.indexOf(width)
-    width = niceHistogramWidths[Math.min(idxWidth + 1, niceHistogramWidths.length - 1)]
+    return niceScaled * Math.pow(10, exponent)
   }
 
-  const start = Math.floor(min / width) * width
-  const bucketCount = Math.max(1, Math.ceil((max - start) / width) + 1)
-  const buckets: HistogramBin[] = []
-  for (let i = 0; i < bucketCount; i++) {
-    buckets.push({
-      bin_start: start + i * width,
-      bin_end: start + (i + 1) * width,
-      count: 0,
-      percentage: 0
+  const getDisplayHistogram = (
+    histogram: HistogramBin[] | undefined,
+    stats: NumericStats | undefined
+  ): HistogramBin[] => {
+    if (!histogram || histogram.length === 0) return []
+    if (!stats || stats.min === null || stats.max === null) return histogram
+
+    const min = stats.min
+    const max = stats.max
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return histogram
+
+    const totalCount = histogram.reduce((sum, bin) => sum + bin.count, 0)
+    if (!Number.isFinite(totalCount) || totalCount === 0) return histogram
+
+    const range = max - min
+    const desiredBins = Math.min(Math.max(histogram.length, 1), 60)
+    let width = getNiceBinWidth(range, desiredBins)
+    if (!Number.isFinite(width) || width <= 0) {
+      width = range || 1
+    }
+
+    let guard = 0
+    while (range / width > 60 && guard < 10) {
+      const nextApprox = Math.ceil(range / width / 2)
+      width = getNiceBinWidth(range, Math.max(nextApprox, 1))
+      if (!Number.isFinite(width) || width <= 0) {
+        width = range || 1
+        break
+      }
+      guard += 1
+    }
+
+    const start = Math.floor(min / width) * width
+    const bucketCount = Math.max(1, Math.ceil((max - start) / width) + 1)
+    const buckets: HistogramBin[] = []
+    for (let i = 0; i < bucketCount; i++) {
+      buckets.push({
+        bin_start: start + i * width,
+        bin_end: start + (i + 1) * width,
+        count: 0,
+        percentage: 0
+      })
+    }
+
+    histogram.forEach(bin => {
+      const center = (bin.bin_start + bin.bin_end) / 2
+      let index = Math.floor((center - start) / width)
+      if (index < 0) index = 0
+      if (index >= buckets.length) index = buckets.length - 1
+      buckets[index].count += bin.count
     })
+
+    buckets.forEach(bucket => {
+      bucket.percentage = bucket.count / totalCount * 100
+    })
+
+    const filtered = buckets.filter(bucket => bucket.count > 0)
+    return filtered.length > 0 ? filtered : histogram
   }
-
-  histogram.forEach(bin => {
-    const center = (bin.bin_start + bin.bin_end) / 2
-    let index = Math.floor((center - start) / width)
-    if (index < 0) index = 0
-    if (index >= buckets.length) index = buckets.length - 1
-    buckets[index].count += bin.count
-  })
-
-  buckets.forEach(bucket => {
-    bucket.percentage = bucket.count / totalCount * 100
-  })
-
-  const filtered = buckets.filter(bucket => bucket.count > 0)
-  return filtered.length > 0 ? filtered : histogram
-}
 
 const renderNumericFilterMenu = (
     tableName: string,
@@ -901,15 +936,14 @@ const renderNumericFilterMenu = (
             staticPlot: false
           }}
           style={{ width: '165px', height: '135px', cursor: 'pointer' }}
-          onClick={(data) => {
-            if (data?.points?.[0]) {
-              const point = data.points[0]
-              // Use pointNumber or pointIndex depending on what's available
-              const index = point.pointNumber !== undefined ? point.pointNumber : point.pointIndex
-              if (index !== undefined && index >= 0 && index < filterValues.length) {
-                const clickedValue = filterValues[index]
-                toggleFilter(field, clickedValue)
-              }
+          onClick={(event: PlotMouseEvent) => {
+            const point = event.points?.[0]
+            if (!point) return
+
+            const index = point.pointNumber ?? point.pointIndex
+            if (typeof index === 'number' && index >= 0 && index < filterValues.length) {
+              const clickedValue = filterValues[index]
+              toggleFilter(field, clickedValue)
             }
           }}
         />
@@ -1035,26 +1069,28 @@ const renderNumericFilterMenu = (
             scrollZoom: false
           }}
           style={{ width: '348px', height: '135px', cursor: 'pointer' }}
-          onClick={(data) => {
-            if (data?.points?.[0]) {
-              const pointIndex = data.points[0].pointIndex
-              if (pointIndex !== undefined && pointIndex >= 0 && pointIndex < filterValues.length) {
-                const clickedValue = filterValues[pointIndex]
-                toggleFilter(field, clickedValue)
-              }
+          onClick={(event: PlotMouseEvent) => {
+            const point = event.points?.[0]
+            if (!point) return
+
+            const pointIndex = point.pointIndex
+            if (typeof pointIndex === 'number' && pointIndex >= 0 && pointIndex < filterValues.length) {
+              const clickedValue = filterValues[pointIndex]
+              toggleFilter(field, clickedValue)
             }
           }}
-          onSelected={(data) => {
-            if (data?.points && data.points.length > 0) {
-              // Get all selected values
-              const selectedValues = data.points
-                .map(p => p.pointIndex)
-                .filter(idx => idx !== undefined && idx >= 0 && idx < filterValues.length)
-                .map(idx => filterValues[idx])
-              // Add IN filter with selected values
-              if (selectedValues.length > 0) {
-                setFilters(prev => [...prev.filter(f => f.column !== field), { column: field, operator: 'in', value: selectedValues }])
-              }
+          onSelected={(event: PlotSelectionEvent) => {
+            if (!event?.points || event.points.length === 0) return
+            const selectedValues = event.points
+              .map(p => p.pointIndex)
+              .filter((idx): idx is number => typeof idx === 'number' && idx >= 0 && idx < filterValues.length)
+              .map(idx => filterValues[idx])
+
+            if (selectedValues.length > 0) {
+              setFilters(prev => [
+                ...prev.filter(f => f.column !== field),
+                { column: field, operator: 'in', value: selectedValues }
+              ])
             }
           }}
         />
@@ -1065,7 +1101,10 @@ const renderNumericFilterMenu = (
 
   const renderHistogram = (title: string, tableName: string, field: string) => {
     const aggregation = getAggregation(tableName, field)
-    if (!aggregation?.histogram || !aggregation.numeric_stats) return null
+    if (!aggregation?.numeric_stats) return null
+
+    const rawHistogram = aggregation.histogram ?? []
+    if (rawHistogram.length === 0) return null
 
     const metadata = getColumnMetadata(tableName, field)
 
@@ -1084,13 +1123,13 @@ const renderNumericFilterMenu = (
     ].filter(Boolean).join('\n')
 
     const baselineAggregation = getBaselineAggregation(tableName, field)
-    const menuHistogram = baselineAggregation?.histogram || aggregation.histogram
+    const menuHistogram = baselineAggregation?.histogram ?? rawHistogram
     const menuStats = baselineAggregation?.numeric_stats || aggregation.numeric_stats
     const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
     const columnActive = hasColumnFilter(field)
 
     const displayHistogram = getDisplayHistogram(menuHistogram, menuStats)
-    const binsForPlot = displayHistogram.length > 0 ? displayHistogram : aggregation.histogram
+    const binsForPlot = displayHistogram.length > 0 ? displayHistogram : menuHistogram
 
     // Convert histogram bins to bar chart data
     const xValues = binsForPlot.map(bin => (bin.bin_start + bin.bin_end) / 2)
@@ -1196,25 +1235,27 @@ const renderNumericFilterMenu = (
             scrollZoom: false
           }}
           style={{ width: '348px', height: '135px', cursor: 'pointer' }}
-          onClick={(data) => {
-            if (data?.points?.[0] && binsForPlot) {
-              const pointIndex = data.points[0].pointIndex
-              if (pointIndex !== undefined && pointIndex >= 0 && pointIndex < binsForPlot.length) {
-                const bin = aggregation.histogram[pointIndex]
-                toggleRangeFilter(tableName, field, bin.bin_start, bin.bin_end)
-              }
+          onClick={(event: PlotMouseEvent) => {
+            const point = event.points?.[0]
+            if (!point) return
+
+            const pointIndex = point.pointIndex
+            if (typeof pointIndex === 'number' && pointIndex >= 0 && pointIndex < binsForPlot.length) {
+              const bin = binsForPlot[pointIndex]
+              toggleRangeFilter(tableName, field, bin.bin_start, bin.bin_end)
             }
           }}
-          onSelected={(data) => {
-            if (data?.range?.x && Array.isArray(data.range.x) && data.range.x.length >= 2) {
-              const [minX, maxX] = data.range.x
-              updateColumnRanges(tableName, field, prev => {
-                const nextRange = { start: minX, end: maxX }
-                const existingIndex = prev.findIndex(range => rangesEqual(range, nextRange))
-                if (existingIndex >= 0) return prev
-                return [...prev, nextRange]
-              })
-            }
+          onSelected={(event: PlotSelectionEvent) => {
+            const rangeX = event?.range?.x
+            if (!rangeX || rangeX.length < 2) return
+
+            const [minX, maxX] = rangeX
+            updateColumnRanges(tableName, field, prev => {
+              const nextRange = { start: minX, end: maxX }
+              const existingIndex = prev.findIndex(range => rangesEqual(range, nextRange))
+              if (existingIndex >= 0) return prev
+              return [...prev, nextRange]
+            })
           }}
         />
         {renderNumericFilterMenu(tableName, field, displayHistogram, menuStats)}
@@ -1442,7 +1483,3 @@ const renderNumericFilterMenu = (
 }
 
 export default DatasetExplorer
-  const normalizeFilterValue = (value: string | number | null | undefined): string => {
-    if (value === null || value === undefined) return ''
-    return String(value)
-  }
