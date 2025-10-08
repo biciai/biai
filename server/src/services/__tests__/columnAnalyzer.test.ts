@@ -48,14 +48,14 @@ describe('Column Analyzer', () => {
   describe('Display Type Detection', () => {
     test('should identify ID columns', async () => {
       mockColumnStats({ unique_count: 100, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'patient_id', 'String', 100)
+      const result = await analyzeColumn('test_table', 'patient_id', 'String')
       expect(result.display_type).toBe('id')
       expect(result.is_hidden).toBe(true)
     })
 
     test('should identify categorical columns', async () => {
       mockColumnStats({ unique_count: 5, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'gender', 'String', 100)
+      const result = await analyzeColumn('test_table', 'gender', 'String')
       expect(result.display_type).toBe('categorical')
       expect(result.suggested_chart).toBe('pie')
       expect(result.is_hidden).toBe(false)
@@ -63,14 +63,14 @@ describe('Column Analyzer', () => {
 
     test('should identify numeric columns', async () => {
       mockNumericStats({ unique_count: 80, null_count: 5, min_value: '18', max_value: '95' })
-      const result = await analyzeColumn('test_table', 'age', 'Int32', 100)
+      const result = await analyzeColumn('test_table', 'age', 'Int32')
       expect(result.display_type).toBe('numeric')
       expect(result.suggested_chart).toBe('histogram')
     })
 
     test('should identify text columns', async () => {
       mockColumnStats({ unique_count: 95, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'description', 'String', 100)
+      const result = await analyzeColumn('test_table', 'description', 'String')
       // 95/100 unique values is still categorical (threshold is >95%)
       expect(result.display_type).toBe('categorical')
       expect(result.suggested_chart).toBe('none')
@@ -80,25 +80,25 @@ describe('Column Analyzer', () => {
   describe('Chart Suggestion', () => {
     test('should suggest pie chart for low cardinality categoricals', async () => {
       mockColumnStats({ unique_count: 3, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'status', 'String', 100)
+      const result = await analyzeColumn('test_table', 'status', 'String')
       expect(result.suggested_chart).toBe('pie')
     })
 
     test('should suggest bar chart for medium cardinality categoricals', async () => {
       mockColumnStats({ unique_count: 15, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'city', 'String', 100)
+      const result = await analyzeColumn('test_table', 'city', 'String')
       expect(result.suggested_chart).toBe('bar')
     })
 
     test('should suggest histogram for numeric columns', async () => {
       mockNumericStats({ unique_count: 50, null_count: 0, min_value: '10', max_value: '100' })
-      const result = await analyzeColumn('test_table', 'score', 'Float64', 100)
+      const result = await analyzeColumn('test_table', 'score', 'Float64')
       expect(result.suggested_chart).toBe('histogram')
     })
 
     test('should suggest none for ID columns', async () => {
       mockColumnStats({ unique_count: 100, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'uuid', 'String', 100)
+      const result = await analyzeColumn('test_table', 'uuid', 'String')
       expect(result.suggested_chart).toBe('none')
     })
   })
@@ -106,19 +106,19 @@ describe('Column Analyzer', () => {
   describe('Priority Calculation', () => {
     test('should assign low priority to ID columns', async () => {
       mockColumnStats({ unique_count: 100, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'id', 'String', 100)
+      const result = await analyzeColumn('test_table', 'id', 'String')
       expect(result.display_priority).toBe(0)
     })
 
     test('should assign high priority to low cardinality categoricals', async () => {
       mockColumnStats({ unique_count: 3, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'gender', 'String', 100)
+      const result = await analyzeColumn('test_table', 'gender', 'String')
       expect(result.display_priority).toBeGreaterThan(500)
     })
 
     test('should assign medium priority to numeric columns', async () => {
       mockNumericStats({ unique_count: 50, null_count: 0, min_value: '0', max_value: '100' })
-      const result = await analyzeColumn('test_table', 'age', 'Int32', 100)
+      const result = await analyzeColumn('test_table', 'age', 'Int32')
       expect(result.display_priority).toBeGreaterThan(0)
       expect(result.display_priority).toBeLessThan(1000)
     })
@@ -127,25 +127,25 @@ describe('Column Analyzer', () => {
   describe('Hidden Column Detection', () => {
     test('should hide ID columns', async () => {
       mockColumnStats({ unique_count: 100, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'patient_id', 'String', 100)
+      const result = await analyzeColumn('test_table', 'patient_id', 'String')
       expect(result.is_hidden).toBe(true)
     })
 
     test('should hide columns with all unique values (not ID)', async () => {
       mockColumnStats({ unique_count: 100, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'description', 'String', 100)
+      const result = await analyzeColumn('test_table', 'description', 'String')
       expect(result.is_hidden).toBe(true)
     })
 
     test('should hide columns with single unique value', async () => {
       mockColumnStats({ unique_count: 1, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'constant', 'String', 100)
+      const result = await analyzeColumn('test_table', 'constant', 'String')
       expect(result.is_hidden).toBe(true)
     })
 
     test('should not hide useful categorical columns', async () => {
       mockColumnStats({ unique_count: 5, null_count: 0 })
-      const result = await analyzeColumn('test_table', 'status', 'String', 100)
+      const result = await analyzeColumn('test_table', 'status', 'String')
       expect(result.is_hidden).toBe(false)
     })
   })
@@ -153,13 +153,13 @@ describe('Column Analyzer', () => {
   describe('Null Handling', () => {
     test('should return correct null count', async () => {
       mockColumnStats({ unique_count: 3, null_count: 25 })
-      const result = await analyzeColumn('test_table', 'optional_field', 'String', 100)
+      const result = await analyzeColumn('test_table', 'optional_field', 'String')
       expect(result.null_count).toBe(25)
     })
 
     test('should handle columns with all nulls', async () => {
       mockColumnStats({ unique_count: 0, null_count: 100 })
-      const result = await analyzeColumn('test_table', 'empty_field', 'String', 100)
+      const result = await analyzeColumn('test_table', 'empty_field', 'String')
       expect(result.null_count).toBe(100)
       expect(result.is_hidden).toBe(true)
     })

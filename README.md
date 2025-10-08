@@ -150,8 +150,9 @@ The system uses ClickHouse with the following metadata tables:
 
 ## Next Steps
 
-- Implement query builder for cross-table analysis using relationships
-- Add data export functionality
-- Build custom dashboards from uploaded data
-- Add authentication and multi-user support
-- Visualize table relationships as entity-relationship diagrams
+- Allow selecting multiple values from the same chart in the UI
+- Allow AND/OR/NOT logic in the UI
+- Implement sessions so that the backend does not need to query database for every API request and additional filter can apply to the previous one
+- Adding genomics data
+- Adding a non-cBioPortal/genomic data
+

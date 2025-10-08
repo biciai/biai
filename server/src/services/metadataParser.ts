@@ -223,12 +223,14 @@ export function parseDatasetMetadata(content: string): DatasetMetadata {
   const metadata: DatasetMetadata = { ...raw }
 
   // Ensure arrays
-  if (metadata.tags && typeof metadata.tags === 'string') {
-    metadata.tags = metadata.tags.split(',').map(t => t.trim())
+  const rawTags = metadata.tags as unknown
+  if (typeof rawTags === 'string') {
+    metadata.tags = rawTags.split(',').map((t: string) => t.trim())
   }
 
-  if (metadata.references && typeof metadata.references === 'string') {
-    metadata.references = metadata.references.split(',').map(r => r.trim())
+  const rawReferences = metadata.references as unknown
+  if (typeof rawReferences === 'string') {
+    metadata.references = rawReferences.split(',').map((r: string) => r.trim())
   }
 
   return metadata

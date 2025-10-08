@@ -85,7 +85,7 @@ class AggregationService {
         query: `SELECT name FROM system.columns WHERE database = 'biai' AND table = '${clickhouseTableName}'`,
         format: 'JSONEachRow'
       })
-      const columns = await result.json<{ name: string }[]>()
+      const columns = await result.json<{ name: string }>()
       return new Set(columns.map(c => c.name))
     } catch (error) {
       console.error('Error getting table columns:', error)
@@ -290,7 +290,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const tables = await tableResult.json<any[]>()
+    const tables = await tableResult.json<{ clickhouse_table_name: string; row_count: number }>()
     if (tables.length === 0) {
       throw new Error('Table not found')
     }
@@ -315,7 +315,7 @@ class AggregationService {
         query: countQuery,
         format: 'JSONEachRow'
       })
-      const countData = await countResult.json<any[]>()
+      const countData = await countResult.json<{ filtered_count: number }>()
       filteredTotalRows = countData[0].filtered_count
     }
 
@@ -333,7 +333,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const basicStats = await basicStatsResult.json<any[]>()
+    const basicStats = await basicStatsResult.json<{ null_count: number; unique_count: number }>()
     const { null_count, unique_count } = basicStats[0]
 
     const aggregation: ColumnAggregation = {
@@ -398,7 +398,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    return await result.json<CategoryCount[]>()
+    return await result.json<CategoryCount>()
   }
 
   /**
@@ -428,7 +428,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const stats = await result.json<any[]>()
+    const stats = await result.json<NumericStats>()
     return stats[0]
   }
 
@@ -457,8 +457,15 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const minMaxData = await minMaxResult.json<any[]>()
+    const minMaxData = await minMaxResult.json<{ min_val: number | null; max_val: number | null; total_count: number }>()
+    if (minMaxData.length === 0) {
+      return []
+    }
+
     const { min_val, max_val, total_count } = minMaxData[0]
+    if (min_val === null || max_val === null) {
+      return []
+    }
 
     if (min_val === max_val) {
       // All values are the same
@@ -492,7 +499,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const histogram = await result.json<any[]>()
+    const histogram = await result.json<{ bin_start: number; bin_end: number; count: number; percentage: number }>()
     return histogram.map(bin => ({
       bin_start: bin.bin_start,
       bin_end: bin.bin_end,
@@ -526,7 +533,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const columns = await columnsResult.json<any[]>()
+    const columns = await columnsResult.json<{ column_name: string; display_type: string; is_hidden: boolean }>()
 
     // Get aggregations for each column in parallel
     const aggregations = await Promise.all(
