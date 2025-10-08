@@ -453,7 +453,60 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
     })
   }
 
-  const renderNumericFilterMenu = (
+  const niceHistogramWidths = [1, 2, 5, 10, 20, 25, 50, 100, 250, 500, 1000, 2000, 5000]
+
+const getDisplayHistogram = (
+  histogram: HistogramBin[] | undefined,
+  stats: NumericStats | undefined
+): HistogramBin[] => {
+  if (!histogram || histogram.length === 0) return []
+  if (!stats || stats.min === null || stats.max === null) return histogram
+
+  const min = stats.min
+  const max = stats.max
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return histogram
+
+  const totalCount = histogram.reduce((sum, bin) => sum + bin.count, 0)
+  if (!Number.isFinite(totalCount) || totalCount === 0) return histogram
+
+  const range = max - min
+  const rawWidth = range / Math.max(histogram.length, 1)
+  let width = niceHistogramWidths.find(w => w >= rawWidth) ?? niceHistogramWidths[niceHistogramWidths.length - 1]
+
+  while (range / width > 50 && width < niceHistogramWidths[niceHistogramWidths.length - 1]) {
+    const idxWidth = niceHistogramWidths.indexOf(width)
+    width = niceHistogramWidths[Math.min(idxWidth + 1, niceHistogramWidths.length - 1)]
+  }
+
+  const start = Math.floor(min / width) * width
+  const bucketCount = Math.max(1, Math.ceil((max - start) / width) + 1)
+  const buckets: HistogramBin[] = []
+  for (let i = 0; i < bucketCount; i++) {
+    buckets.push({
+      bin_start: start + i * width,
+      bin_end: start + (i + 1) * width,
+      count: 0,
+      percentage: 0
+    })
+  }
+
+  histogram.forEach(bin => {
+    const center = (bin.bin_start + bin.bin_end) / 2
+    let index = Math.floor((center - start) / width)
+    if (index < 0) index = 0
+    if (index >= buckets.length) index = buckets.length - 1
+    buckets[index].count += bin.count
+  })
+
+  buckets.forEach(bucket => {
+    bucket.percentage = bucket.count / totalCount * 100
+  })
+
+  const filtered = buckets.filter(bucket => bucket.count > 0)
+  return filtered.length > 0 ? filtered : histogram
+}
+
+const renderNumericFilterMenu = (
     tableName: string,
     columnName: string,
     histogram?: HistogramBin[],
@@ -1036,10 +1089,13 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
     const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
     const columnActive = hasColumnFilter(field)
 
+    const displayHistogram = getDisplayHistogram(menuHistogram, menuStats)
+    const binsForPlot = displayHistogram.length > 0 ? displayHistogram : aggregation.histogram
+
     // Convert histogram bins to bar chart data
-    const xValues = aggregation.histogram.map(bin => (bin.bin_start + bin.bin_end) / 2)
-    const yValues = aggregation.histogram.map(bin => bin.count)
-    const binWidth = aggregation.histogram[0] ? aggregation.histogram[0].bin_end - aggregation.histogram[0].bin_start : 1
+    const xValues = binsForPlot.map(bin => (bin.bin_start + bin.bin_end) / 2)
+    const yValues = binsForPlot.map(bin => bin.count)
+    const binWidth = binsForPlot[0] ? binsForPlot[0].bin_end - binsForPlot[0].bin_start : 1
 
     return (
       <div style={{
@@ -1107,20 +1163,20 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
             y: yValues,
             width: binWidth * 0.9,
             marker: {
-              color: aggregation.histogram.map(bin =>
+              color: binsForPlot.map(bin =>
                 isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end) ? '#2E7D32' : '#4CAF50'
               ),
               line: {
-                color: aggregation.histogram.map(bin =>
+                color: binsForPlot.map(bin =>
                   isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end) ? '#000' : undefined
                 ),
-                width: aggregation.histogram.map(bin =>
+                width: binsForPlot.map(bin =>
                   isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end) ? 2 : 0
                 )
               }
             },
             hovertemplate: 'Range: [%{customdata[0]:.2f}, %{customdata[1]:.2f}]<br>Count: %{y}<extra></extra>',
-            customdata: aggregation.histogram.map(bin => [bin.bin_start, bin.bin_end])
+            customdata: binsForPlot.map(bin => [bin.bin_start, bin.bin_end])
           }]}
           layout={{
             height: 135,
@@ -1141,9 +1197,9 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
           }}
           style={{ width: '348px', height: '135px', cursor: 'pointer' }}
           onClick={(data) => {
-            if (data?.points?.[0] && aggregation.histogram) {
+            if (data?.points?.[0] && binsForPlot) {
               const pointIndex = data.points[0].pointIndex
-              if (pointIndex !== undefined && pointIndex >= 0 && pointIndex < aggregation.histogram.length) {
+              if (pointIndex !== undefined && pointIndex >= 0 && pointIndex < binsForPlot.length) {
                 const bin = aggregation.histogram[pointIndex]
                 toggleRangeFilter(tableName, field, bin.bin_start, bin.bin_end)
               }
@@ -1161,7 +1217,7 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
             }
           }}
         />
-        {renderNumericFilterMenu(tableName, field, menuHistogram, menuStats)}
+        {renderNumericFilterMenu(tableName, field, displayHistogram, menuStats)}
       </div>
     )
   }
