@@ -22,7 +22,7 @@ export interface DatasetTable {
   primary_key?: string
   custom_metadata?: string
   relationships?: TableRelationship[]
-  created_at: Date
+  created_at: string | Date
 }
 
 export interface Dataset {
@@ -35,8 +35,8 @@ export interface Dataset {
   references?: string[]
   custom_metadata?: string
   created_by: string
-  created_at: Date
-  updated_at: Date
+  created_at: string | Date
+  updated_at: string | Date
   tables?: DatasetTable[]
 }
 
@@ -135,8 +135,7 @@ export class DatasetService {
       const analysis = await analyzeColumn(
         clickhouseTableName,
         col.name,
-        col.type,
-        parsedData.rowCount
+        col.type
       )
 
       // Use user-provided priority if available, otherwise use calculated priority
@@ -271,7 +270,7 @@ export class DatasetService {
       format: 'JSONEachRow'
     })
 
-    const datasets = await result.json<Dataset[]>()
+    const datasets = await result.json<Dataset>()
 
     // Load tables for each dataset
     for (const dataset of datasets) {
@@ -288,7 +287,7 @@ export class DatasetService {
       format: 'JSONEachRow'
     })
 
-    const data = await result.json<Dataset[]>()
+    const data = await result.json<Dataset>()
     if (data.length === 0) return null
 
     const dataset = data[0]
@@ -304,7 +303,7 @@ export class DatasetService {
       format: 'JSONEachRow'
     })
 
-    const tables = await result.json<DatasetTable[]>()
+    const tables = await result.json<DatasetTable>()
 
     // Load relationships for each table
     for (const table of tables) {
@@ -314,7 +313,12 @@ export class DatasetService {
         format: 'JSONEachRow'
       })
 
-      const relationships = await relResult.json<any[]>()
+      const relationships = await relResult.json<{
+        foreign_key: string
+        referenced_table: string
+        referenced_column: string
+        relationship_type: string
+      }>()
       table.relationships = relationships.map(rel => ({
         foreign_key: rel.foreign_key,
         referenced_table: rel.referenced_table,
@@ -333,7 +337,7 @@ export class DatasetService {
       format: 'JSONEachRow'
     })
 
-    const tables = await tableResult.json<any[]>()
+    const tables = await tableResult.json<{ clickhouse_table_name: string }>()
     if (tables.length === 0) throw new Error('Table not found')
 
     const result = await clickhouseClient.query({
@@ -341,7 +345,7 @@ export class DatasetService {
       format: 'JSONEachRow'
     })
 
-    return await result.json()
+    return await result.json<Record<string, unknown>>()
   }
 
   async getTableColumns(datasetId: string, tableId: string): Promise<any[]> {
@@ -373,7 +377,7 @@ export class DatasetService {
       format: 'JSONEachRow'
     })
 
-    return await result.json()
+    return await result.json<Record<string, unknown>>()
   }
 
   async updateColumnMetadata(
@@ -399,7 +403,7 @@ export class DatasetService {
       format: 'JSONEachRow'
     })
 
-    const rows = await result.json<any[]>()
+    const rows = await result.json<Record<string, unknown>>()
     if (rows.length === 0) throw new Error('Column not found')
 
     const currentRow = rows[0]
@@ -461,13 +465,13 @@ export class DatasetService {
   }
 
   async deleteTable(datasetId: string, tableId: string): Promise<void> {
-    const tables = await clickhouseClient.query({
+    const tablesResult = await clickhouseClient.query({
       query: 'SELECT clickhouse_table_name FROM biai.dataset_tables WHERE dataset_id = {datasetId:String} AND table_id = {tableId:String}',
       query_params: { datasetId, tableId },
       format: 'JSONEachRow'
     })
 
-    const tableData = await tables.json<any[]>()
+    const tableData = await tablesResult.json<{ clickhouse_table_name: string }>()
     if (tableData.length === 0) throw new Error('Table not found')
 
     // Drop the table

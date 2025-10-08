@@ -23,8 +23,7 @@ interface ColumnStats {
 export async function analyzeColumn(
   tableName: string,
   columnName: string,
-  columnType: string,
-  totalRows: number
+  columnType: string
 ): Promise<ColumnAnalysis> {
   // Get column statistics
   const stats = await getColumnStats(tableName, columnName, columnType)
@@ -36,10 +35,10 @@ export async function analyzeColumn(
   const suggestedChart = suggestChartType(displayType, stats)
 
   // Calculate priority (higher = more important)
-  const priority = calculatePriority(columnName, displayType, stats, totalRows)
+  const priority = calculatePriority(columnName, displayType, stats)
 
   // Determine if should be hidden
-  const isHidden = shouldHideColumn(columnName, displayType, stats, totalRows)
+  const isHidden = shouldHideColumn(displayType, stats)
 
   return {
     display_type: displayType,
@@ -78,10 +77,14 @@ async function getColumnStats(
     query: countQuery,
     format: 'JSONEachRow'
   })
-  const countData = await countResult.json<any[]>()
-  const counts: { unique_count: number; null_count: number; total_count: number } =
-    (countData && countData.length > 0 && countData[0])
-      ? countData[0] as { unique_count: number; null_count: number; total_count: number }
+  const countData = await countResult.json<{
+    unique_count: number
+    null_count: number
+    total_count: number
+  }>()
+  const counts =
+    countData && countData.length > 0
+      ? countData[0]
       : { unique_count: 0, null_count: 0, total_count: 0 }
 
   // Get sample values (up to 100)
@@ -100,8 +103,8 @@ async function getColumnStats(
     query: sampleQuery,
     format: 'JSONEachRow'
   })
-  const sampleData = await sampleResult.json<any[]>()
-  const sampleValues = sampleData.map((row: any) => row[columnName])
+  const sampleData = await sampleResult.json<Record<string, unknown>>()
+  const sampleValues = sampleData.map(row => row[columnName] as any)
 
   // Get min/max for numeric columns
   let minValue = null
@@ -120,10 +123,10 @@ async function getColumnStats(
       query: minMaxQuery,
       format: 'JSONEachRow'
     })
-    const minMaxData = await minMaxResult.json<any[]>()
+    const minMaxData = await minMaxResult.json<{ min_val: number | null; max_val: number | null }>()
     if (minMaxData && minMaxData.length > 0 && minMaxData[0]) {
-      minValue = (minMaxData[0] as any).min_val
-      maxValue = (minMaxData[0] as any).max_val
+      minValue = minMaxData[0].min_val
+      maxValue = minMaxData[0].max_val
     }
   }
 
@@ -236,8 +239,7 @@ function suggestChartType(
 function calculatePriority(
   columnName: string,
   displayType: ColumnAnalysis['display_type'],
-  stats: ColumnStats,
-  totalRows: number
+  stats: ColumnStats
 ): number {
   const nameLower = columnName.toLowerCase()
   let priority = 0
@@ -276,10 +278,8 @@ function calculatePriority(
 }
 
 function shouldHideColumn(
-  columnName: string,
   displayType: ColumnAnalysis['display_type'],
-  stats: ColumnStats,
-  totalRows: number
+  stats: ColumnStats
 ): boolean {
   // Hide ID columns
   if (displayType === 'id') {

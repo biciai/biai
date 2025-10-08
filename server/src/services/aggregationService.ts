@@ -1,7 +1,8 @@
 import clickhouseClient from '../config/clickhouse.js'
 
 export interface CategoryCount {
-  value: string | number
+  value: string
+  display_value: string
   count: number
   percentage: number
 }
@@ -52,6 +53,31 @@ export interface Filter {
 
 class AggregationService {
   /**
+   * Ensure numeric filter values are safe for interpolation
+   */
+  private ensureNumeric(value: unknown, operator: string): number {
+    if (typeof value === 'number') {
+      if (Number.isFinite(value)) {
+        return value
+      }
+      throw new Error(`Invalid numeric value provided for ${operator} filter`)
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      if (trimmed.length === 0) {
+        throw new Error(`Invalid numeric value provided for ${operator} filter`)
+      }
+      const parsed = Number(trimmed)
+      if (Number.isFinite(parsed)) {
+        return parsed
+      }
+    }
+
+    throw new Error(`Invalid numeric value provided for ${operator} filter`)
+  }
+
+  /**
    * Get all column names for a table
    */
   private async getTableColumns(clickhouseTableName: string): Promise<Set<string>> {
@@ -60,7 +86,7 @@ class AggregationService {
         query: `SELECT name FROM system.columns WHERE database = 'biai' AND table = '${clickhouseTableName}'`,
         format: 'JSONEachRow'
       })
-      const columns = await result.json<{ name: string }[]>()
+      const columns = await result.json<{ name: string }>()
       return new Set(columns.map(c => c.name))
     } catch (error) {
       console.error('Error getting table columns:', error)
@@ -183,35 +209,97 @@ class AggregationService {
     switch (filter.operator) {
       case 'eq':
         // Handle empty string case
-        if (filter.value === '(Empty)') {
-          return `${col} = ''`
+        if (filter.value === '(Empty)' || filter.value === '') {
+          return `(${col} = '' OR isNull(${col}))`
         }
-        return typeof filter.value === 'string'
-          ? `${col} = '${filter.value.replace(/'/g, "''")}'`
-          : `${col} = ${filter.value}`
+        if (filter.value === '(N/A)') {
+          return `${col} = 'N/A'`
+        }
+        if (filter.value === null) {
+          return `isNull(${col})`
+        }
+        if (typeof filter.value === 'number') {
+          if (!Number.isFinite(filter.value)) {
+            throw new Error('Invalid value provided for eq filter')
+          }
+          return `${col} = ${filter.value}`
+        }
+        if (typeof filter.value === 'string') {
+          return `${col} = '${filter.value.replace(/'/g, "''")}'`
+        }
+        throw new Error('Invalid value provided for eq filter')
 
       case 'in':
         const values = Array.isArray(filter.value) ? filter.value : [filter.value]
-        const inValues = values.map(v => {
-          if (v === '(Empty)') return "''"
-          return typeof v === 'string' ? `'${v.replace(/'/g, "''")}'` : v
-        }).join(', ')
-        return `${col} IN (${inValues})`
+        let includesEmpty = false
+        let includesNull = false
+        const inValues = values
+          .map(v => {
+            if (v === '(Empty)' || v === '') {
+              includesEmpty = true
+              return null
+            }
+            if (v === '(N/A)') {
+              return `'N/A'`
+            }
+            if (v === null) {
+              includesNull = true
+              return null
+            }
+            if (typeof v === 'number') {
+              if (!Number.isFinite(v)) {
+                throw new Error('Invalid numeric value provided for in filter')
+              }
+              return `${v}`
+            }
+            if (typeof v === 'string') {
+              return `'${v.replace(/'/g, "''")}'`
+            }
+            throw new Error('Invalid value provided for in filter')
+          })
+          .filter((item): item is string => item !== null)
+          .join(', ')
+
+        const conditions: string[] = []
+        if (inValues.length > 0) {
+          conditions.push(`${col} IN (${inValues})`)
+        }
+        if (includesEmpty) {
+          conditions.push(`${col} = ''`)
+          conditions.push(`isNull(${col})`)
+        } else if (includesNull) {
+          conditions.push(`isNull(${col})`)
+        }
+
+        if (conditions.length === 0) {
+          // No valid values provided; return a condition that always fails
+          return '0'
+        }
+
+        if (conditions.length === 1) {
+          return conditions[0]
+        }
+
+        return `(${conditions.join(' OR ')})`
 
       case 'gt':
-        return `${col} > ${filter.value}`
+        return `${col} > ${this.ensureNumeric(filter.value, 'gt')}`
 
       case 'lt':
-        return `${col} < ${filter.value}`
+        return `${col} < ${this.ensureNumeric(filter.value, 'lt')}`
 
       case 'gte':
-        return `${col} >= ${filter.value}`
+        return `${col} >= ${this.ensureNumeric(filter.value, 'gte')}`
 
       case 'lte':
-        return `${col} <= ${filter.value}`
+        return `${col} <= ${this.ensureNumeric(filter.value, 'lte')}`
 
       case 'between':
-        return `${col} BETWEEN ${filter.value[0]} AND ${filter.value[1]}`
+        if (!Array.isArray(filter.value) || filter.value.length !== 2) {
+          throw new Error('Between filter requires an array with exactly two values')
+        }
+        const [start, end] = filter.value.map(v => this.ensureNumeric(v, 'between'))
+        return `${col} BETWEEN ${start} AND ${end}`
 
       default:
         return ''
@@ -241,7 +329,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const tables = await tableResult.json<any[]>()
+    const tables = await tableResult.json<{ clickhouse_table_name: string; row_count: number }>()
     if (tables.length === 0) {
       throw new Error('Table not found')
     }
@@ -266,7 +354,7 @@ class AggregationService {
         query: countQuery,
         format: 'JSONEachRow'
       })
-      const countData = await countResult.json<any[]>()
+      const countData = await countResult.json<{ filtered_count: number }>()
       filteredTotalRows = countData[0].filtered_count
     }
 
@@ -284,7 +372,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const basicStats = await basicStatsResult.json<any[]>()
+    const basicStats = await basicStatsResult.json<{ null_count: number; unique_count: number }>()
     const { null_count, unique_count } = basicStats[0]
 
     const aggregation: ColumnAggregation = {
@@ -333,13 +421,22 @@ class AggregationService {
   ): Promise<CategoryCount[]> {
     const query = `
       SELECT
-        if(${columnName} = '' OR ${columnName} IS NULL, 'N/A', ${columnName}) AS value,
+        multiIf(
+          isNull(${columnName}) OR lengthUTF8(trimBoth(toString(${columnName}))) = 0, '',
+          lowerUTF8(trimBoth(toString(${columnName}))) = 'n/a', 'N/A',
+          trimBoth(toString(${columnName}))
+        ) AS value,
+        multiIf(
+          isNull(${columnName}) OR lengthUTF8(trimBoth(toString(${columnName}))) = 0, '(Empty)',
+          lowerUTF8(trimBoth(toString(${columnName}))) = 'n/a', '(N/A)',
+          trimBoth(toString(${columnName}))
+        ) AS display_value,
         count() AS count,
-        count() * 100.0 / ${totalRows} AS percentage
+        if(${totalRows} = 0, 0, count() * 100.0 / ${totalRows}) AS percentage
       FROM biai.${tableName}
       WHERE 1=1
         ${whereClause}
-      GROUP BY ${columnName}
+      GROUP BY value, display_value
       ORDER BY count DESC
       LIMIT ${limit}
     `
@@ -349,7 +446,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    return await result.json<CategoryCount[]>()
+    return await result.json<CategoryCount>()
   }
 
   /**
@@ -379,7 +476,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const stats = await result.json<any[]>()
+    const stats = await result.json<NumericStats>()
     return stats[0]
   }
 
@@ -408,8 +505,15 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const minMaxData = await minMaxResult.json<any[]>()
+    const minMaxData = await minMaxResult.json<{ min_val: number | null; max_val: number | null; total_count: number }>()
+    if (minMaxData.length === 0) {
+      return []
+    }
+
     const { min_val, max_val, total_count } = minMaxData[0]
+    if (min_val === null || max_val === null) {
+      return []
+    }
 
     if (min_val === max_val) {
       // All values are the same
@@ -443,7 +547,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const histogram = await result.json<any[]>()
+    const histogram = await result.json<{ bin_start: number; bin_end: number; count: number; percentage: number }>()
     return histogram.map(bin => ({
       bin_start: bin.bin_start,
       bin_end: bin.bin_end,
@@ -477,7 +581,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const columns = await columnsResult.json<any[]>()
+    const columns = await columnsResult.json<{ column_name: string; display_type: string; is_hidden: boolean }>()
 
     // Get aggregations for each column in parallel
     const aggregations = await Promise.all(

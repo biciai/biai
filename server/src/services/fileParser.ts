@@ -60,6 +60,42 @@ export interface ColumnMetadataConfig {
   priorityRow?: number
 }
 
+const COLUMN_FALLBACK_PREFIX = 'column_'
+
+function generateColumnIdentifier(
+  rawName: string | undefined,
+  index: number,
+  usedNames: Set<string>,
+  baseNameCounts: Map<string, number>
+): string {
+  const fallback = `${COLUMN_FALLBACK_PREFIX}${index + 1}`
+  const trimmed = (rawName ?? '').trim()
+
+  let base = trimmed.length > 0 ? trimmed : fallback
+  base = base.toLowerCase().replace(/[^a-z0-9_]/g, '_')
+  base = base.replace(/_+/g, '_').replace(/^_+|_+$/g, '')
+  if (!base) {
+    base = fallback
+  }
+
+  if (!usedNames.has(base)) {
+    usedNames.add(base)
+    baseNameCounts.set(base, 1)
+    return base
+  }
+
+  let counter = (baseNameCounts.get(base) ?? 1) + 1
+  let candidate = `${base}_${counter}`
+  while (usedNames.has(candidate)) {
+    counter += 1
+    candidate = `${base}_${counter}`
+  }
+
+  baseNameCounts.set(base, counter)
+  usedNames.add(candidate)
+  return candidate
+}
+
 export async function parseCSVFile(
   filePath: string,
   skipRows: number = 0,
@@ -71,6 +107,8 @@ export async function parseCSVFile(
     const allRows: any[][] = [] // Store all rows including metadata
     let headers: string[] = []
     let rowIndex = 0
+    const usedColumnNames = new Set<string>()
+    const columnNameCounts = new Map<string, number>()
 
     const parser = parse({
       delimiter,
@@ -105,7 +143,7 @@ export async function parseCSVFile(
           const hasNulls = sampleValues.some(v => v === '' || v === null || v === undefined || v.toLowerCase() === 'na')
 
           const column: ColumnMetadata = {
-            name: name.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+            name: generateColumnIdentifier(name, index, usedColumnNames, columnNameCounts),
             type: inferType(sampleValues),
             nullable: hasNulls,
             index
@@ -156,6 +194,8 @@ export async function parseCSVBuffer(
     const rows: any[][] = []
     let headers: string[] = []
     let rowIndex = 0
+    const usedColumnNames = new Set<string>()
+    const columnNameCounts = new Map<string, number>()
 
     const parser = parse({
       delimiter,
@@ -187,7 +227,7 @@ export async function parseCSVBuffer(
           const hasNulls = sampleValues.some(v => v === '' || v === null || v === undefined || v.toLowerCase() === 'na')
 
           return {
-            name: name.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+            name: generateColumnIdentifier(name, index, usedColumnNames, columnNameCounts),
             type: inferType(sampleValues),
             nullable: hasNulls,
             index

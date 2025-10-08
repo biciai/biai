@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
 
 interface DatasetTable {
@@ -171,7 +172,10 @@ function Datasets() {
                 <div style={{ flex: 1 }}>
                   <h3 style={{ margin: '0 0 0.5rem 0' }}>{dataset.name}</h3>
                   {dataset.description && (
-                    <p style={{ margin: '0 0 0.5rem 0', color: '#666' }} dangerouslySetInnerHTML={{ __html: dataset.description }}></p>
+                    <SafeHtml
+                      html={dataset.description}
+                      style={{ margin: '0 0 0.5rem 0', color: '#666', display: 'block' }}
+                    />
                   )}
                   {dataset.tags && dataset.tags.length > 0 && (
                     <div style={{ margin: '0.5rem 0', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
