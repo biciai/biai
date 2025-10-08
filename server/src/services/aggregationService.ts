@@ -1,7 +1,8 @@
 import clickhouseClient from '../config/clickhouse.js'
 
 export interface CategoryCount {
-  value: string | number
+  value: string
+  display_value: string
   count: number
   percentage: number
 }
@@ -208,8 +209,11 @@ class AggregationService {
     switch (filter.operator) {
       case 'eq':
         // Handle empty string case
-        if (filter.value === '(Empty)') {
-          return `${col} = ''`
+        if (filter.value === '(Empty)' || filter.value === '') {
+          return `(${col} = '' OR isNull(${col}))`
+        }
+        if (filter.value === '(N/A)') {
+          return `${col} = 'N/A'`
         }
         if (filter.value === null) {
           return `isNull(${col})`
@@ -227,21 +231,56 @@ class AggregationService {
 
       case 'in':
         const values = Array.isArray(filter.value) ? filter.value : [filter.value]
-        const inValues = values.map(v => {
-          if (v === '(Empty)') return "''"
-          if (v === null) return 'NULL'
-          if (typeof v === 'number') {
-            if (!Number.isFinite(v)) {
-              throw new Error('Invalid numeric value provided for in filter')
+        let includesEmpty = false
+        let includesNull = false
+        const inValues = values
+          .map(v => {
+            if (v === '(Empty)' || v === '') {
+              includesEmpty = true
+              return null
             }
-            return `${v}`
-          }
-          if (typeof v === 'string') {
-            return `'${v.replace(/'/g, "''")}'`
-          }
-          throw new Error('Invalid value provided for in filter')
-        }).join(', ')
-        return `${col} IN (${inValues})`
+            if (v === '(N/A)') {
+              return `'N/A'`
+            }
+            if (v === null) {
+              includesNull = true
+              return null
+            }
+            if (typeof v === 'number') {
+              if (!Number.isFinite(v)) {
+                throw new Error('Invalid numeric value provided for in filter')
+              }
+              return `${v}`
+            }
+            if (typeof v === 'string') {
+              return `'${v.replace(/'/g, "''")}'`
+            }
+            throw new Error('Invalid value provided for in filter')
+          })
+          .filter((item): item is string => item !== null)
+          .join(', ')
+
+        const conditions: string[] = []
+        if (inValues.length > 0) {
+          conditions.push(`${col} IN (${inValues})`)
+        }
+        if (includesEmpty) {
+          conditions.push(`${col} = ''`)
+          conditions.push(`isNull(${col})`)
+        } else if (includesNull) {
+          conditions.push(`isNull(${col})`)
+        }
+
+        if (conditions.length === 0) {
+          // No valid values provided; return a condition that always fails
+          return '0'
+        }
+
+        if (conditions.length === 1) {
+          return conditions[0]
+        }
+
+        return `(${conditions.join(' OR ')})`
 
       case 'gt':
         return `${col} > ${this.ensureNumeric(filter.value, 'gt')}`
@@ -382,13 +421,22 @@ class AggregationService {
   ): Promise<CategoryCount[]> {
     const query = `
       SELECT
-        if(${columnName} = '' OR ${columnName} IS NULL, 'N/A', ${columnName}) AS value,
+        multiIf(
+          isNull(${columnName}) OR lengthUTF8(trimBoth(toString(${columnName}))) = 0, '',
+          lowerUTF8(trimBoth(toString(${columnName}))) = 'n/a', 'N/A',
+          trimBoth(toString(${columnName}))
+        ) AS value,
+        multiIf(
+          isNull(${columnName}) OR lengthUTF8(trimBoth(toString(${columnName}))) = 0, '(Empty)',
+          lowerUTF8(trimBoth(toString(${columnName}))) = 'n/a', '(N/A)',
+          trimBoth(toString(${columnName}))
+        ) AS display_value,
         count() AS count,
         if(${totalRows} = 0, 0, count() * 100.0 / ${totalRows}) AS percentage
       FROM biai.${tableName}
       WHERE 1=1
         ${whereClause}
-      GROUP BY ${columnName}
+      GROUP BY value, display_value
       ORDER BY count DESC
       LIMIT ${limit}
     `
