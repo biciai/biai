@@ -15,7 +15,7 @@ app.use(express.json())
 app.use('/api', apiRoutes)
 app.use('/api/datasets', datasetsRoutes)
 
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.json({ status: 'ok', message: 'BIAI Server is running' })
 })
 

@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import Plot from 'react-plotly.js'
+import type { PlotMouseEvent, PlotSelectionEvent } from 'plotly.js'
+import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
 
 interface Column {
@@ -29,7 +31,8 @@ interface ColumnMetadata {
 }
 
 interface CategoryCount {
-  value: string | number
+  value: string
+  display_value: string
   count: number
   percentage: number
 }
@@ -95,7 +98,11 @@ function DatasetExplorer() {
   const [loading, setLoading] = useState(true)
   const [columnMetadata, setColumnMetadata] = useState<Record<string, ColumnMetadata[]>>({})
   const [aggregations, setAggregations] = useState<Record<string, ColumnAggregation[]>>({})
+  const [baselineAggregations, setBaselineAggregations] = useState<Record<string, ColumnAggregation[]>>({})
   const [filters, setFilters] = useState<Filter[]>([])
+  const [activeFilterMenu, setActiveFilterMenu] = useState<{ tableName: string; columnName: string } | null>(null)
+  const [customRangeInputs, setCustomRangeInputs] = useState<Record<string, { min: string; max: string }>>({})
+  const [rangeSelections, setRangeSelections] = useState<Record<string, Array<{ start: number; end: number }>>>({})
 
 
   useEffect(() => {
@@ -121,10 +128,14 @@ function DatasetExplorer() {
       setLoading(true)
       const response = await api.get(`/datasets/${id}`)
       setDataset(response.data.dataset)
+      setBaselineAggregations({})
+      setCustomRangeInputs({})
+      setRangeSelections({})
+      setActiveFilterMenu(null)
 
       // Load aggregations and column metadata for all tables
       for (const table of response.data.dataset.tables) {
-        await loadTableAggregations(table.id, table.name)
+        await loadTableAggregations(table.id, table.name, { storeBaseline: true })
         await loadColumnMetadata(table.id, table.name)
       }
     } catch (error) {
@@ -134,11 +145,18 @@ function DatasetExplorer() {
     }
   }
 
-  const loadTableAggregations = async (tableId: string, tableName: string) => {
+  const loadTableAggregations = async (
+    tableId: string,
+    tableName: string,
+    options?: { storeBaseline?: boolean }
+  ) => {
     try {
       const params = filters.length > 0 ? { filters: JSON.stringify(filters) } : {}
       const response = await api.get(`/datasets/${id}/tables/${tableId}/aggregations`, { params })
       setAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
+      if (options?.storeBaseline) {
+        setBaselineAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
+      }
     } catch (error) {
       console.error('Failed to load table aggregations:', error)
     }
@@ -151,6 +169,12 @@ function DatasetExplorer() {
     } catch (error) {
       console.error('Failed to load column metadata:', error)
     }
+  }
+
+  const getBaselineAggregation = (tableName: string, columnName: string): ColumnAggregation | undefined => {
+    const tableAggregations = baselineAggregations[tableName]
+    if (!tableAggregations) return undefined
+    return tableAggregations.find(agg => agg.column_name === columnName)
   }
 
   const getAggregation = (tableName: string, columnName: string): ColumnAggregation | undefined => {
@@ -170,68 +194,661 @@ function DatasetExplorer() {
     return metadata?.display_name || columnName.replace(/_/g, ' ')
   }
 
-  const toggleFilter = (column: string, value: string | number) => {
-    // Backend returns "N/A" for empty strings/nulls, convert back
-    const filterValue = value === 'N/A' ? '' : value
+  const normalizeFilterValue = (value: string | number | null | undefined): string => {
+    if (value === null || value === undefined) return ''
+    return String(value)
+  }
 
-    // Check if this exact filter exists
-    const existingFilterIndex = filters.findIndex(
-      f => f.column === column && f.operator === 'eq' && f.value === filterValue
-    )
+  const formatRangeValue = (value: number): string => {
+    if (!Number.isFinite(value)) return '–'
+    if (Number.isInteger(value)) return value.toString()
+    return value.toFixed(2)
+  }
 
-    if (existingFilterIndex >= 0) {
-      // Remove the filter
-      setFilters(filters.filter((_, i) => i !== existingFilterIndex))
-    } else {
-      // Add the filter
-      setFilters([...filters, { column, operator: 'eq', value: filterValue }])
+const rangeKey = (tableName: string, columnName: string) => `${tableName}.${columnName}`
+
+const rangesEqual = (a: { start: number; end: number }, b: { start: number; end: number }) =>
+  Math.abs(a.start - b.start) < 1e-9 && Math.abs(a.end - b.end) < 1e-9
+
+const getFilterColumn = (filter: Filter): string | undefined => {
+  if (filter.column) return filter.column
+  if (filter.or && Array.isArray(filter.or) && filter.or.length > 0) {
+    const child = filter.or[0] as Filter
+    return getFilterColumn(child)
+  }
+  if (filter.and && Array.isArray(filter.and) && filter.and.length > 0) {
+    const child = filter.and[0] as Filter
+    return getFilterColumn(child)
+  }
+  if (filter.not) {
+    return getFilterColumn(filter.not)
+  }
+  return undefined
+}
+
+const getFilterTableName = (filter: Filter): string | undefined => (filter as any).tableName
+
+const filterContainsColumn = (filter: Filter, column: string): boolean => {
+  if (filter.column === column) return true
+  if (filter.or && Array.isArray(filter.or)) {
+    return filter.or.some(child => filterContainsColumn(child, column))
+  }
+    if (filter.and && Array.isArray(filter.and)) {
+      return filter.and.some(child => filterContainsColumn(child, column))
     }
+    if (filter.not) {
+      return filterContainsColumn(filter.not, column)
+    }
+    return false
+  }
+
+  const hasColumnFilter = (column: string): boolean => filters.some(f => filterContainsColumn(f, column))
+
+  const removeColumnFilters = (prev: Filter[], column: string): Filter[] =>
+    prev.filter(filter => {
+      if (filter.column === column) return false
+      if (filter.or && Array.isArray(filter.or)) {
+        return !filter.or.every(child => filterContainsColumn(child, column))
+      }
+      return true
+    })
+
+  const clearColumnFilter = (tableName: string, columnName: string) => {
+    setFilters(prev => removeColumnFilters(prev, columnName))
+    const key = rangeKey(tableName, columnName)
+    setCustomRangeInputs(prev => {
+      if (!(key in prev)) return prev
+      const { [key]: _removed, ...rest } = prev
+      return rest
+    })
+    setRangeSelections(prev => {
+      if (!(key in prev)) return prev
+      const { [key]: _removed, ...rest } = prev
+      return rest
+    })
+  }
+
+  const updateColumnRanges = (
+    tableName: string,
+    columnName: string,
+    updater: (ranges: Array<{ start: number; end: number }>) => Array<{ start: number; end: number }>
+  ) => {
+    const key = rangeKey(tableName, columnName)
+    let nextRanges: Array<{ start: number; end: number }> = []
+    setRangeSelections(prev => {
+      const prevRanges = prev[key] ?? []
+      nextRanges = updater(prevRanges)
+      nextRanges = nextRanges
+        .slice()
+        .sort((a, b) => (a.start - b.start) || (a.end - b.end))
+      const unchanged = prevRanges.length === nextRanges.length && prevRanges.every((range, idx) => rangesEqual(range, nextRanges[idx]))
+      if (unchanged) {
+        nextRanges = prevRanges
+        return prev
+      }
+      const updated = { ...prev }
+      if (nextRanges.length === 0) {
+        delete updated[key]
+      } else {
+        updated[key] = nextRanges
+      }
+      return updated
+    })
+
+    setFilters(prev => {
+      const without = removeColumnFilters(prev, columnName)
+      if (nextRanges.length === 0) return without
+      if (nextRanges.length === 1) {
+        const range = nextRanges[0]
+        return [...without, { column: columnName, operator: 'between', value: [range.start, range.end], tableName } as unknown as Filter]
+      }
+      const orFilters = nextRanges.map(range => ({ column: columnName, operator: 'between', value: [range.start, range.end] }))
+      return [...without, { column: columnName, or: orFilters, tableName } as unknown as Filter]
+    })
+  }
+
+  const renderFilterMenu = (
+    tableName: string,
+    columnName: string,
+    categories?: CategoryCount[]
+  ) => {
+    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === columnName
+    if (!menuOpen || !categories || categories.length === 0) return null
+
+    const columnHasFilter = hasColumnFilter(columnName)
+
+    return (
+      <div
+        style={{
+          position: 'absolute',
+          top: '28px',
+          right: 0,
+          zIndex: 10,
+          background: 'white',
+          border: '1px solid #ddd',
+          borderRadius: '6px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+          padding: '0.5rem',
+          maxHeight: '200px',
+          overflowY: 'auto',
+          minWidth: '140px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.25rem'
+        }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          onClick={() => clearColumnFilter(tableName, columnName)}
+          style={{
+            border: 'none',
+            background: columnHasFilter ? '#1976D2' : '#eee',
+            color: columnHasFilter ? 'white' : '#555',
+            borderRadius: '4px',
+            padding: '0.25rem 0.5rem',
+            fontSize: '0.7rem',
+            cursor: columnHasFilter ? 'pointer' : 'default',
+            opacity: columnHasFilter ? 1 : 0.6
+          }}
+          disabled={!columnHasFilter}
+        >
+          Reset
+        </button>
+        <div style={{ borderBottom: '1px solid #eee', margin: '0.25rem 0' }} />
+        {categories.map(category => {
+          const rawValue = normalizeFilterValue(category.value)
+          const label = category.display_value ?? (category.value === '' ? '(Empty)' : String(category.value))
+          const active = isValueFiltered(columnName, rawValue)
+
+          return (
+            <button
+              key={`${tableName}-${columnName}-${label}`}
+              onMouseDown={event => event.preventDefault()}
+              onClick={() => toggleFilter(columnName, rawValue)}
+              style={{
+                border: active ? '1px solid #1976D2' : '1px solid #ccc',
+                background: active ? '#E3F2FD' : '#fafafa',
+                color: active ? '#0D47A1' : '#444',
+                borderRadius: '999px',
+                padding: '0.25rem 0.5rem',
+                fontSize: '0.7rem',
+                cursor: 'pointer',
+                textAlign: 'left'
+              }}
+              title={`${label} (${category.count} rows)`}
+            >
+              {label}
+            </button>
+          )
+        })}
+      </div>
+    )
+  }
+
+  useEffect(() => {
+    if (!activeFilterMenu) return
+    const { tableName, columnName } = activeFilterMenu
+    const key = rangeKey(tableName, columnName)
+    const baselineAgg = getBaselineAggregation(tableName, columnName)
+    if (!baselineAgg || baselineAgg.display_type !== 'numeric') return
+    const stats = baselineAgg.numeric_stats
+    if (!stats) return
+
+    const defaultMin = stats.min !== null ? String(stats.min) : ''
+    const defaultMax = stats.max !== null ? String(stats.max) : ''
+
+    const selectedRanges = rangeSelections[key] ?? []
+    const singleRange = selectedRanges.length === 1 ? selectedRanges[0] : null
+
+    const nextMin = singleRange ? String(singleRange.start) : defaultMin
+    const nextMax = singleRange ? String(singleRange.end) : defaultMax
+
+    setCustomRangeInputs(prev => {
+      const current = prev[key]
+      if (current && current.min === nextMin && current.max === nextMax) {
+        return prev
+      }
+      return { ...prev, [key]: { min: nextMin, max: nextMax } }
+    })
+  }, [activeFilterMenu, baselineAggregations, rangeSelections])
+
+  const handleCustomRangeChange = (
+    key: string,
+    field: 'min' | 'max',
+    value: string
+  ) => {
+    setCustomRangeInputs(prev => ({
+      ...prev,
+      [key]: {
+        min: field === 'min' ? value : prev[key]?.min ?? '',
+        max: field === 'max' ? value : prev[key]?.max ?? ''
+      }
+    }))
+  }
+
+  const applyCustomRange = (tableName: string, columnName: string) => {
+    const key = `${tableName}.${columnName}`
+    const range = customRangeInputs[key]
+    if (!range) return
+
+    const min = range.min.trim()
+    const max = range.max.trim()
+    if (min === '' || max === '') return
+
+    const minValue = Number(min)
+    const maxValue = Number(max)
+    if (!Number.isFinite(minValue) || !Number.isFinite(maxValue) || minValue > maxValue) {
+      return
+    }
+
+    setCustomRangeInputs(prev => ({
+      ...prev,
+      [key]: { min: String(minValue), max: String(maxValue) }
+    }))
+
+    updateColumnRanges(tableName, columnName, prevRanges => {
+      const nextRange = { start: minValue, end: maxValue }
+      const existingIndex = prevRanges.findIndex(range => rangesEqual(range, nextRange))
+      if (existingIndex >= 0) return prevRanges
+      return [...prevRanges, nextRange]
+    })
+  }
+
+  const getNiceBinWidth = (range: number, desiredBins: number): number => {
+    if (!Number.isFinite(range) || range <= 0) {
+      return 1
+    }
+
+    const target = range / Math.max(desiredBins, 1)
+    if (!Number.isFinite(target) || target <= 0) {
+      return range
+    }
+
+    const exponent = Math.floor(Math.log10(target))
+    const scaled = target / Math.pow(10, exponent)
+
+    let niceScaled: number
+    if (scaled <= 1) {
+      niceScaled = 1
+    } else if (scaled <= 2) {
+      niceScaled = 2
+    } else if (scaled <= 5) {
+      niceScaled = 5
+    } else {
+      niceScaled = 10
+    }
+
+    return niceScaled * Math.pow(10, exponent)
+  }
+
+  const getDisplayHistogram = (
+    histogram: HistogramBin[] | undefined,
+    stats: NumericStats | undefined
+  ): HistogramBin[] => {
+    if (!histogram || histogram.length === 0) return []
+    if (!stats || stats.min === null || stats.max === null) return histogram
+
+    const min = stats.min
+    const max = stats.max
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return histogram
+
+    const totalCount = histogram.reduce((sum, bin) => sum + bin.count, 0)
+    if (!Number.isFinite(totalCount) || totalCount === 0) return histogram
+
+    const range = max - min
+    const desiredBins = Math.min(Math.max(histogram.length, 1), 60)
+    let width = getNiceBinWidth(range, desiredBins)
+    if (!Number.isFinite(width) || width <= 0) {
+      width = range || 1
+    }
+
+    let guard = 0
+    while (range / width > 60 && guard < 10) {
+      const nextApprox = Math.ceil(range / width / 2)
+      width = getNiceBinWidth(range, Math.max(nextApprox, 1))
+      if (!Number.isFinite(width) || width <= 0) {
+        width = range || 1
+        break
+      }
+      guard += 1
+    }
+
+    const start = Math.floor(min / width) * width
+    const bucketCount = Math.max(1, Math.ceil((max - start) / width) + 1)
+    const buckets: HistogramBin[] = []
+    for (let i = 0; i < bucketCount; i++) {
+      buckets.push({
+        bin_start: start + i * width,
+        bin_end: start + (i + 1) * width,
+        count: 0,
+        percentage: 0
+      })
+    }
+
+    histogram.forEach(bin => {
+      const center = (bin.bin_start + bin.bin_end) / 2
+      let index = Math.floor((center - start) / width)
+      if (index < 0) index = 0
+      if (index >= buckets.length) index = buckets.length - 1
+      buckets[index].count += bin.count
+    })
+
+    buckets.forEach(bucket => {
+      bucket.percentage = bucket.count / totalCount * 100
+    })
+
+    const filtered = buckets.filter(bucket => bucket.count > 0)
+    return filtered.length > 0 ? filtered : histogram
+  }
+
+const renderNumericFilterMenu = (
+    tableName: string,
+    columnName: string,
+    histogram?: HistogramBin[],
+    stats?: NumericStats
+  ) => {
+    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === columnName
+    if (!menuOpen) return null
+
+    const bins = histogram ?? []
+    const key = `${tableName}.${columnName}`
+    const range = customRangeInputs[key] || { min: stats && stats.min !== null ? String(stats.min) : '', max: stats && stats.max !== null ? String(stats.max) : '' }
+    const columnHasFilter = hasColumnFilter(columnName)
+    const selectedRanges = rangeSelections[key] ?? []
+    const customRanges = selectedRanges.filter(range => !bins.some(bin => rangesEqual(range, { start: bin.bin_start, end: bin.bin_end })))
+    const minDisplay = stats && stats.min !== null ? formatRangeValue(stats.min) : '–'
+    const maxDisplay = stats && stats.max !== null ? formatRangeValue(stats.max) : '–'
+    const medianDisplay = stats && stats.median !== null ? formatRangeValue(stats.median) : '–'
+    const stdDisplay = stats && stats.stddev !== undefined && stats.stddev !== null ? stats.stddev.toFixed(2) : '–'
+
+    const minValue = Number(range.min)
+    const maxValue = Number(range.max)
+    const hasValidRange =
+      range.min.trim() !== '' &&
+      range.max.trim() !== '' &&
+      Number.isFinite(minValue) &&
+      Number.isFinite(maxValue) &&
+      minValue <= maxValue
+
+    return (
+      <div
+        style={{
+          position: 'absolute',
+          top: '28px',
+          right: 0,
+          zIndex: 10,
+          background: 'white',
+          border: '1px solid #ddd',
+          borderRadius: '6px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+          padding: '0.5rem',
+          maxHeight: '260px',
+          overflowY: 'auto',
+          minWidth: '180px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.35rem'
+        }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        {stats && (
+          <>
+            <div style={{ fontSize: '0.7rem', color: '#555', display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
+              <span>Min: {minDisplay}</span>
+              <span>Max: {maxDisplay}</span>
+            </div>
+            <div style={{ fontSize: '0.7rem', color: '#555', display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
+              <span>Median: {medianDisplay}</span>
+              <span>Std: {stdDisplay}</span>
+            </div>
+          </>
+        )}
+        {(() => {
+          const baselineAgg = getBaselineAggregation(tableName, columnName)
+          const nullCount = baselineAgg?.null_count ?? 0
+          if (nullCount === 0) return null
+
+          const nullActive = isValueFiltered(columnName, '')
+          return (
+            <>
+              <div style={{ borderBottom: '1px solid #eee', margin: '0.25rem 0' }} />
+              <button
+                onMouseDown={event => event.preventDefault()}
+                onClick={() => toggleFilter(columnName, '')}
+                style={{
+                  border: nullActive ? '1px solid #1976D2' : '1px solid #ccc',
+                  background: nullActive ? '#E3F2FD' : '#fafafa',
+                  color: nullActive ? '#0D47A1' : '#444',
+                  borderRadius: '999px',
+                  padding: '0.25rem 0.5rem',
+                  fontSize: '0.7rem',
+                  cursor: 'pointer',
+                  textAlign: 'left'
+                }}
+                title={`Null values (${nullCount} rows)`}
+              >
+                (Null) — {nullCount} rows
+              </button>
+            </>
+          )
+        })()}
+        <div style={{ display: 'flex', gap: '0.25rem' }}>
+          <button
+            onClick={() => clearColumnFilter(tableName, columnName)}
+            style={{
+              border: 'none',
+              background: columnHasFilter ? '#1976D2' : '#eee',
+              color: columnHasFilter ? 'white' : '#555',
+              borderRadius: '4px',
+              padding: '0.25rem 0.5rem',
+              fontSize: '0.7rem',
+              cursor: columnHasFilter ? 'pointer' : 'default',
+              opacity: columnHasFilter ? 1 : 0.6
+            }}
+            disabled={!columnHasFilter}
+          >
+            Reset
+          </button>
+        </div>
+        {bins.length > 0 && (
+          <div style={{ borderTop: '1px solid #eee', paddingTop: '0.25rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+            {bins.map((bin, index) => {
+              const active = isRangeFiltered(tableName, columnName, bin.bin_start, bin.bin_end)
+              const label = `${formatRangeValue(bin.bin_start)} – ${formatRangeValue(bin.bin_end)}`
+              return (
+                <button
+                  key={`${tableName}-${columnName}-bin-${index}`}
+                  onMouseDown={event => event.preventDefault()}
+                  onClick={() => toggleRangeFilter(tableName, columnName, bin.bin_start, bin.bin_end)}
+                  style={{
+                    border: active ? '1px solid #1976D2' : '1px solid #ccc',
+                    background: active ? '#E3F2FD' : '#fafafa',
+                    color: active ? '#0D47A1' : '#444',
+                    borderRadius: '999px',
+                    padding: '0.25rem 0.5rem',
+                    fontSize: '0.7rem',
+                    cursor: 'pointer'
+                  }}
+                  title={`${label} (${bin.count} rows)`}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+        )}
+        {customRanges.length > 0 && (
+          <div style={{ borderTop: '1px solid #eee', paddingTop: '0.25rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+            {customRanges.map((range, index) => {
+              const label = `${formatRangeValue(range.start)} – ${formatRangeValue(range.end)}`
+              return (
+                <button
+                  key={`${tableName}-${columnName}-custom-${index}`}
+                  onMouseDown={event => event.preventDefault()}
+                  onClick={() => updateColumnRanges(tableName, columnName, prev => prev.filter(r => !rangesEqual(r, range)))}
+                  style={{
+                    border: '1px solid #1976D2',
+                    background: '#E3F2FD',
+                    color: '#0D47A1',
+                    borderRadius: '999px',
+                    padding: '0.25rem 0.5rem',
+                    fontSize: '0.7rem',
+                    cursor: 'pointer'
+                  }}
+                  title={`Remove ${label}`}
+                >
+                  {label} ×
+                </button>
+              )
+            })}
+          </div>
+        )}
+        <div style={{ borderTop: '1px solid #eee', paddingTop: '0.35rem', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+          <div style={{ display: 'flex', gap: '0.35rem' }}>
+            <label style={{ fontSize: '0.7rem', color: '#555', flex: 1 }}>
+              From
+              <input
+                type="number"
+                value={range.min}
+                onChange={(event) => handleCustomRangeChange(key, 'min', event.target.value)}
+                placeholder={stats?.min !== null && stats?.min !== undefined ? String(stats.min) : ''}
+                style={{ width: '100%', padding: '0.2rem 0.3rem', marginTop: '0.15rem' }}
+              />
+            </label>
+            <label style={{ fontSize: '0.7rem', color: '#555', flex: 1 }}>
+              To
+              <input
+                type="number"
+                value={range.max}
+                onChange={(event) => handleCustomRangeChange(key, 'max', event.target.value)}
+                placeholder={stats?.max !== null && stats?.max !== undefined ? String(stats.max) : ''}
+                style={{ width: '100%', padding: '0.2rem 0.3rem', marginTop: '0.15rem' }}
+              />
+            </label>
+          </div>
+          <button
+            onClick={() => applyCustomRange(tableName, columnName)}
+            style={{
+              border: 'none',
+              background: hasValidRange ? '#1976D2' : '#ccc',
+              color: 'white',
+              borderRadius: '4px',
+              padding: '0.3rem 0.5rem',
+              fontSize: '0.75rem',
+              cursor: hasValidRange ? 'pointer' : 'default'
+            }}
+            disabled={!hasValidRange}
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const toggleFilter = (column: string, value: string | number) => {
+    const filterValue = normalizeFilterValue(value)
+
+    setFilters(prevFilters => {
+      const nextFilters = [...prevFilters]
+      const existingIndex = nextFilters.findIndex(f => f.column === column)
+
+      if (existingIndex === -1) {
+        nextFilters.push({ column, operator: 'eq', value: filterValue })
+        return nextFilters
+      }
+
+      const existing = nextFilters[existingIndex]
+
+      if (existing.operator === 'eq') {
+        const existingValue = normalizeFilterValue(existing.value as string | number)
+        if (existingValue === filterValue) {
+          nextFilters.splice(existingIndex, 1)
+          return nextFilters
+        }
+
+        nextFilters[existingIndex] = {
+          column,
+          operator: 'in',
+          value: [existingValue, filterValue]
+        }
+        return nextFilters
+      }
+
+      if (existing.operator === 'in') {
+        const values = Array.isArray(existing.value)
+          ? existing.value.map(v => normalizeFilterValue(v as string | number))
+          : []
+        const matchIndex = values.findIndex(v => v === filterValue)
+
+        if (matchIndex >= 0) {
+          values.splice(matchIndex, 1)
+        } else {
+          values.push(filterValue)
+        }
+
+        if (values.length === 0) {
+          nextFilters.splice(existingIndex, 1)
+        } else if (values.length === 1) {
+          nextFilters[existingIndex] = { column, operator: 'eq', value: values[0] }
+        } else {
+          nextFilters[existingIndex] = { column, operator: 'in', value: values }
+        }
+
+        return nextFilters
+      }
+
+      nextFilters[existingIndex] = { column, operator: 'eq', value: filterValue }
+      return nextFilters
+    })
   }
 
   const clearFilters = () => {
     setFilters([])
+    setCustomRangeInputs({})
+    setRangeSelections({})
   }
 
   const isValueFiltered = (column: string, value: string | number): boolean => {
-    // Backend returns "N/A" for empty strings/nulls
-    const compareValue = value === 'N/A' ? '' : value
-    return filters.some(f => f.column === column && f.operator === 'eq' && f.value === compareValue)
+    const compareValue = normalizeFilterValue(value)
+    return filters.some(f => {
+      if (f.column !== column) return false
+      if (f.operator === 'eq') {
+        return normalizeFilterValue(f.value as string | number) === compareValue
+      }
+      if (f.operator === 'in' && Array.isArray(f.value)) {
+        return f.value
+          .map(v => normalizeFilterValue(v as string | number))
+          .includes(compareValue)
+      }
+      return false
+    })
   }
 
-  const toggleRangeFilter = (column: string, binStart: number, binEnd: number) => {
-    // Check if this exact range filter exists
-    const existingFilterIndex = filters.findIndex(
-      f => f.column === column && f.operator === 'between' &&
-           Array.isArray(f.value) && f.value[0] === binStart && f.value[1] === binEnd
-    )
-
-    if (existingFilterIndex >= 0) {
-      // Remove the filter
-      setFilters(filters.filter((_, i) => i !== existingFilterIndex))
-    } else {
-      // Add the filter
-      setFilters([...filters, { column, operator: 'between', value: [binStart, binEnd] }])
-    }
+  const toggleRangeFilter = (tableName: string, column: string, binStart: number, binEnd: number) => {
+    const range = { start: binStart, end: binEnd }
+    updateColumnRanges(tableName, column, prevRanges => {
+      const existingIndex = prevRanges.findIndex(r => rangesEqual(r, range))
+      if (existingIndex >= 0) {
+        return [...prevRanges.slice(0, existingIndex), ...prevRanges.slice(existingIndex + 1)]
+      }
+      return [...prevRanges, range]
+    })
   }
 
-  const isRangeFiltered = (column: string, binStart: number, binEnd: number): boolean => {
-    return filters.some(
-      f => f.column === column && f.operator === 'between' &&
-           Array.isArray(f.value) && f.value[0] === binStart && f.value[1] === binEnd
-    )
+  const isRangeFiltered = (tableName: string, column: string, binStart: number, binEnd: number): boolean => {
+    const key = rangeKey(tableName, column)
+    const ranges = rangeSelections[key] ?? []
+    return ranges.some(range => rangesEqual(range, { start: binStart, end: binEnd }))
   }
 
   const renderPieChart = (title: string, tableName: string, field: string) => {
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
 
-    const labels = aggregation.categories.map(c => String(c.value))
+    const labels = aggregation.categories.map(c => c.display_value ?? (c.value === '' ? '(Empty)' : String(c.value)))
     const values = aggregation.categories.map(c => c.count)
-    // Backend returns "N/A" for both empty strings and nulls
-    // We'll convert N/A to empty string for filtering (more common case)
-    const originalValues = aggregation.categories.map(c =>
-      c.value === 'N/A' ? '' : c.value
-    )
+    const filterValues = aggregation.categories.map(c => normalizeFilterValue(c.value))
 
     const metadata = getColumnMetadata(tableName, field)
 
@@ -241,51 +858,96 @@ function DatasetExplorer() {
       metadata?.description || ''
     ].filter(Boolean).join('\n')
 
+    const baselineAggregation = getBaselineAggregation(tableName, field)
+    const baselineCategories = baselineAggregation?.categories
+
+    const categoriesForMenu = baselineCategories && baselineCategories.length > 0
+      ? baselineCategories
+      : aggregation.categories
+
+    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
+    const columnActive = hasColumnFilter(field)
+
     return (
       <div style={{
+        position: 'relative',
         background: 'white',
         padding: '0.5rem',
         borderRadius: '8px',
         boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
         width: '175px',
-        height: '175px',
+        minHeight: '175px',
         boxSizing: 'border-box',
-        flexShrink: 0
+        flexShrink: 0,
+        display: 'flex',
+        flexDirection: 'column'
       }}>
-        <h4
-          style={{
-            margin: '0 0 0.25rem 0',
-            fontSize: '0.75rem',
-            fontWeight: 600,
-            cursor: 'help',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            height: '1rem'
-          }}
-          title={tooltipText}
-        >
-          {metadata?.display_name || title}
-        </h4>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
+          <h4
+            style={{
+              margin: 0,
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              cursor: 'help',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              flexGrow: 1
+            }}
+            title={tooltipText}
+          >
+            {metadata?.display_name || title}
+          </h4>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setActiveFilterMenu(prev =>
+                prev && prev.tableName === tableName && prev.columnName === field
+                  ? null
+                  : { tableName, columnName: field }
+              )
+            }}
+            style={{
+              border: 'none',
+              background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
+              color: menuOpen || columnActive ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.75rem',
+              cursor: 'pointer',
+              lineHeight: 1
+            }}
+            title="Filter values"
+          >
+            ⚲
+          </button>
+        </div>
         <Plot
           data={[{
             type: 'pie',
             labels,
             values,
+            textinfo: 'label+percent',
+            textposition: 'inside',
+            insidetextorientation: 'radial',
             marker: {
-              colors: originalValues.map(value =>
+              colors: filterValues.map(value =>
                 isValueFiltered(field, value) ? '#1976D2' : undefined
               ),
               line: {
-                color: originalValues.map(value =>
+                color: filterValues.map(value =>
                   isValueFiltered(field, value) ? '#000' : undefined
                 ),
-                width: originalValues.map(value =>
+                width: filterValues.map(value =>
                   isValueFiltered(field, value) ? 2 : 0
                 )
               }
             },
-            textinfo: 'label+percent',
             textfont: { size: 9 },
             hovertemplate: '%{label}<br>Count: %{value}<br>%{percent}<extra></extra>'
           }]}
@@ -303,18 +965,18 @@ function DatasetExplorer() {
             staticPlot: false
           }}
           style={{ width: '165px', height: '135px', cursor: 'pointer' }}
-          onClick={(data) => {
-            if (data?.points?.[0]) {
-              const point = data.points[0]
-              // Use pointNumber or pointIndex depending on what's available
-              const index = point.pointNumber !== undefined ? point.pointNumber : point.pointIndex
-              if (index !== undefined && index >= 0 && index < originalValues.length) {
-                const clickedValue = originalValues[index]
-                toggleFilter(field, clickedValue)
-              }
+          onClick={(event: PlotMouseEvent) => {
+            const point = event.points?.[0]
+            if (!point) return
+
+            const index = point.pointNumber ?? point.pointIndex
+            if (typeof index === 'number' && index >= 0 && index < filterValues.length) {
+              const clickedValue = filterValues[index]
+              toggleFilter(field, clickedValue)
             }
           }}
         />
+        {renderFilterMenu(tableName, field, categoriesForMenu)}
       </div>
     )
   }
@@ -323,13 +985,9 @@ function DatasetExplorer() {
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
 
-    const labels = aggregation.categories.map(c => String(c.value))
+    const labels = aggregation.categories.map(c => c.display_value ?? (c.value === '' ? '(Empty)' : String(c.value)))
     const values = aggregation.categories.map(c => c.count)
-    // Backend returns "N/A" for both empty strings and nulls
-    // We'll convert N/A to empty string for filtering (more common case)
-    const originalValues = aggregation.categories.map(c =>
-      c.value === 'N/A' ? '' : c.value
-    )
+    const filterValues = aggregation.categories.map(c => normalizeFilterValue(c.value))
 
     const metadata = getColumnMetadata(tableName, field)
 
@@ -339,46 +997,84 @@ function DatasetExplorer() {
       metadata?.description || ''
     ].filter(Boolean).join('\n')
 
+    const baselineAggregation = getBaselineAggregation(tableName, field)
+    const categoriesForMenu = baselineAggregation?.categories || aggregation.categories
+    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
+    const columnActive = hasColumnFilter(field)
+
     return (
       <div style={{
+        position: 'relative',
         background: 'white',
         padding: '0.5rem',
         borderRadius: '8px',
         boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
         width: '358px',
-        height: '175px',
+        minHeight: '175px',
         boxSizing: 'border-box',
-        flexShrink: 0
+        flexShrink: 0,
+        display: 'flex',
+        flexDirection: 'column'
       }}>
-        <h4
-          style={{
-            margin: '0 0 0.25rem 0',
-            fontSize: '0.75rem',
-            fontWeight: 600,
-            cursor: 'help',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            height: '1rem'
-          }}
-          title={tooltipText}
-        >
-          {metadata?.display_name || title}
-        </h4>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
+          <h4
+            style={{
+              margin: 0,
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              cursor: 'help',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              flexGrow: 1
+            }}
+            title={tooltipText}
+          >
+            {metadata?.display_name || title}
+          </h4>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setActiveFilterMenu(prev =>
+                prev && prev.tableName === tableName && prev.columnName === field
+                  ? null
+                  : { tableName, columnName: field }
+              )
+            }}
+            style={{
+              border: 'none',
+              background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
+              color: menuOpen || columnActive ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.75rem',
+              cursor: 'pointer',
+              lineHeight: 1
+            }}
+            title="Filter values"
+          >
+            ⚲
+          </button>
+        </div>
         <Plot
           data={[{
             type: 'bar',
             x: labels,
             y: values,
             marker: {
-              color: originalValues.map(value =>
+              color: filterValues.map(value =>
                 isValueFiltered(field, value) ? '#1976D2' : '#2196F3'
               ),
               line: {
-                color: originalValues.map(value =>
+                color: filterValues.map(value =>
                   isValueFiltered(field, value) ? '#000' : undefined
                 ),
-                width: originalValues.map(value =>
+                width: filterValues.map(value =>
                   isValueFiltered(field, value) ? 2 : 0
                 )
               }
@@ -402,36 +1098,42 @@ function DatasetExplorer() {
             scrollZoom: false
           }}
           style={{ width: '348px', height: '135px', cursor: 'pointer' }}
-          onClick={(data) => {
-            if (data?.points?.[0]) {
-              const pointIndex = data.points[0].pointIndex
-              if (pointIndex !== undefined && pointIndex >= 0 && pointIndex < originalValues.length) {
-                const clickedValue = originalValues[pointIndex]
-                toggleFilter(field, clickedValue)
-              }
+          onClick={(event: PlotMouseEvent) => {
+            const point = event.points?.[0]
+            if (!point) return
+
+            const pointIndex = point.pointIndex
+            if (typeof pointIndex === 'number' && pointIndex >= 0 && pointIndex < filterValues.length) {
+              const clickedValue = filterValues[pointIndex]
+              toggleFilter(field, clickedValue)
             }
           }}
-          onSelected={(data) => {
-            if (data?.points && data.points.length > 0) {
-              // Get all selected values
-              const selectedValues = data.points
-                .map(p => p.pointIndex)
-                .filter(idx => idx !== undefined && idx >= 0 && idx < originalValues.length)
-                .map(idx => originalValues[idx])
-              // Add IN filter with selected values
-              if (selectedValues.length > 0) {
-                setFilters(prev => [...prev.filter(f => f.column !== field), { column: field, operator: 'in', value: selectedValues }])
-              }
+          onSelected={(event: PlotSelectionEvent) => {
+            if (!event?.points || event.points.length === 0) return
+            const selectedValues = event.points
+              .map(p => p.pointIndex)
+              .filter((idx): idx is number => typeof idx === 'number' && idx >= 0 && idx < filterValues.length)
+              .map(idx => filterValues[idx])
+
+            if (selectedValues.length > 0) {
+              setFilters(prev => [
+                ...prev.filter(f => f.column !== field),
+                { column: field, operator: 'in', value: selectedValues }
+              ])
             }
           }}
         />
+        {renderFilterMenu(tableName, field, categoriesForMenu)}
       </div>
     )
   }
 
   const renderHistogram = (title: string, tableName: string, field: string) => {
     const aggregation = getAggregation(tableName, field)
-    if (!aggregation?.histogram || !aggregation.numeric_stats) return null
+    if (!aggregation?.numeric_stats) return null
+
+    const rawHistogram = aggregation.histogram ?? []
+    if (rawHistogram.length === 0) return null
 
     const metadata = getColumnMetadata(tableName, field)
 
@@ -449,37 +1151,79 @@ function DatasetExplorer() {
       statsText
     ].filter(Boolean).join('\n')
 
+    const baselineAggregation = getBaselineAggregation(tableName, field)
+    const menuHistogram = baselineAggregation?.histogram ?? rawHistogram
+    const menuStats = baselineAggregation?.numeric_stats || aggregation.numeric_stats
+    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
+    const columnActive = hasColumnFilter(field)
+
+    const displayHistogram = getDisplayHistogram(menuHistogram, menuStats)
+    const binsForPlot = displayHistogram.length > 0 ? displayHistogram : menuHistogram
+
     // Convert histogram bins to bar chart data
-    const xValues = aggregation.histogram.map(bin => (bin.bin_start + bin.bin_end) / 2)
-    const yValues = aggregation.histogram.map(bin => bin.count)
-    const binWidth = aggregation.histogram[0] ? aggregation.histogram[0].bin_end - aggregation.histogram[0].bin_start : 1
+    const xValues = binsForPlot.map(bin => (bin.bin_start + bin.bin_end) / 2)
+    const yValues = binsForPlot.map(bin => bin.count)
+    const binWidth = binsForPlot[0] ? binsForPlot[0].bin_end - binsForPlot[0].bin_start : 1
 
     return (
       <div style={{
+        position: 'relative',
         background: 'white',
         padding: '0.5rem',
         borderRadius: '8px',
         boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
         width: '358px',
-        height: '175px',
+        minHeight: '175px',
         boxSizing: 'border-box',
-        flexShrink: 0
+        flexShrink: 0,
+        display: 'flex',
+        flexDirection: 'column'
       }}>
-        <h4
-          style={{
-            margin: '0 0 0.25rem 0',
-            fontSize: '0.75rem',
-            fontWeight: 600,
-            cursor: 'help',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            height: '1rem'
-          }}
-          title={tooltipText}
-        >
-          {metadata?.display_name || title}
-        </h4>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
+          <h4
+            style={{
+              margin: 0,
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              cursor: 'help',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              flexGrow: 1
+            }}
+            title={tooltipText}
+          >
+            {metadata?.display_name || title}
+          </h4>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setActiveFilterMenu(prev =>
+                prev && prev.tableName === tableName && prev.columnName === field
+                  ? null
+                  : { tableName, columnName: field }
+              )
+            }}
+            style={{
+              border: 'none',
+              background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
+              color: menuOpen || columnActive ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.75rem',
+              cursor: 'pointer',
+              lineHeight: 1
+            }}
+            title="Filter values"
+          >
+            ⚲
+          </button>
+        </div>
         <Plot
           data={[{
             type: 'bar',
@@ -487,20 +1231,20 @@ function DatasetExplorer() {
             y: yValues,
             width: binWidth * 0.9,
             marker: {
-              color: aggregation.histogram.map(bin =>
-                isRangeFiltered(field, bin.bin_start, bin.bin_end) ? '#2E7D32' : '#4CAF50'
+              color: binsForPlot.map(bin =>
+                isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end) ? '#2E7D32' : '#4CAF50'
               ),
               line: {
-                color: aggregation.histogram.map(bin =>
-                  isRangeFiltered(field, bin.bin_start, bin.bin_end) ? '#000' : undefined
+                color: binsForPlot.map(bin =>
+                  isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end) ? '#000' : undefined
                 ),
-                width: aggregation.histogram.map(bin =>
-                  isRangeFiltered(field, bin.bin_start, bin.bin_end) ? 2 : 0
+                width: binsForPlot.map(bin =>
+                  isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end) ? 2 : 0
                 )
               }
             },
             hovertemplate: 'Range: [%{customdata[0]:.2f}, %{customdata[1]:.2f}]<br>Count: %{y}<extra></extra>',
-            customdata: aggregation.histogram.map(bin => [bin.bin_start, bin.bin_end])
+            customdata: binsForPlot.map(bin => [bin.bin_start, bin.bin_end])
           }]}
           layout={{
             height: 135,
@@ -520,23 +1264,30 @@ function DatasetExplorer() {
             scrollZoom: false
           }}
           style={{ width: '348px', height: '135px', cursor: 'pointer' }}
-          onClick={(data) => {
-            if (data?.points?.[0] && aggregation.histogram) {
-              const pointIndex = data.points[0].pointIndex
-              if (pointIndex !== undefined && pointIndex >= 0 && pointIndex < aggregation.histogram.length) {
-                const bin = aggregation.histogram[pointIndex]
-                toggleRangeFilter(field, bin.bin_start, bin.bin_end)
-              }
+          onClick={(event: PlotMouseEvent) => {
+            const point = event.points?.[0]
+            if (!point) return
+
+            const pointIndex = point.pointIndex
+            if (typeof pointIndex === 'number' && pointIndex >= 0 && pointIndex < binsForPlot.length) {
+              const bin = binsForPlot[pointIndex]
+              toggleRangeFilter(tableName, field, bin.bin_start, bin.bin_end)
             }
           }}
-          onSelected={(data) => {
-            if (data?.range?.x && Array.isArray(data.range.x) && data.range.x.length >= 2) {
-              const [minX, maxX] = data.range.x
-              // Add BETWEEN filter with selected range
-              setFilters(prev => [...prev.filter(f => f.column !== field), { column: field, operator: 'between', value: [minX, maxX] }])
-            }
+          onSelected={(event: PlotSelectionEvent) => {
+            const rangeX = event?.range?.x
+            if (!rangeX || rangeX.length < 2) return
+
+            const [minX, maxX] = rangeX
+            updateColumnRanges(tableName, field, prev => {
+              const nextRange = { start: minX, end: maxX }
+              const existingIndex = prev.findIndex(range => rangesEqual(range, nextRange))
+              if (existingIndex >= 0) return prev
+              return [...prev, nextRange]
+            })
           }}
         />
+        {renderNumericFilterMenu(tableName, field, displayHistogram, menuStats)}
       </div>
     )
   }
@@ -580,8 +1331,17 @@ function DatasetExplorer() {
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             {filters.map((filter, idx) => {
+              const columnName = getFilterColumn(filter)
+              const tableName = getFilterTableName(filter)
+
               let displayValue = String(filter.value)
-              let removeHandler = () => setFilters(filters.filter((_, i) => i !== idx))
+              let removeHandler = () => {
+                if (tableName && columnName) {
+                  clearColumnFilter(tableName, columnName)
+                } else {
+                  setFilters(filters.filter((_, i) => i !== idx))
+                }
+              }
 
               if (filter.operator === 'between' && Array.isArray(filter.value)) {
                 displayValue = `[${typeof filter.value[0] === 'number' ? filter.value[0].toFixed(2) : filter.value[0]}, ${typeof filter.value[1] === 'number' ? filter.value[1].toFixed(2) : filter.value[1]}]`
@@ -596,8 +1356,20 @@ function DatasetExplorer() {
                 if (filter.value === '') displayValue = '(Empty)'
                 else if (filter.value === ' ') displayValue = '(Space)'
                 else displayValue = String(filter.value)
-              }
+              } else if (filter.or && Array.isArray(filter.or)) {
+                const ranges = filter.or
+                  .map(rangeFilter => rangeFilter as Filter)
+                  .filter(rangeFilter => rangeFilter.column === filter.column && rangeFilter.operator === 'between' && Array.isArray(rangeFilter.value))
+                  .map(rangeFilter => {
+                    const [start, end] = rangeFilter.value
+                    const startLabel = typeof start === 'number' ? formatRangeValue(start) : String(start)
+                    const endLabel = typeof end === 'number' ? formatRangeValue(end) : String(end)
+                    return `${startLabel} – ${endLabel}`
+                  })
 
+                displayValue = `(${ranges.join(' ∪ ')})`
+              }
+              const columnLabel = columnName ?? '(Column)'
               return (
                 <div
                   key={idx}
@@ -612,7 +1384,7 @@ function DatasetExplorer() {
                     border: '1px solid #2196F3'
                   }}
                 >
-                  <span><strong>{filter.column}:</strong> {displayValue}</span>
+                  <span><strong>{columnLabel}:</strong> {displayValue}</span>
                   <button
                     onClick={removeHandler}
                     style={{
@@ -663,7 +1435,10 @@ function DatasetExplorer() {
 
         <h2 style={{ marginTop: 0, paddingRight: '3rem' }}>{dataset.name}</h2>
         {dataset.description && (
-          <p style={{ color: '#666', margin: '0.5rem 0' }} dangerouslySetInnerHTML={{ __html: dataset.description }}></p>
+          <SafeHtml
+            html={dataset.description}
+            style={{ color: '#666', margin: '0.5rem 0', display: 'block' }}
+          />
         )}
 
         <div style={{ display: 'flex', gap: '2rem', marginTop: '1rem', fontSize: '0.875rem' }}>

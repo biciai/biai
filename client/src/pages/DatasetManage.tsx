@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
 
 interface Column {
@@ -49,6 +50,13 @@ interface ColumnMetadata {
   is_hidden: boolean
   display_type: string
   suggested_chart: string
+}
+
+interface ColumnMetadataUpdate {
+  displayName?: string
+  description?: string
+  isHidden?: boolean
+  displayType?: string
 }
 
 function DatasetManage() {
@@ -176,7 +184,7 @@ function DatasetManage() {
     }
   }
 
-  const updateColumnMetadata = async (columnName: string, updates: Partial<ColumnMetadata>) => {
+  const updateColumnMetadata = async (columnName: string, updates: ColumnMetadataUpdate) => {
     if (!editingTableId) return
 
     try {
@@ -250,7 +258,12 @@ function DatasetManage() {
 
       <div style={{ marginBottom: '2rem', background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
         <h2 style={{ marginTop: 0 }}>{dataset.name}</h2>
-        {dataset.description && <p style={{ color: '#666' }} dangerouslySetInnerHTML={{ __html: dataset.description }}></p>}
+        {dataset.description && (
+          <SafeHtml
+            html={dataset.description}
+            style={{ color: '#666', display: 'block', margin: '0.5rem 0 0 0' }}
+          />
+        )}
 
         {dataset.tags && dataset.tags.length > 0 && (
           <div style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>

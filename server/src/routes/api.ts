@@ -3,8 +3,8 @@ import queriesRouter from './queries.js'
 
 const router = Router()
 
-router.get('/test', (req, res) => {
-  res.json({ message: 'API is working' })
+router.get('/test', (_req, res) => {
+  return res.json({ message: 'API is working' })
 })
 
 router.use('/queries', queriesRouter)
