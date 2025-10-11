@@ -150,6 +150,8 @@ The system uses ClickHouse with the following metadata tables:
 
 ## Next Steps
 
+- UI for filtering criteria; make it more human-readable; convert to the json format
+- Chatbot to generate filtering criteria
 - Allow selecting multiple values from the same chart in the UI
 - Allow AND/OR/NOT logic in the UI
 - Implement sessions so that the backend does not need to query database for every API request and additional filter can apply to the previous one
