@@ -1161,8 +1161,35 @@ const renderNumericFilterMenu = (
     const binsForPlot = displayHistogram.length > 0 ? displayHistogram : menuHistogram
 
     // Convert histogram bins to bar chart data
+    // Use baseline bins for x-axis, but filtered counts for y-axis
     const xValues = binsForPlot.map(bin => (bin.bin_start + bin.bin_end) / 2)
-    const yValues = binsForPlot.map(bin => bin.count)
+
+    // Map filtered counts to baseline bins by checking overlap
+    // Since filtered bins have different boundaries, we need to accumulate counts
+    // for filtered bins that overlap with each baseline bin
+    const yValues = binsForPlot.map(baselineBin => {
+      let totalCount = 0
+
+      // Sum up counts from all filtered bins that overlap with this baseline bin
+      rawHistogram.forEach(filteredBin => {
+        // Check if there's any overlap between baseline and filtered bin
+        const overlapStart = Math.max(baselineBin.bin_start, filteredBin.bin_start)
+        const overlapEnd = Math.min(baselineBin.bin_end, filteredBin.bin_end)
+
+        if (overlapStart < overlapEnd) {
+          // There's overlap - calculate what fraction of the filtered bin overlaps
+          const filteredBinWidth = filteredBin.bin_end - filteredBin.bin_start
+          const overlapWidth = overlapEnd - overlapStart
+          const overlapFraction = overlapWidth / filteredBinWidth
+
+          // Add proportional count
+          totalCount += filteredBin.count * overlapFraction
+        }
+      })
+
+      return Math.round(totalCount)
+    })
+
     const binWidth = binsForPlot[0] ? binsForPlot[0].bin_end - binsForPlot[0].bin_start : 1
 
     return (
