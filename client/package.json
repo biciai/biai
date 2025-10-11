@@ -26,9 +26,9 @@
     "typescript": "^5.5.3",
     "vite": "^5.4.1"
   },
-  "description": "",
+  "description": "BIAI Frontend - React-based UI for Business Intelligence AI",
   "main": "index.js",
   "keywords": [],
   "author": "",
-  "license": "ISC"
+  "license": "MIT"
 }
