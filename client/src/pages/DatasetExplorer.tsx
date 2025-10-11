@@ -603,6 +603,35 @@ const renderNumericFilterMenu = (
             </div>
           </>
         )}
+        {(() => {
+          const baselineAgg = getBaselineAggregation(tableName, columnName)
+          const nullCount = baselineAgg?.null_count ?? 0
+          if (nullCount === 0) return null
+
+          const nullActive = isValueFiltered(columnName, '')
+          return (
+            <>
+              <div style={{ borderBottom: '1px solid #eee', margin: '0.25rem 0' }} />
+              <button
+                onMouseDown={event => event.preventDefault()}
+                onClick={() => toggleFilter(columnName, '')}
+                style={{
+                  border: nullActive ? '1px solid #1976D2' : '1px solid #ccc',
+                  background: nullActive ? '#E3F2FD' : '#fafafa',
+                  color: nullActive ? '#0D47A1' : '#444',
+                  borderRadius: '999px',
+                  padding: '0.25rem 0.5rem',
+                  fontSize: '0.7rem',
+                  cursor: 'pointer',
+                  textAlign: 'left'
+                }}
+                title={`Null values (${nullCount} rows)`}
+              >
+                (Null) — {nullCount} rows
+              </button>
+            </>
+          )
+        })()}
         <div style={{ display: 'flex', gap: '0.25rem' }}>
           <button
             onClick={() => clearColumnFilter(tableName, columnName)}

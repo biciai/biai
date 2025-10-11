@@ -102,7 +102,7 @@ export class DatasetService {
     const clickhouseTableName = `dataset_${datasetId.replace(/-/g, '_')}_${tableName.replace(/[^a-z0-9_]/g, '_').toLowerCase()}`
 
     // Create the ClickHouse table
-    await this.createDynamicTable(clickhouseTableName, parsedData.columns)
+    await this.createDynamicTable(clickhouseTableName, parsedData.columns, primaryKey)
 
     // Insert data
     await this.insertData(clickhouseTableName, parsedData.columns, parsedData.rows)
@@ -209,10 +209,12 @@ export class DatasetService {
     }
   }
 
-  private async createDynamicTable(tableName: string, columns: ColumnMetadata[]): Promise<void> {
+  private async createDynamicTable(tableName: string, columns: ColumnMetadata[], primaryKey?: string): Promise<void> {
     const columnDefs = columns.map(col => {
-      const nullable = col.nullable ? 'Nullable(' + col.type + ')' : col.type
-      return `${col.name} ${nullable}`
+      // Make all columns nullable except the primary key
+      const shouldBeNullable = col.name !== primaryKey
+      const columnType = shouldBeNullable ? 'Nullable(' + col.type + ')' : col.type
+      return `${col.name} ${columnType}`
     }).join(',\n    ')
 
     const createTableQuery = `
@@ -243,9 +245,11 @@ export class DatasetService {
         }
 
         if (col.type === 'Int32') {
-          obj[col.name] = parseInt(value, 10)
+          const parsed = parseInt(value, 10)
+          obj[col.name] = isNaN(parsed) ? null : parsed
         } else if (col.type === 'Float64') {
-          obj[col.name] = parseFloat(value)
+          const parsed = parseFloat(value)
+          obj[col.name] = isNaN(parsed) ? null : parsed
         } else {
           obj[col.name] = value
         }
