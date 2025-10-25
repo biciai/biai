@@ -4,6 +4,9 @@ import { parseCSVFile } from '../services/fileParser.js'
 import datasetService from '../services/datasetService.js'
 import aggregationService from '../services/aggregationService.js'
 import { unlink } from 'fs/promises'
+import { fetchFileFromUrl } from '../utils/urlFetcher.js'
+import { v4 as uuidv4 } from 'uuid'
+import path from 'path'
 
 const router = express.Router()
 
@@ -53,12 +56,11 @@ router.post('/', async (req, res) => {
 
 // Add table to existing dataset
 router.post('/:id/tables', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' })
-    }
+  let tempFilePath: string | null = null
 
+  try {
     const {
+      fileUrl,
       tableName,
       displayName,
       skipRows = '0',
@@ -69,14 +71,36 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
       columnMetadataConfig = '{}'
     } = req.body
 
+    // Handle either file upload or URL
+    let filePath: string
+    let filename: string
+    let mimetype: string
+
+    if (fileUrl) {
+      // Fetch file from URL
+      tempFilePath = path.join('uploads', `url_${uuidv4()}`)
+      const fetchedFile = await fetchFileFromUrl(fileUrl, tempFilePath)
+      filePath = fetchedFile.path
+      filename = fetchedFile.filename
+      mimetype = fetchedFile.mimetype
+    } else if (req.file) {
+      // Use uploaded file
+      filePath = req.file.path
+      filename = req.file.originalname
+      mimetype = req.file.mimetype
+      tempFilePath = filePath
+    } else {
+      return res.status(400).json({ error: 'Either file upload or fileUrl is required' })
+    }
+
     if (!tableName) {
-      await unlink(req.file.path)
+      await unlink(tempFilePath)
       return res.status(400).json({ error: 'Table name is required' })
     }
 
     // Validate table name (alphanumeric and underscores only)
     if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
-      await unlink(req.file.path)
+      await unlink(tempFilePath)
       return res.status(400).json({ error: 'Table name must contain only letters, numbers, and underscores' })
     }
 
@@ -92,7 +116,7 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
     }
 
     const parsedData = await parseCSVFile(
-      req.file.path,
+      filePath,
       parseInt(skipRows, 10),
       delimiter,
       parsedColumnMetadataConfig
@@ -105,7 +129,7 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
       parsedCustomMetadata = JSON.parse(customMetadata)
       parsedRelationships = JSON.parse(relationships)
     } catch (e) {
-      await unlink(req.file.path)
+      await unlink(tempFilePath)
       return res.status(400).json({ error: 'Invalid JSON in customMetadata or relationships' })
     }
 
@@ -113,15 +137,16 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
       req.params.id,
       tableName,
       displayName || tableName,
-      req.file.originalname,
-      req.file.mimetype,
+      filename,
+      mimetype,
       parsedData,
       primaryKey,
       parsedCustomMetadata,
       parsedRelationships
     )
 
-    await unlink(req.file.path)
+    await unlink(tempFilePath)
+    tempFilePath = null
 
     return res.json({
       success: true,
@@ -137,9 +162,9 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
   } catch (error: any) {
     console.error('Add table error:', error)
 
-    if (req.file) {
+    if (tempFilePath) {
       try {
-        await unlink(req.file.path)
+        await unlink(tempFilePath)
       } catch (e) {}
     }
 

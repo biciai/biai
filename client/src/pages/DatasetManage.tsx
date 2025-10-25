@@ -66,6 +66,8 @@ function DatasetManage() {
   const [loading, setLoading] = useState(true)
   const [showAddTable, setShowAddTable] = useState(false)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [fileUrl, setFileUrl] = useState('')
+  const [importMode, setImportMode] = useState<'file' | 'url'>('file')
   const [tableName, setTableName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [skipRows, setSkipRows] = useState('4')
@@ -108,12 +110,33 @@ function DatasetManage() {
     }
   }
 
+  const handleUrlChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const url = e.target.value
+    setFileUrl(url)
+    if (!tableName && url) {
+      // Extract filename from URL
+      const urlPath = url.split('?')[0]
+      const filename = urlPath.substring(urlPath.lastIndexOf('/') + 1)
+      const name = filename.replace(/\.[^/.]+$/, '').replace(/[^a-z0-9_]/gi, '_').toLowerCase()
+      setTableName(name)
+      setDisplayName(filename.replace(/\.[^/.]+$/, ''))
+    }
+  }
+
   const handleAddTable = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!selectedFile || !tableName) return
+    if (importMode === 'file' && !selectedFile) return
+    if (importMode === 'url' && !fileUrl) return
+    if (!tableName) return
 
     const formData = new FormData()
-    formData.append('file', selectedFile)
+
+    if (importMode === 'file' && selectedFile) {
+      formData.append('file', selectedFile)
+    } else if (importMode === 'url') {
+      formData.append('fileUrl', fileUrl)
+    }
+
     formData.append('tableName', tableName)
     formData.append('displayName', displayName || tableName)
     formData.append('skipRows', skipRows)
@@ -127,6 +150,7 @@ function DatasetManage() {
       })
       setShowAddTable(false)
       setSelectedFile(null)
+      setFileUrl('')
       setTableName('')
       setDisplayName('')
       setSkipRows('4')
@@ -351,9 +375,52 @@ function DatasetManage() {
             <h4 style={{ marginTop: 0 }}>Add Table to Dataset</h4>
             <form onSubmit={handleAddTable}>
               <div style={{ marginBottom: '1rem' }}>
-                <label style={{ display: 'block', marginBottom: '0.5rem' }}>File</label>
-                <input type="file" accept=".csv,.txt,.tsv" onChange={handleFileSelect} required />
+                <label style={{ display: 'block', marginBottom: '0.5rem' }}>Import Method</label>
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <input
+                      type="radio"
+                      name="importMode"
+                      value="file"
+                      checked={importMode === 'file'}
+                      onChange={(e) => setImportMode(e.target.value as 'file' | 'url')}
+                    />
+                    Upload File
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <input
+                      type="radio"
+                      name="importMode"
+                      value="url"
+                      checked={importMode === 'url'}
+                      onChange={(e) => setImportMode(e.target.value as 'file' | 'url')}
+                    />
+                    From URL
+                  </label>
+                </div>
               </div>
+
+              {importMode === 'file' ? (
+                <div style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', marginBottom: '0.5rem' }}>File</label>
+                  <input type="file" accept=".csv,.txt,.tsv" onChange={handleFileSelect} required />
+                </div>
+              ) : (
+                <div style={{ marginBottom: '1rem' }}>
+                  <label style={{ display: 'block', marginBottom: '0.5rem' }}>File URL</label>
+                  <input
+                    type="url"
+                    value={fileUrl}
+                    onChange={handleUrlChange}
+                    placeholder="https://example.com/data.csv"
+                    style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+                    required
+                  />
+                  <small style={{ color: '#666', fontSize: '0.875rem' }}>
+                    Provide a direct URL to a CSV, TSV, or TXT file
+                  </small>
+                </div>
+              )}
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
                 <div>
@@ -417,7 +484,7 @@ function DatasetManage() {
 
               <button
                 type="submit"
-                disabled={uploading || !selectedFile}
+                disabled={uploading || (importMode === 'file' && !selectedFile) || (importMode === 'url' && !fileUrl)}
                 style={{
                   padding: '0.75rem 1.5rem',
                   background: uploading ? '#ccc' : '#4CAF50',
