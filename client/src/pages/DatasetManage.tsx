@@ -81,6 +81,10 @@ function DatasetManage() {
   const [editingTableId, setEditingTableId] = useState<string | null>(null)
   const [columns, setColumns] = useState<ColumnMetadata[]>([])
   const [loadingColumns, setLoadingColumns] = useState(false)
+  const [previewData, setPreviewData] = useState<any>(null)
+  const [loadingPreview, setLoadingPreview] = useState(false)
+  const [selectedPrimaryKey, setSelectedPrimaryKey] = useState('')
+  const [confirmedRelationships, setConfirmedRelationships] = useState<any[]>([])
 
   useEffect(() => {
     loadDataset()
@@ -107,6 +111,8 @@ function DatasetManage() {
         setTableName(name)
         setDisplayName(file.name.replace(/\.[^/.]+$/, ''))
       }
+      // Auto-trigger preview
+      setTimeout(() => loadPreview(file, null), 100)
     }
   }
 
@@ -122,6 +128,45 @@ function DatasetManage() {
       setDisplayName(filename.replace(/\.[^/.]+$/, ''))
     }
   }
+
+  const loadPreview = async (file: File | null, url: string | null) => {
+    const formData = new FormData()
+
+    if (file) {
+      formData.append('file', file)
+    } else if (url) {
+      formData.append('fileUrl', url)
+    } else {
+      return
+    }
+
+    formData.append('skipRows', skipRows)
+    formData.append('delimiter', delimiter)
+
+    try {
+      setLoadingPreview(true)
+      const response = await api.post(`/datasets/${id}/tables/preview`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+      setPreviewData(response.data.preview)
+      setConfirmedRelationships(response.data.preview.detectedRelationships || [])
+    } catch (error: any) {
+      console.error('Preview failed:', error)
+      setPreviewData(null)
+    } finally {
+      setLoadingPreview(false)
+    }
+  }
+
+  // Auto-reload preview when skipRows or delimiter changes
+  useEffect(() => {
+    if (selectedFile || fileUrl) {
+      const timer = setTimeout(() => {
+        loadPreview(selectedFile, fileUrl)
+      }, 500) // Debounce
+      return () => clearTimeout(timer)
+    }
+  }, [skipRows, delimiter])
 
   const handleAddTable = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -141,7 +186,20 @@ function DatasetManage() {
     formData.append('displayName', displayName || tableName)
     formData.append('skipRows', skipRows)
     formData.append('delimiter', delimiter)
-    if (primaryKey) formData.append('primaryKey', primaryKey)
+
+    // Use selected primary key from preview or manual input
+    const finalPrimaryKey = selectedPrimaryKey || primaryKey
+    if (finalPrimaryKey) formData.append('primaryKey', finalPrimaryKey)
+
+    // Add confirmed relationships
+    if (confirmedRelationships.length > 0) {
+      const relationships = confirmedRelationships.map(rel => ({
+        foreign_key: rel.foreignKey,
+        referenced_table: rel.referencedTable,
+        referenced_column: rel.referencedColumn
+      }))
+      formData.append('relationships', JSON.stringify(relationships))
+    }
 
     try {
       setUploading(true)
@@ -408,16 +466,35 @@ function DatasetManage() {
               ) : (
                 <div style={{ marginBottom: '1rem' }}>
                   <label style={{ display: 'block', marginBottom: '0.5rem' }}>File URL</label>
-                  <input
-                    type="url"
-                    value={fileUrl}
-                    onChange={handleUrlChange}
-                    placeholder="https://example.com/data.csv"
-                    style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
-                    required
-                  />
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <input
+                      type="url"
+                      value={fileUrl}
+                      onChange={handleUrlChange}
+                      onBlur={() => fileUrl && loadPreview(null, fileUrl)}
+                      placeholder="https://example.com/data.csv"
+                      style={{ flex: 1, padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+                      required
+                    />
+                    <button
+                      type="button"
+                      onClick={() => fileUrl && loadPreview(null, fileUrl)}
+                      disabled={!fileUrl || loadingPreview}
+                      style={{
+                        padding: '0.5rem 1rem',
+                        background: loadingPreview ? '#ccc' : '#2196F3',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: loadingPreview ? 'not-allowed' : 'pointer',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      {loadingPreview ? 'Loading...' : 'Load'}
+                    </button>
+                  </div>
                   <small style={{ color: '#666', fontSize: '0.875rem' }}>
-                    Provide a direct URL to a CSV, TSV, or TXT file
+                    Provide a direct URL to a CSV, TSV, or TXT file and click Load
                   </small>
                 </div>
               )}
@@ -482,9 +559,289 @@ function DatasetManage() {
                 </div>
               </div>
 
+              {/* Preview Section */}
+              {loadingPreview && (
+                <div style={{ padding: '1rem', background: '#f5f5f5', borderRadius: '4px', marginBottom: '1rem', textAlign: 'center' }}>
+                  Loading preview...
+                </div>
+              )}
+
+              {previewData && (
+                <div style={{ marginBottom: '1rem', padding: '1.5rem', background: '#f9f9f9', borderRadius: '4px', border: '1px solid #ddd' }}>
+                  <h4 style={{ marginTop: 0, marginBottom: '1rem' }}>Data Preview</h4>
+
+                  <div style={{ marginBottom: '1rem', fontSize: '0.875rem', color: '#666' }}>
+                    <strong>Rows:</strong> {previewData.totalRows.toLocaleString()} | <strong>Columns:</strong> {previewData.columns.length}
+                  </div>
+
+                  {/* Primary Key Selector */}
+                  <div style={{ marginBottom: '1rem' }}>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+                      Primary Key (optional)
+                    </label>
+                    <select
+                      value={selectedPrimaryKey}
+                      onChange={(e) => setSelectedPrimaryKey(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '0.5rem',
+                        borderRadius: '4px',
+                        border: '1px solid #ddd'
+                      }}
+                    >
+                      <option value="">-- No Primary Key --</option>
+                      {previewData.columns.map((col: any) => (
+                        <option key={col.name} value={col.name}>
+                          {col.name} ({col.type})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Foreign Key Relationships */}
+                  <div style={{ marginBottom: '1rem' }}>
+                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold' }}>
+                      Foreign Key Relationships
+                    </label>
+
+                    {/* Detected relationships */}
+                    {previewData.detectedRelationships && previewData.detectedRelationships.length > 0 && (
+                      <div style={{ marginBottom: '0.5rem' }}>
+                        <div style={{ fontSize: '0.875rem', color: '#666', marginBottom: '0.5rem' }}>
+                          Detected relationships (check to include):
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                          {previewData.detectedRelationships.map((rel: any, idx: number) => (
+                            <div key={idx} style={{
+                              padding: '0.75rem',
+                              background: 'white',
+                              borderRadius: '4px',
+                              border: '1px solid #ddd'
+                            }}>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                                <input
+                                  type="checkbox"
+                                  checked={confirmedRelationships.some(r => r.foreignKey === rel.foreignKey && r.referencedTable === rel.referencedTable)}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setConfirmedRelationships([...confirmedRelationships, rel])
+                                    } else {
+                                      setConfirmedRelationships(confirmedRelationships.filter(r =>
+                                        !(r.foreignKey === rel.foreignKey && r.referencedTable === rel.referencedTable)
+                                      ))
+                                    }
+                                  }}
+                                />
+                                <div style={{ flex: 1 }}>
+                                  <div><strong>{rel.foreignKey}</strong> → {rel.referencedTable}.{rel.referencedColumn}</div>
+                                  <div style={{ fontSize: '0.75rem', color: '#666' }}>
+                                    Auto-detected by column name
+                                  </div>
+                                </div>
+                              </label>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Manually added relationships */}
+                    {confirmedRelationships.filter(r =>
+                      !previewData.detectedRelationships?.some((dr: any) =>
+                        dr.foreignKey === r.foreignKey && dr.referencedTable === r.referencedTable
+                      )
+                    ).length > 0 && (
+                      <div style={{ marginBottom: '0.5rem' }}>
+                        <div style={{ fontSize: '0.875rem', color: '#666', marginBottom: '0.5rem' }}>
+                          Manually added:
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                          {confirmedRelationships.filter(r =>
+                            !previewData.detectedRelationships?.some((dr: any) =>
+                              dr.foreignKey === r.foreignKey && dr.referencedTable === r.referencedTable
+                            )
+                          ).map((rel: any, idx: number) => (
+                            <div key={idx} style={{
+                              padding: '0.75rem',
+                              background: '#e3f2fd',
+                              borderRadius: '4px',
+                              border: '1px solid #2196F3',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between'
+                            }}>
+                              <div>
+                                <strong>{rel.foreignKey}</strong> → {rel.referencedTable}.{rel.referencedColumn}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setConfirmedRelationships(confirmedRelationships.filter(r =>
+                                    !(r.foreignKey === rel.foreignKey && r.referencedTable === rel.referencedTable)
+                                  ))
+                                }}
+                                style={{
+                                  background: '#f44336',
+                                  color: 'white',
+                                  border: 'none',
+                                  borderRadius: '4px',
+                                  padding: '0.25rem 0.5rem',
+                                  cursor: 'pointer',
+                                  fontSize: '0.75rem'
+                                }}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Add manual relationship */}
+                    {dataset && dataset.tables.length > 0 && (
+                      <details style={{ marginTop: '0.5rem' }}>
+                        <summary style={{ cursor: 'pointer', fontSize: '0.875rem', color: '#2196F3' }}>
+                          + Add foreign key manually
+                        </summary>
+                        <div style={{ marginTop: '0.5rem', padding: '0.75rem', background: 'white', borderRadius: '4px', border: '1px solid #ddd' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: '0.5rem', alignItems: 'end' }}>
+                            <div>
+                              <label style={{ display: 'block', fontSize: '0.75rem', marginBottom: '0.25rem' }}>
+                                Column
+                              </label>
+                              <select
+                                id="manual-fk-column"
+                                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.875rem' }}
+                              >
+                                <option value="">Select...</option>
+                                {previewData.columns.map((col: any) => (
+                                  <option key={col.name} value={col.name}>{col.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label style={{ display: 'block', fontSize: '0.75rem', marginBottom: '0.25rem' }}>
+                                References Table
+                              </label>
+                              <select
+                                id="manual-fk-table"
+                                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.875rem' }}
+                                onChange={(e) => {
+                                  const table = dataset.tables.find(t => t.id === e.target.value)
+                                  const colSelect = document.getElementById('manual-fk-ref-column') as HTMLSelectElement
+                                  if (colSelect && table) {
+                                    colSelect.innerHTML = '<option value="">Select...</option>' +
+                                      table.columns.map(c => `<option value="${c.name}">${c.name}</option>`).join('')
+                                  }
+                                }}
+                              >
+                                <option value="">Select...</option>
+                                {dataset.tables.map((table: any) => (
+                                  <option key={table.id} value={table.id}>{table.displayName}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label style={{ display: 'block', fontSize: '0.75rem', marginBottom: '0.25rem' }}>
+                                References Column
+                              </label>
+                              <select
+                                id="manual-fk-ref-column"
+                                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.875rem' }}
+                              >
+                                <option value="">Select...</option>
+                              </select>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const colSelect = document.getElementById('manual-fk-column') as HTMLSelectElement
+                                const tableSelect = document.getElementById('manual-fk-table') as HTMLSelectElement
+                                const refColSelect = document.getElementById('manual-fk-ref-column') as HTMLSelectElement
+
+                                const foreignKey = colSelect?.value
+                                const tableId = tableSelect?.value
+                                const referencedColumn = refColSelect?.value
+
+                                if (foreignKey && tableId && referencedColumn) {
+                                  const table = dataset.tables.find(t => t.id === tableId)
+                                  if (table) {
+                                    const newRel = {
+                                      foreignKey,
+                                      referencedTable: table.name,
+                                      referencedTableId: table.id,
+                                      referencedColumn,
+                                      matchPercentage: 100,
+                                      sampleMatches: []
+                                    }
+                                    setConfirmedRelationships([...confirmedRelationships, newRel])
+                                    colSelect.value = ''
+                                    tableSelect.value = ''
+                                    refColSelect.value = ''
+                                  }
+                                } else {
+                                  alert('Please select all fields')
+                                }
+                              }}
+                              style={{
+                                padding: '0.5rem 1rem',
+                                background: '#4CAF50',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '0.875rem',
+                                whiteSpace: 'nowrap'
+                              }}
+                            >
+                              Add
+                            </button>
+                          </div>
+                        </div>
+                      </details>
+                    )}
+                  </div>
+
+                  {/* Sample Data */}
+                  <details open>
+                    <summary style={{ cursor: 'pointer', fontWeight: 'bold', marginBottom: '0.5rem' }}>
+                      Sample Data (first 10 rows)
+                    </summary>
+                    <div style={{ overflowX: 'auto', maxHeight: '300px', overflowY: 'auto', background: 'white', borderRadius: '4px' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                        <thead style={{ position: 'sticky', top: 0, background: '#f5f5f5' }}>
+                          <tr>
+                            {previewData.columns.map((col: any) => (
+                              <th key={col.name} style={{ padding: '0.5rem', textAlign: 'left', borderBottom: '2px solid #ddd' }}>
+                                <div style={{ fontWeight: 'bold' }}>{col.name}</div>
+                                <div style={{ fontSize: '0.7rem', color: '#666', fontWeight: 'normal' }}>
+                                  {col.type}{col.nullable ? '?' : ''}
+                                </div>
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {previewData.sampleRows.map((row: any[], rowIdx: number) => (
+                            <tr key={rowIdx} style={{ borderBottom: '1px solid #eee' }}>
+                              {row.map((val: any, colIdx: number) => (
+                                <td key={colIdx} style={{ padding: '0.5rem' }}>
+                                  {val?.toString() || '-'}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                </div>
+              )}
+
               <button
                 type="submit"
-                disabled={uploading || (importMode === 'file' && !selectedFile) || (importMode === 'url' && !fileUrl)}
+                disabled={uploading || !previewData || (importMode === 'file' && !selectedFile) || (importMode === 'url' && !fileUrl)}
                 style={{
                   padding: '0.75rem 1.5rem',
                   background: uploading ? '#ccc' : '#4CAF50',

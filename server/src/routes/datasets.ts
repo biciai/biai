@@ -5,6 +5,7 @@ import datasetService from '../services/datasetService.js'
 import aggregationService from '../services/aggregationService.js'
 import { unlink } from 'fs/promises'
 import { fetchFileFromUrl } from '../utils/urlFetcher.js'
+import { detectForeignKeys } from '../services/foreignKeyDetector.js'
 import { v4 as uuidv4 } from 'uuid'
 import path from 'path'
 
@@ -51,6 +52,83 @@ router.post('/', async (req, res) => {
   } catch (error: any) {
     console.error('Create dataset error:', error)
     return res.status(500).json({ error: 'Failed to create dataset', message: error.message })
+  }
+})
+
+// Preview table data before importing
+router.post('/:id/tables/preview', upload.single('file'), async (req, res) => {
+  let tempFilePath: string | null = null
+
+  try {
+    const {
+      fileUrl,
+      skipRows = '0',
+      delimiter = '\t'
+    } = req.body
+
+    // Handle either file upload or URL
+    let filePath: string
+    let filename: string
+
+    if (fileUrl) {
+      // Fetch file from URL
+      tempFilePath = path.join('uploads', `preview_${uuidv4()}`)
+      const fetchedFile = await fetchFileFromUrl(fileUrl, tempFilePath)
+      filePath = fetchedFile.path
+      filename = fetchedFile.filename
+    } else if (req.file) {
+      // Use uploaded file
+      filePath = req.file.path
+      filename = req.file.originalname
+      tempFilePath = filePath
+    } else {
+      return res.status(400).json({ error: 'Either file upload or fileUrl is required' })
+    }
+
+    // Parse the file
+    const parsedData = await parseCSVFile(
+      filePath,
+      parseInt(skipRows, 10),
+      delimiter
+    )
+
+    // Get existing tables in the dataset to detect potential foreign keys
+    const dataset = await datasetService.getDataset(req.params.id)
+    const existingTables = dataset?.tables || []
+
+    // Detect potential foreign keys
+    const detectedRelationships = await detectForeignKeys(
+      parsedData,
+      existingTables
+    )
+
+    // Clean up temporary file
+    await unlink(tempFilePath)
+    tempFilePath = null
+
+    // Return preview data with sample rows
+    const sampleRows = parsedData.rows.slice(0, 10)
+
+    return res.json({
+      success: true,
+      preview: {
+        filename,
+        columns: parsedData.columns,
+        sampleRows,
+        totalRows: parsedData.rowCount,
+        detectedRelationships
+      }
+    })
+  } catch (error: any) {
+    console.error('Preview error:', error)
+
+    if (tempFilePath) {
+      try {
+        await unlink(tempFilePath)
+      } catch (e) {}
+    }
+
+    return res.status(500).json({ error: 'Failed to preview table', message: error.message })
   }
 })
 
