@@ -82,8 +82,15 @@ class AggregationService {
    */
   private async getTableColumns(clickhouseTableName: string): Promise<Set<string>> {
     try {
+      const { database, table } = this.parseTableIdentifier(clickhouseTableName)
       const result = await clickhouseClient.query({
-        query: `SELECT name FROM system.columns WHERE database = 'biai' AND table = '${clickhouseTableName}'`,
+        query: `
+          SELECT name
+          FROM system.columns
+          WHERE database = {database:String}
+            AND table = {table:String}
+        `,
+        query_params: { database, table },
         format: 'JSONEachRow'
       })
       const columns = await result.json<{ name: string }>()
@@ -335,6 +342,7 @@ class AggregationService {
     }
 
     const clickhouseTableName = tables[0].clickhouse_table_name
+    const qualifiedTableName = this.qualifyTableName(clickhouseTableName)
     const totalRows = tables[0].row_count
 
     // Get valid columns for this table
@@ -347,7 +355,7 @@ class AggregationService {
     if (hasFilters && whereClause) {
       const countQuery = `
         SELECT count() AS filtered_count
-        FROM biai.${clickhouseTableName}
+        FROM ${qualifiedTableName}
         WHERE 1=1 ${whereClause}
       `
       const countResult = await clickhouseClient.query({
@@ -363,7 +371,7 @@ class AggregationService {
       SELECT
         countIf(isNull(${columnName})) AS null_count,
         uniqExact(${columnName}) AS unique_count
-      FROM biai.${clickhouseTableName}
+      FROM ${qualifiedTableName}
       WHERE 1=1 ${whereClause}
     `
 
@@ -386,7 +394,7 @@ class AggregationService {
     // Get aggregation based on display type
     if (displayType === 'categorical' || displayType === 'id') {
       aggregation.categories = await this.getCategoricalAggregation(
-        clickhouseTableName,
+        qualifiedTableName,
         columnName,
         filteredTotalRows,
         50,
@@ -394,12 +402,12 @@ class AggregationService {
       )
     } else if (displayType === 'numeric') {
       aggregation.numeric_stats = await this.getNumericStats(
-        clickhouseTableName,
+        qualifiedTableName,
         columnName,
         whereClause
       )
       aggregation.histogram = await this.getHistogram(
-        clickhouseTableName,
+        qualifiedTableName,
         columnName,
         20,
         whereClause
@@ -413,7 +421,7 @@ class AggregationService {
    * Get category counts for categorical columns
    */
   private async getCategoricalAggregation(
-    tableName: string,
+    qualifiedTableName: string,
     columnName: string,
     totalRows: number,
     limit: number = 50,
@@ -433,7 +441,7 @@ class AggregationService {
         ) AS display_value,
         count() AS count,
         if(${totalRows} = 0, 0, count() * 100.0 / ${totalRows}) AS percentage
-      FROM biai.${tableName}
+      FROM ${qualifiedTableName}
       WHERE 1=1
         ${whereClause}
       GROUP BY value, display_value
@@ -453,7 +461,7 @@ class AggregationService {
    * Get numeric statistics for numeric columns
    */
   private async getNumericStats(
-    tableName: string,
+    qualifiedTableName: string,
     columnName: string,
     whereClause: string = ''
   ): Promise<NumericStats> {
@@ -466,7 +474,7 @@ class AggregationService {
         stddevPop(${columnName}) AS stddev,
         quantile(0.25)(${columnName}) AS q25,
         quantile(0.75)(${columnName}) AS q75
-      FROM biai.${tableName}
+      FROM ${qualifiedTableName}
       WHERE ${columnName} IS NOT NULL
         ${whereClause}
     `
@@ -484,7 +492,7 @@ class AggregationService {
    * Get histogram data for numeric columns
    */
   private async getHistogram(
-    tableName: string,
+    qualifiedTableName: string,
     columnName: string,
     bins: number = 20,
     whereClause: string = ''
@@ -495,7 +503,7 @@ class AggregationService {
         min(${columnName}) AS min_val,
         max(${columnName}) AS max_val,
         count() AS total_count
-      FROM biai.${tableName}
+      FROM ${qualifiedTableName}
       WHERE ${columnName} IS NOT NULL
         ${whereClause}
     `
@@ -535,7 +543,7 @@ class AggregationService {
         ${min_val} + (floor((${columnName} - ${min_val}) / ${binWidth}) + 1) * ${binWidth} AS bin_end,
         count() AS count,
         count() * 100.0 / ${total_count} AS percentage
-      FROM biai.${tableName}
+      FROM ${qualifiedTableName}
       WHERE ${columnName} IS NOT NULL
         ${whereClause}
       GROUP BY bin_index, bin_start, bin_end
@@ -554,6 +562,18 @@ class AggregationService {
       count: bin.count,
       percentage: bin.percentage
     }))
+  }
+
+  private qualifyTableName(tableName: string): string {
+    return tableName.includes('.') ? tableName : `biai.${tableName}`
+  }
+
+  private parseTableIdentifier(tableName: string): { database: string; table: string } {
+    if (tableName.includes('.')) {
+      const [database, table] = tableName.split('.', 2)
+      return { database, table }
+    }
+    return { database: 'biai', table: tableName }
   }
 
   /**

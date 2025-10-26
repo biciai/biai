@@ -89,14 +89,9 @@ function Datasets() {
 
   const loadAvailableDatabases = async () => {
     try {
-      const response = await fetch('http://localhost:8123/?query=SHOW%20DATABASES%20FORMAT%20JSON')
-      const data = await response.json()
-      const filteredDatabases = data.data
-        .map((row: any) => ({ name: row.name }))
-        .filter((db: DatabaseInfo) =>
-          !['system', 'INFORMATION_SCHEMA', 'information_schema'].includes(db.name)
-        )
-      setAvailableDatabases(filteredDatabases)
+      const response = await api.get('/databases')
+      const databases: DatabaseInfo[] = response.data?.databases || []
+      setAvailableDatabases(databases)
     } catch (error) {
       console.error('Failed to load databases:', error)
     }

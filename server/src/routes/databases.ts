@@ -3,6 +3,32 @@ import clickhouseClient from '../config/clickhouse.js'
 
 const router = express.Router()
 
+// List available databases (excluding system schemas)
+router.get('/', async (_req, res) => {
+  try {
+    const result = await clickhouseClient.query({
+      query: `
+        SELECT name
+        FROM system.databases
+        ORDER BY name
+      `,
+      format: 'JSONEachRow'
+    })
+
+    const rows = await result.json<{ name: string }>()
+    const excluded = new Set(['system', 'INFORMATION_SCHEMA', 'information_schema'])
+    const databases = rows
+      .map(row => row.name)
+      .filter(name => !excluded.has(name))
+      .map(name => ({ name }))
+
+    res.json({ databases })
+  } catch (error: any) {
+    console.error('List databases error:', error)
+    res.status(500).json({ error: 'Failed to list databases', message: error.message })
+  }
+})
+
 // Helper to infer display type from column type and name
 function inferDisplayType(columnType: string, columnName: string): string {
   const nameLower = columnName.toLowerCase()

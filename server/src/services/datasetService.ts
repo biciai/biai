@@ -113,7 +113,7 @@ export class DatasetService {
     const databaseType = 'connected'
 
     await clickhouseClient.insert({
-      table: 'datasets_metadata',
+      table: 'biai.datasets_metadata',
       values: [{
         dataset_id: datasetId,
         dataset_name: displayName,
@@ -159,17 +159,19 @@ export class DatasetService {
   ): Promise<DatasetTable> {
     // Get the dataset to find its database name
     const dataset = await this.getDataset(datasetId)
-    if (!dataset) {
+    if (!dataset || !dataset.database_name) {
       throw new Error('Dataset not found')
     }
 
-    const cleanTableName = tableName.replace(/[^a-z0-9_]/g, '_').toLowerCase()
+    const tableId = uuidv4()
+    const physicalTableName = `tbl_${tableId.replace(/-/g, '_')}`
+    const fullTableName = `${dataset.database_name}.${physicalTableName}`
 
     // Create the ClickHouse table in the dataset's database
-    await this.createDynamicTable(dataset.database_name, cleanTableName, parsedData.columns, primaryKey)
+    await this.createDynamicTable(dataset.database_name, physicalTableName, parsedData.columns, primaryKey)
 
     // Insert data
-    await this.insertData(dataset.database_name, cleanTableName, parsedData.columns, parsedData.rows)
+    await this.insertData(dataset.database_name, physicalTableName, parsedData.columns, parsedData.rows)
 
     // Update dataset timestamp
     await clickhouseClient.command({
@@ -179,20 +181,98 @@ export class DatasetService {
 
     // Get row count from the newly created table
     const countResult = await clickhouseClient.query({
-      query: `SELECT count() as cnt FROM ${dataset.database_name}.${cleanTableName}`,
+      query: `SELECT count() as cnt FROM ${fullTableName}`,
       format: 'JSONEachRow'
     })
     const countData = await countResult.json<{ cnt: string }>()
-    const rowCount = parseInt(countData[0]?.cnt || '0')
+    const rowCount = parseInt(countData[0]?.cnt || '0', 10)
+
+    // Store table metadata
+    await clickhouseClient.insert({
+      table: 'biai.dataset_tables',
+      values: [{
+        dataset_id: datasetId,
+        table_id: tableId,
+        table_name: tableName,
+        display_name: displayName,
+        original_filename: filename,
+        file_type: fileType,
+        row_count: rowCount,
+        clickhouse_table_name: fullTableName,
+        schema_json: JSON.stringify(parsedData.columns),
+        primary_key: primaryKey || null,
+        custom_metadata: JSON.stringify(customMetadata)
+      }],
+      format: 'JSONEachRow'
+    })
+
+    // Store column metadata with analysis
+    const columnValues = []
+    for (const col of parsedData.columns) {
+      const analysis = await analyzeColumn(
+        fullTableName,
+        col.name,
+        col.type
+      )
+
+      const finalPriority = col.userPriority !== undefined ? col.userPriority : analysis.display_priority
+
+      columnValues.push({
+        dataset_id: datasetId,
+        table_id: tableId,
+        column_name: col.name,
+        column_type: col.type,
+        column_index: col.index,
+        is_nullable: col.nullable,
+        display_name: col.displayName || '',
+        description: col.description || '',
+        user_data_type: col.userDataType || '',
+        user_priority: col.userPriority !== undefined ? col.userPriority : null,
+        display_type: analysis.display_type,
+        unique_value_count: analysis.unique_value_count,
+        null_count: analysis.null_count,
+        min_value: analysis.min_value,
+        max_value: analysis.max_value,
+        suggested_chart: analysis.suggested_chart,
+        display_priority: finalPriority,
+        is_hidden: analysis.is_hidden
+      })
+    }
+
+    if (columnValues.length > 0) {
+      await clickhouseClient.insert({
+        table: 'biai.dataset_columns',
+        values: columnValues,
+        format: 'JSONEachRow'
+      })
+    }
+
+    // Store relationships
+    if (relationships && relationships.length > 0) {
+      const relationshipValues = relationships.map(rel => ({
+        dataset_id: datasetId,
+        table_id: tableId,
+        foreign_key: rel.foreign_key,
+        referenced_table: rel.referenced_table,
+        referenced_column: rel.referenced_column,
+        relationship_type: rel.type || 'many-to-one'
+      }))
+
+      await clickhouseClient.insert({
+        table: 'biai.table_relationships',
+        values: relationshipValues,
+        format: 'JSONEachRow'
+      })
+    }
 
     return {
-      table_id: cleanTableName,
-      table_name: cleanTableName,
+      table_id: tableId,
+      table_name: tableName,
       display_name: displayName,
       original_filename: filename,
       file_type: fileType,
       row_count: rowCount,
-      clickhouse_table_name: `${dataset.database_name}.${cleanTableName}`,
+      clickhouse_table_name: fullTableName,
       schema_json: JSON.stringify(parsedData.columns),
       primary_key: primaryKey,
       custom_metadata: JSON.stringify(customMetadata),
@@ -269,12 +349,12 @@ export class DatasetService {
 
     const datasets = await result.json<Dataset>()
 
-    // Load tables for all datasets from ClickHouse system tables
+    // Load tables for all datasets
     for (const dataset of datasets) {
-      if (dataset.database_name) {
+      if (dataset.database_type === 'connected' && dataset.database_name) {
         dataset.tables = await this.getDatabaseTables(dataset.database_name)
       } else {
-        dataset.tables = []
+        dataset.tables = await this.getDatasetTables(dataset.dataset_id)
       }
     }
 
@@ -302,7 +382,7 @@ export class DatasetService {
       display_name: table.name,
       original_filename: '',
       file_type: '',
-      row_count: parseInt(table.total_rows) || 0,
+      row_count: parseInt(table.total_rows, 10) || 0,
       clickhouse_table_name: `${databaseName}.${table.name}`,
       schema_json: '[]',
       created_at: new Date()
@@ -320,11 +400,10 @@ export class DatasetService {
     if (data.length === 0) return null
 
     const dataset = data[0]
-    // Load tables from ClickHouse system tables
-    if (dataset.database_name) {
-      dataset.tables = await this.getDatabaseTables(dataset.database_name)
-    } else {
+    if (dataset.database_type === 'connected' && dataset.database_name) {
       dataset.tables = []
+    } else {
+      dataset.tables = await this.getDatasetTables(datasetId)
     }
 
     return dataset
@@ -365,15 +444,27 @@ export class DatasetService {
   }
 
   async getTableData(datasetId: string, tableId: string, limit: number = 100, offset: number = 0): Promise<any[]> {
-    // Get the dataset to find its database name
-    const dataset = await this.getDataset(datasetId)
-    if (!dataset || !dataset.database_name) {
-      throw new Error('Dataset not found')
+    const tableResult = await clickhouseClient.query({
+      query: `
+        SELECT clickhouse_table_name
+        FROM biai.dataset_tables
+        WHERE dataset_id = {datasetId:String}
+          AND table_id = {tableId:String}
+        LIMIT 1
+      `,
+      query_params: { datasetId, tableId },
+      format: 'JSONEachRow'
+    })
+
+    const tables = await tableResult.json<{ clickhouse_table_name: string }>()
+    if (tables.length === 0) {
+      throw new Error('Table not found')
     }
 
-    // Query the table directly from the dataset's database
+    const qualifiedTableName = this.qualifyTableName(tables[0].clickhouse_table_name)
+
     const result = await clickhouseClient.query({
-      query: `SELECT * FROM ${dataset.database_name}.${tableId} LIMIT ${limit} OFFSET ${offset}`,
+      query: `SELECT * FROM ${qualifiedTableName} LIMIT ${limit} OFFSET ${offset}`,
       format: 'JSONEachRow'
     })
 
@@ -381,61 +472,35 @@ export class DatasetService {
   }
 
   async getTableColumns(datasetId: string, tableId: string): Promise<any[]> {
-    // Get the dataset to find its database name
-    const dataset = await this.getDataset(datasetId)
-    if (!dataset || !dataset.database_name) {
-      throw new Error('Dataset not found')
-    }
-
-    // Query system.columns for the table schema
-    const columnsResult = await clickhouseClient.query({
+    const result = await clickhouseClient.query({
       query: `
-        SELECT name, type, position
-        FROM system.columns
-        WHERE database = {database:String}
-          AND table = {table:String}
-        ORDER BY position
+        SELECT
+          column_name,
+          column_type,
+          column_index,
+          is_nullable,
+          display_name,
+          description,
+          user_data_type,
+          user_priority,
+          display_type,
+          unique_value_count,
+          null_count,
+          min_value,
+          max_value,
+          suggested_chart,
+          display_priority,
+          is_hidden
+        FROM biai.dataset_columns
+        WHERE dataset_id = {datasetId:String} AND table_id = {tableId:String}
+        ORDER BY column_index, created_at DESC
+        LIMIT 1 BY column_name
       `,
-      query_params: { database: dataset.database_name, table: tableId },
+      query_params: { datasetId, tableId },
       format: 'JSONEachRow'
     })
 
-    const columns = await columnsResult.json<{ name: string; type: string; position: number }>()
-
-    // Generate metadata on-the-fly (similar to databases API)
-    return columns.map((col, index) => {
-      const baseType = col.type.replace(/Nullable\((.*)\)/, '$1')
-      const displayType = this.inferDisplayType(baseType, col.name)
-
-      return {
-        column_name: col.name,
-        column_type: baseType,
-        column_index: index,
-        is_nullable: col.type.includes('Nullable'),
-        display_name: col.name,
-        description: '',
-        user_data_type: '',
-        user_priority: null,
-        display_type: displayType,
-        unique_value_count: 0,
-        null_count: 0,
-        min_value: null,
-        max_value: null,
-        suggested_chart: displayType === 'categorical' ? 'bar' : 'histogram',
-        display_priority: 0,
-        is_hidden: false
-      }
-    })
-  }
-
-  private inferDisplayType(columnType: string, columnName: string): string {
-    const nameLower = columnName.toLowerCase()
-    if (nameLower.includes('id') || nameLower.includes('key')) return 'id'
-    if (columnType.includes('Int') || columnType.includes('Float') || columnType.includes('Decimal')) {
-      return 'numeric'
-    }
-    if (columnType.includes('Date')) return 'datetime'
-    return 'categorical'
+    return await result.json<Record<string, unknown>>()
   }
 
   async updateColumnMetadata(
@@ -490,14 +555,40 @@ export class DatasetService {
     }).catch(err => console.error('Cleanup error:', err))
   }
 
+  private qualifyTableName(tableName: string): string {
+    return tableName.includes('.') ? tableName : `biai.${tableName}`
+  }
+
+  private parseTableIdentifier(tableName: string): { database: string; table: string } {
+    if (tableName.includes('.')) {
+      const [database, table] = tableName.split('.', 2)
+      return { database, table }
+    }
+    return { database: 'biai', table: tableName }
+  }
+
   async deleteDataset(datasetId: string): Promise<void> {
+    const dataset = await this.getDataset(datasetId)
+    if (!dataset) {
+      throw new Error('Dataset not found')
+    }
+
     const tables = await this.getDatasetTables(datasetId)
 
-    // Drop all tables
-    for (const table of tables) {
-      await clickhouseClient.command({
-        query: `DROP TABLE IF EXISTS biai.${table.clickhouse_table_name}`
-      })
+    // Drop all tables for created datasets
+    if (dataset.database_type === 'created') {
+      for (const table of tables) {
+        const { database, table: tableName } = this.parseTableIdentifier(table.clickhouse_table_name)
+        await clickhouseClient.command({
+          query: `DROP TABLE IF EXISTS ${database}.${tableName}`
+        })
+      }
+
+      if (dataset.database_name) {
+        await clickhouseClient.command({
+          query: `DROP DATABASE IF EXISTS ${dataset.database_name}`
+        })
+      }
     }
 
     // Delete metadata
@@ -533,8 +624,9 @@ export class DatasetService {
     if (tableData.length === 0) throw new Error('Table not found')
 
     // Drop the table
+    const { database, table } = this.parseTableIdentifier(tableData[0].clickhouse_table_name)
     await clickhouseClient.command({
-      query: `DROP TABLE IF EXISTS biai.${tableData[0].clickhouse_table_name}`
+      query: `DROP TABLE IF EXISTS ${database}.${table}`
     })
 
     // Delete metadata
