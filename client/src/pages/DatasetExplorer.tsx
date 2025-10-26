@@ -92,8 +92,12 @@ interface Dataset {
 }
 
 function DatasetExplorer() {
-  const { id } = useParams()
+  const { id, database } = useParams()
   const navigate = useNavigate()
+
+  // Determine if we're in database mode or dataset mode
+  const isDatabaseMode = !!database
+  const identifier = database || id
   const [dataset, setDataset] = useState<Dataset | null>(null)
   const [loading, setLoading] = useState(true)
   const [columnMetadata, setColumnMetadata] = useState<Record<string, ColumnMetadata[]>>({})
@@ -107,7 +111,7 @@ function DatasetExplorer() {
 
   useEffect(() => {
     loadDataset()
-  }, [id])
+  }, [id, database])
 
   useEffect(() => {
     // Reload aggregations when filters change
@@ -126,7 +130,11 @@ function DatasetExplorer() {
   const loadDataset = async () => {
     try {
       setLoading(true)
-      const response = await api.get(`/datasets/${id}`)
+
+      // Use different API endpoint based on mode
+      const apiPath = isDatabaseMode ? `/databases/${identifier}` : `/datasets/${identifier}`
+      const response = await api.get(apiPath)
+
       setDataset(response.data.dataset)
       setBaselineAggregations({})
       setCustomRangeInputs({})
@@ -152,7 +160,10 @@ function DatasetExplorer() {
   ) => {
     try {
       const params = filters.length > 0 ? { filters: JSON.stringify(filters) } : {}
-      const response = await api.get(`/datasets/${id}/tables/${tableId}/aggregations`, { params })
+      const apiPath = isDatabaseMode
+        ? `/databases/${identifier}/tables/${tableId}/aggregations`
+        : `/datasets/${identifier}/tables/${tableId}/aggregations`
+      const response = await api.get(apiPath, { params })
       setAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
       if (options?.storeBaseline) {
         setBaselineAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
@@ -164,7 +175,10 @@ function DatasetExplorer() {
 
   const loadColumnMetadata = async (tableId: string, tableName: string) => {
     try {
-      const response = await api.get(`/datasets/${id}/tables/${tableId}/columns`)
+      const apiPath = isDatabaseMode
+        ? `/databases/${identifier}/tables/${tableId}/columns`
+        : `/datasets/${identifier}/tables/${tableId}/columns`
+      const response = await api.get(apiPath)
       setColumnMetadata(prev => ({ ...prev, [tableName]: response.data.columns }))
     } catch (error) {
       console.error('Failed to load column metadata:', error)

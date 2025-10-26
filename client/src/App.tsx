@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom'
 import Datasets from './pages/Datasets'
 import DatasetManage from './pages/DatasetManage'
 import DatasetExplorer from './pages/DatasetExplorer'
+import DatabaseBrowser from './pages/DatabaseBrowser'
 import Reports from './pages/Reports'
 import Settings from './pages/Settings'
 
@@ -13,6 +14,7 @@ function App() {
           <h1>BIAI</h1>
           <ul>
             <li><Link to="/">Datasets</Link></li>
+            <li><Link to="/databases">Databases</Link></li>
             <li><Link to="/reports">Reports</Link></li>
             <li><Link to="/settings">Settings</Link></li>
           </ul>
@@ -22,6 +24,8 @@ function App() {
             <Route path="/" element={<Datasets />} />
             <Route path="/datasets/:id" element={<DatasetExplorer />} />
             <Route path="/datasets/:id/manage" element={<DatasetManage />} />
+            <Route path="/databases" element={<DatabaseBrowser />} />
+            <Route path="/databases/:database" element={<DatasetExplorer />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
