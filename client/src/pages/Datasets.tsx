@@ -13,6 +13,8 @@ interface DatasetTable {
 interface Dataset {
   id: string
   name: string
+  database_name: string
+  database_type: 'created' | 'connected'
   description: string
   tags?: string[]
   source?: string
@@ -24,14 +26,26 @@ interface Dataset {
   updatedAt: string
 }
 
+interface DatabaseInfo {
+  name: string
+}
+
 function Datasets() {
   const navigate = useNavigate()
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [datasetName, setDatasetName] = useState('')
   const [description, setDescription] = useState('')
   const [creating, setCreating] = useState(false)
+  const [importing, setImporting] = useState(false)
+
+  // Import database state
+  const [availableDatabases, setAvailableDatabases] = useState<DatabaseInfo[]>([])
+  const [selectedDatabase, setSelectedDatabase] = useState('')
+  const [importDisplayName, setImportDisplayName] = useState('')
+  const [importDescription, setImportDescription] = useState('')
 
   useEffect(() => {
     loadDatasets()
@@ -73,24 +87,95 @@ function Datasets() {
     }
   }
 
+  const loadAvailableDatabases = async () => {
+    try {
+      const response = await fetch('http://localhost:8123/?query=SHOW%20DATABASES%20FORMAT%20JSON')
+      const data = await response.json()
+      const filteredDatabases = data.data
+        .map((row: any) => ({ name: row.name }))
+        .filter((db: DatabaseInfo) =>
+          !['system', 'INFORMATION_SCHEMA', 'information_schema'].includes(db.name)
+        )
+      setAvailableDatabases(filteredDatabases)
+    } catch (error) {
+      console.error('Failed to load databases:', error)
+    }
+  }
+
+  const handleShowImport = () => {
+    setShowImport(true)
+    setShowCreate(false)
+    loadAvailableDatabases()
+  }
+
+  const handleImport = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedDatabase || !importDisplayName) return
+
+    try {
+      setImporting(true)
+      const response = await api.post('/datasets/connect', {
+        databaseName: selectedDatabase,
+        displayName: importDisplayName,
+        description: importDescription
+      })
+      setShowImport(false)
+      setSelectedDatabase('')
+      setImportDisplayName('')
+      setImportDescription('')
+
+      // Reload datasets list
+      loadDatasets()
+    } catch (error: any) {
+      console.error('Import failed:', error)
+      alert('Import failed: ' + (error.response?.data?.message || error.message))
+    } finally {
+      setImporting(false)
+    }
+  }
+
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
         <h2>Datasets</h2>
-        <button
-          onClick={() => setShowCreate(!showCreate)}
-          style={{
-            padding: '0.5rem 1rem',
-            background: '#4CAF50',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer'
-          }}
-        >
-          {showCreate ? 'Cancel' : '+ New Dataset'}
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button
+            onClick={() => {
+              setShowCreate(!showCreate)
+              setShowImport(false)
+            }}
+            style={{
+              padding: '0.5rem 1rem',
+              background: showCreate ? '#ccc' : '#4CAF50',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer'
+            }}
+          >
+            {showCreate ? 'Cancel' : '+ Create Dataset'}
+          </button>
+          <button
+            onClick={() => {
+              if (showImport) {
+                setShowImport(false)
+              } else {
+                handleShowImport()
+              }
+            }}
+            style={{
+              padding: '0.5rem 1rem',
+              background: showImport ? '#ccc' : '#2196F3',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer'
+            }}
+          >
+            {showImport ? 'Cancel' : 'Import Database'}
+          </button>
+        </div>
       </div>
 
       {showCreate && (
@@ -144,6 +229,80 @@ function Datasets() {
         </div>
       )}
 
+      {showImport && (
+        <div style={{
+          background: 'white',
+          padding: '2rem',
+          borderRadius: '8px',
+          marginBottom: '2rem',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+        }}>
+          <h3 style={{ marginTop: 0 }}>Import Existing Database</h3>
+          <p style={{ color: '#666', marginBottom: '1.5rem' }}>
+            Register an existing ClickHouse database to explore its data
+          </p>
+          <form onSubmit={handleImport}>
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ display: 'block', marginBottom: '0.5rem' }}>Select Database *</label>
+              <select
+                value={selectedDatabase}
+                onChange={(e) => {
+                  setSelectedDatabase(e.target.value)
+                  if (!importDisplayName) {
+                    setImportDisplayName(e.target.value)
+                  }
+                }}
+                required
+                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+              >
+                <option value="">Choose a database...</option>
+                {availableDatabases.map((db) => (
+                  <option key={db.name} value={db.name}>{db.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ display: 'block', marginBottom: '0.5rem' }}>Display Name *</label>
+              <input
+                type="text"
+                value={importDisplayName}
+                onChange={(e) => setImportDisplayName(e.target.value)}
+                required
+                placeholder="e.g., Analytics Database"
+                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+              />
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label style={{ display: 'block', marginBottom: '0.5rem' }}>Description</label>
+              <textarea
+                value={importDescription}
+                onChange={(e) => setImportDescription(e.target.value)}
+                rows={3}
+                placeholder="Describe this database..."
+                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={importing || !selectedDatabase || !importDisplayName}
+              style={{
+                padding: '0.75rem 1.5rem',
+                background: (importing || !selectedDatabase || !importDisplayName) ? '#ccc' : '#2196F3',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: (importing || !selectedDatabase || !importDisplayName) ? 'not-allowed' : 'pointer'
+              }}
+            >
+              {importing ? 'Importing...' : 'Import Database'}
+            </button>
+          </form>
+        </div>
+      )}
+
       {loading ? (
         <p>Loading datasets...</p>
       ) : datasets.length === 0 ? (
@@ -170,7 +329,21 @@ function Datasets() {
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '1rem' }}>
                 <div style={{ flex: 1 }}>
-                  <h3 style={{ margin: '0 0 0.5rem 0' }}>{dataset.name}</h3>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                    <h3 style={{ margin: 0 }}>{dataset.name}</h3>
+                    {dataset.database_type === 'connected' && (
+                      <span style={{
+                        padding: '0.25rem 0.5rem',
+                        background: '#e3f2fd',
+                        color: '#1976d2',
+                        borderRadius: '4px',
+                        fontSize: '0.75rem',
+                        fontWeight: 500
+                      }}>
+                        Connected
+                      </span>
+                    )}
+                  </div>
                   {dataset.description && (
                     <SafeHtml
                       html={dataset.description}
