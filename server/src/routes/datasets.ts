@@ -1,6 +1,6 @@
 import express from 'express'
 import multer from 'multer'
-import { parseCSVFile } from '../services/fileParser.js'
+import { parseCSVFile, detectSkipRows } from '../services/fileParser.js'
 import datasetService from '../services/datasetService.js'
 import aggregationService from '../services/aggregationService.js'
 import { unlink } from 'fs/promises'
@@ -13,7 +13,10 @@ const router = express.Router()
 
 const upload = multer({
   dest: 'uploads/',
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: {
+    fileSize: 500 * 1024 * 1024, // 500MB limit for actual upload
+    fieldSize: 10 * 1024 * 1024 // 10MB for URL field
+  },
   fileFilter: (_req, file, cb) => {
     const allowedTypes = ['.csv', '.txt', '.tsv']
     const ext = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf('.'))
@@ -85,11 +88,25 @@ router.post('/:id/tables/preview', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Either file upload or fileUrl is required' })
     }
 
-    // Parse the file
+    // Auto-detect skipRows if set to 0 - check if first rows start with #
+    let finalSkipRows = parseInt(skipRows, 10)
+    let detectedSkipRows: number | undefined
+
+    if (finalSkipRows === 0) {
+      const detectedRows = await detectSkipRows(filePath, delimiter)
+      if (detectedRows > 0) {
+        detectedSkipRows = detectedRows
+        finalSkipRows = detectedRows
+      }
+    }
+
+    // Parse the file in preview mode (only reads first ~100 rows)
     const parsedData = await parseCSVFile(
       filePath,
-      parseInt(skipRows, 10),
-      delimiter
+      finalSkipRows,
+      delimiter,
+      undefined,
+      true // previewOnly mode
     )
 
     // Get existing tables in the dataset to detect potential foreign keys
@@ -116,7 +133,8 @@ router.post('/:id/tables/preview', upload.single('file'), async (req, res) => {
         columns: parsedData.columns,
         sampleRows,
         totalRows: parsedData.rowCount,
-        detectedRelationships
+        detectedRelationships,
+        detectedSkipRows
       }
     })
   } catch (error: any) {
@@ -137,6 +155,9 @@ router.post('/:id/tables', upload.single('file'), async (req, res) => {
   let tempFilePath: string | null = null
 
   try {
+    // Set a longer timeout for large file processing
+    req.setTimeout(600000) // 10 minutes
+    res.setTimeout(600000)
     const {
       fileUrl,
       tableName,

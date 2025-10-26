@@ -70,7 +70,7 @@ function DatasetManage() {
   const [importMode, setImportMode] = useState<'file' | 'url'>('file')
   const [tableName, setTableName] = useState('')
   const [displayName, setDisplayName] = useState('')
-  const [skipRows, setSkipRows] = useState('4')
+  const [skipRows, setSkipRows] = useState('0')
   const [delimiter, setDelimiter] = useState('\t')
   const [primaryKey, setPrimaryKey] = useState('')
   const [uploading, setUploading] = useState(false)
@@ -150,6 +150,11 @@ function DatasetManage() {
       })
       setPreviewData(response.data.preview)
       setConfirmedRelationships(response.data.preview.detectedRelationships || [])
+
+      // Auto-detect skipRows if not manually set (still at default 0)
+      if (skipRows === '0' && response.data.preview.detectedSkipRows !== undefined) {
+        setSkipRows(String(response.data.preview.detectedSkipRows))
+      }
     } catch (error: any) {
       console.error('Preview failed:', error)
       setPreviewData(null)
@@ -204,14 +209,15 @@ function DatasetManage() {
     try {
       setUploading(true)
       await api.post(`/datasets/${id}/tables`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 600000 // 10 minute timeout for large files
       })
       setShowAddTable(false)
       setSelectedFile(null)
       setFileUrl('')
       setTableName('')
       setDisplayName('')
-      setSkipRows('4')
+      setSkipRows('0')
       setPrimaryKey('')
       await loadDataset()
     } catch (error: any) {
@@ -472,7 +478,7 @@ function DatasetManage() {
                       value={fileUrl}
                       onChange={handleUrlChange}
                       onBlur={() => fileUrl && loadPreview(null, fileUrl)}
-                      placeholder="https://example.com/data.csv"
+                      placeholder=""
                       style={{ flex: 1, padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
                       required
                     />
@@ -507,7 +513,7 @@ function DatasetManage() {
                     value={tableName}
                     onChange={(e) => setTableName(e.target.value)}
                     required
-                    placeholder="e.g., patients"
+                    placeholder=""
                     style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
                   />
                 </div>
@@ -517,7 +523,7 @@ function DatasetManage() {
                     type="text"
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
-                    placeholder="e.g., Clinical Patients"
+                    placeholder=""
                     style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
                   />
                 </div>
@@ -553,7 +559,7 @@ function DatasetManage() {
                     type="text"
                     value={primaryKey}
                     onChange={(e) => setPrimaryKey(e.target.value)}
-                    placeholder="e.g., patient_id"
+                    placeholder=""
                     style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
                   />
                 </div>
