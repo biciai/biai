@@ -96,11 +96,58 @@ function generateColumnIdentifier(
   return candidate
 }
 
+/**
+ * Detects how many rows to skip by counting rows that start with #
+ */
+export async function detectSkipRows(
+  filePath: string,
+  delimiter: string = '\t'
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let skipCount = 0
+    let rowIndex = 0
+    const maxRowsToCheck = 20 // Only check first 20 rows
+
+    const parser = parse({
+      delimiter,
+      relax_column_count: true,
+      skip_empty_lines: true
+    })
+
+    createReadStream(filePath)
+      .pipe(parser)
+      .on('data', (row: string[]) => {
+        rowIndex++
+
+        // Stop after checking enough rows
+        if (rowIndex > maxRowsToCheck) {
+          parser.end()
+          return
+        }
+
+        // Check if first cell starts with #
+        if (row.length > 0 && row[0] && String(row[0]).trim().startsWith('#')) {
+          skipCount++
+        } else {
+          // Once we hit a row that doesn't start with #, we're done
+          parser.end()
+        }
+      })
+      .on('end', () => {
+        resolve(skipCount)
+      })
+      .on('error', (error) => {
+        reject(error)
+      })
+  })
+}
+
 export async function parseCSVFile(
   filePath: string,
   skipRows: number = 0,
   delimiter: string = '\t',
-  columnMetadataConfig?: ColumnMetadataConfig
+  columnMetadataConfig?: ColumnMetadataConfig,
+  previewOnly: boolean = false
 ): Promise<ParsedData> {
   return new Promise((resolve, reject) => {
     const rows: any[][] = []
@@ -116,7 +163,9 @@ export async function parseCSVFile(
       skip_empty_lines: true
     })
 
-    createReadStream(filePath)
+    const stream = createReadStream(filePath)
+
+    stream
       .pipe(parser)
       .on('data', (row: string[]) => {
         rowIndex++
@@ -134,6 +183,12 @@ export async function parseCSVFile(
         }
 
         rows.push(row)
+
+        // For preview mode, stop after reading enough rows
+        if (previewOnly && rows.length >= 100) {
+          parser.end()
+          stream.destroy()
+        }
       })
       .on('end', () => {
         // Infer types from first 100 rows
