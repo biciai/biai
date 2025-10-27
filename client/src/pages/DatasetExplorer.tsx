@@ -86,15 +86,28 @@ interface Table {
 interface Dataset {
   id: string
   name: string
+  database_name?: string
+  database_type?: 'created' | 'connected'
   description: string
   tags?: string[]
   tables: Table[]
 }
 
 function DatasetExplorer() {
-  const { id } = useParams()
+  const { id, database } = useParams()
   const navigate = useNavigate()
+
+  // Determine if we're in database mode or dataset mode
+  const isDatabaseMode = !!database
+  const identifier = database || id
   const [dataset, setDataset] = useState<Dataset | null>(null)
+
+  // Helper to determine if we should use database API
+  // Use database API if:
+  // 1. We're in database mode (viewing from /databases/:database), OR
+  // 2. The dataset is a "connected" type (registered existing database)
+  const usesDatabaseAPI = isDatabaseMode || dataset?.database_type === 'connected'
+  const databaseIdentifier = isDatabaseMode ? identifier : dataset?.database_name
   const [loading, setLoading] = useState(true)
   const [columnMetadata, setColumnMetadata] = useState<Record<string, ColumnMetadata[]>>({})
   const [aggregations, setAggregations] = useState<Record<string, ColumnAggregation[]>>({})
@@ -107,7 +120,7 @@ function DatasetExplorer() {
 
   useEffect(() => {
     loadDataset()
-  }, [id])
+  }, [id, database])
 
   useEffect(() => {
     // Reload aggregations when filters change
@@ -118,25 +131,38 @@ function DatasetExplorer() {
 
   const reloadAggregations = async () => {
     if (!dataset) return
+    // Determine if we should use database API based on current dataset
+    const shouldUseDatabaseAPI = isDatabaseMode || dataset.database_type === 'connected'
+    const dbIdentifier = isDatabaseMode ? identifier : dataset.database_name
+
     for (const table of dataset.tables) {
-      await loadTableAggregations(table.id, table.name)
+      await loadTableAggregations(table.id, table.name, { useDbAPI: shouldUseDatabaseAPI, dbName: dbIdentifier })
     }
   }
 
   const loadDataset = async () => {
     try {
       setLoading(true)
-      const response = await api.get(`/datasets/${id}`)
-      setDataset(response.data.dataset)
+
+      // Use different API endpoint based on mode
+      const apiPath = isDatabaseMode ? `/databases/${identifier}` : `/datasets/${identifier}`
+      const response = await api.get(apiPath)
+
+      const loadedDataset = response.data.dataset
+      setDataset(loadedDataset)
       setBaselineAggregations({})
       setCustomRangeInputs({})
       setRangeSelections({})
       setActiveFilterMenu(null)
 
+      // Determine if this dataset uses database API
+      const shouldUseDatabaseAPI = isDatabaseMode || loadedDataset.database_type === 'connected'
+      const dbIdentifier = isDatabaseMode ? identifier : loadedDataset.database_name
+
       // Load aggregations and column metadata for all tables
-      for (const table of response.data.dataset.tables) {
-        await loadTableAggregations(table.id, table.name, { storeBaseline: true })
-        await loadColumnMetadata(table.id, table.name)
+      for (const table of loadedDataset.tables) {
+        await loadTableAggregations(table.id, table.name, { storeBaseline: true, useDbAPI: shouldUseDatabaseAPI, dbName: dbIdentifier })
+        await loadColumnMetadata(table.id, table.name, { useDbAPI: shouldUseDatabaseAPI, dbName: dbIdentifier })
       }
     } catch (error) {
       console.error('Failed to load dataset:', error)
@@ -148,11 +174,18 @@ function DatasetExplorer() {
   const loadTableAggregations = async (
     tableId: string,
     tableName: string,
-    options?: { storeBaseline?: boolean }
+    options?: { storeBaseline?: boolean; useDbAPI?: boolean; dbName?: string }
   ) => {
     try {
       const params = filters.length > 0 ? { filters: JSON.stringify(filters) } : {}
-      const response = await api.get(`/datasets/${id}/tables/${tableId}/aggregations`, { params })
+      // Use provided values or fall back to computed values
+      const shouldUseDbAPI = options?.useDbAPI !== undefined ? options.useDbAPI : usesDatabaseAPI
+      const dbIdentifier = options?.dbName || databaseIdentifier
+
+      const apiPath = shouldUseDbAPI
+        ? `/databases/${dbIdentifier}/tables/${tableId}/aggregations`
+        : `/datasets/${identifier}/tables/${tableId}/aggregations`
+      const response = await api.get(apiPath, { params })
       setAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
       if (options?.storeBaseline) {
         setBaselineAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
@@ -162,9 +195,20 @@ function DatasetExplorer() {
     }
   }
 
-  const loadColumnMetadata = async (tableId: string, tableName: string) => {
+  const loadColumnMetadata = async (
+    tableId: string,
+    tableName: string,
+    options?: { useDbAPI?: boolean; dbName?: string }
+  ) => {
     try {
-      const response = await api.get(`/datasets/${id}/tables/${tableId}/columns`)
+      // Use provided values or fall back to computed values
+      const shouldUseDbAPI = options?.useDbAPI !== undefined ? options.useDbAPI : usesDatabaseAPI
+      const dbIdentifier = options?.dbName || databaseIdentifier
+
+      const apiPath = shouldUseDbAPI
+        ? `/databases/${dbIdentifier}/tables/${tableId}/columns`
+        : `/datasets/${identifier}/tables/${tableId}/columns`
+      const response = await api.get(apiPath)
       setColumnMetadata(prev => ({ ...prev, [tableName]: response.data.columns }))
     } catch (error) {
       console.error('Failed to load column metadata:', error)

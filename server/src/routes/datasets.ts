@@ -58,6 +58,35 @@ router.post('/', async (req, res) => {
   }
 })
 
+// Connect to existing database
+router.post('/connect', async (req, res) => {
+  try {
+    const { databaseName, displayName, description = '', tags = [], customMetadata = {} } = req.body
+
+    if (!databaseName || !displayName) {
+      return res.status(400).json({ error: 'Database name and display name are required' })
+    }
+
+    const dataset = await datasetService.connectDatabase(databaseName, displayName, description, 'system', tags, customMetadata)
+
+    return res.json({
+      success: true,
+      dataset: {
+        id: dataset.dataset_id,
+        name: dataset.dataset_name,
+        database_name: dataset.database_name,
+        database_type: dataset.database_type,
+        description: dataset.description,
+        tags: dataset.tags,
+        createdAt: dataset.created_at
+      }
+    })
+  } catch (error: any) {
+    console.error('Connect database error:', error)
+    return res.status(500).json({ error: 'Failed to connect database', message: error.message })
+  }
+})
+
 // Preview table data before importing
 router.post('/:id/tables/preview', upload.single('file'), async (req, res) => {
   let tempFilePath: string | null = null
@@ -279,6 +308,8 @@ router.get('/', async (_req, res) => {
       datasets: datasets.map(d => ({
         id: d.dataset_id,
         name: d.dataset_name,
+        database_name: d.database_name,
+        database_type: d.database_type,
         description: d.description,
         tags: d.tags,
         source: d.source,
@@ -309,10 +340,108 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Dataset not found' })
     }
 
+    // If this is a connected database, use the databases API to get tables
+    if (dataset.database_type === 'connected' && dataset.database_name) {
+      // Forward to databases endpoint
+      const databasesRouter = await import('./databases.js')
+      const mockReq = { params: { database: dataset.database_name } } as any
+      const mockRes = {
+        json: (data: any) => {
+          // Merge database info with dataset metadata
+          return res.json({
+            dataset: {
+              ...data.dataset,
+              id: dataset.dataset_id,
+              name: dataset.dataset_name,
+              database_name: dataset.database_name,
+              database_type: dataset.database_type,
+              description: dataset.description,
+              tags: dataset.tags,
+              source: dataset.source,
+              citation: dataset.citation,
+              references: dataset.references,
+              createdBy: dataset.created_by,
+              createdAt: dataset.created_at,
+              updatedAt: dataset.updated_at
+            }
+          })
+        },
+        status: (code: number) => ({ json: (data: any) => res.status(code).json(data) })
+      }
+
+      // This is a workaround - better would be to extract the logic to a service
+      // For now, let's just query the database directly
+      const clickhouseClient = (await import('../config/clickhouse.js')).default
+
+      const tablesResult = await clickhouseClient.query({
+        query: `
+          SELECT name, engine, total_rows
+          FROM system.tables
+          WHERE database = {database:String}
+            AND name NOT LIKE '.%'
+          ORDER BY name
+        `,
+        query_params: { database: dataset.database_name },
+        format: 'JSONEachRow'
+      })
+
+      const tables = await tablesResult.json<{ name: string; engine: string; total_rows: string }>()
+
+      const tablesWithSchema = await Promise.all(
+        tables.map(async (table) => {
+          const columnsResult = await clickhouseClient.query({
+            query: `
+              SELECT name, type, position
+              FROM system.columns
+              WHERE database = {database:String}
+                AND table = {table:String}
+              ORDER BY position
+            `,
+            query_params: { database: dataset.database_name, table: table.name },
+            format: 'JSONEachRow'
+          })
+
+          const columns = await columnsResult.json<{ name: string; type: string; position: number }>()
+
+          return {
+            id: table.name,
+            name: table.name,
+            displayName: table.name,
+            rowCount: parseInt(table.total_rows) || 0,
+            columns: columns.map(col => ({
+              name: col.name,
+              type: col.type.replace(/Nullable\((.*)\)/, '$1'),
+              nullable: col.type.includes('Nullable')
+            }))
+          }
+        })
+      )
+
+      return res.json({
+        dataset: {
+          id: dataset.dataset_id,
+          name: dataset.dataset_name,
+          database_name: dataset.database_name,
+          database_type: dataset.database_type,
+          description: dataset.description,
+          tags: dataset.tags,
+          source: dataset.source,
+          citation: dataset.citation,
+          references: dataset.references,
+          tables: tablesWithSchema,
+          createdBy: dataset.created_by,
+          createdAt: dataset.created_at,
+          updatedAt: dataset.updated_at
+        }
+      })
+    }
+
     return res.json({
       dataset: {
         id: dataset.dataset_id,
         name: dataset.dataset_name,
+        database_name: dataset.database_name,
+        database_type: dataset.database_type,
         description: dataset.description,
         tags: dataset.tags,
         source: dataset.source,

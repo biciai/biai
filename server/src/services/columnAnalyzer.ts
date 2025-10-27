@@ -1,5 +1,8 @@
 import clickhouseClient from '../config/clickhouse.js'
 
+const qualifyTableName = (tableName: string): string =>
+  tableName.includes('.') ? tableName : `biai.${tableName}`
+
 export interface ColumnAnalysis {
   display_type: 'categorical' | 'numeric' | 'datetime' | 'survival_time' | 'survival_status' | 'id' | 'text'
   unique_value_count: number
@@ -59,6 +62,7 @@ async function getColumnStats(
 ): Promise<ColumnStats> {
   // Handle nullable types
   const isNumericType = columnType.includes('Int') || columnType.includes('Float') || columnType.includes('Decimal')
+  const qualifiedTableName = qualifyTableName(tableName)
 
   // Get unique count and null count
   const nullCondition = isNumericType
@@ -70,7 +74,7 @@ async function getColumnStats(
       uniqExact(${columnName}) as unique_count,
       countIf(${nullCondition}) as null_count,
       count() as total_count
-    FROM biai.${tableName}
+    FROM ${qualifiedTableName}
   `
 
   const countResult = await clickhouseClient.query({
@@ -94,7 +98,7 @@ async function getColumnStats(
 
   const sampleQuery = `
     SELECT DISTINCT ${columnName}
-    FROM biai.${tableName}
+    FROM ${qualifiedTableName}
     WHERE ${whereCondition}
     LIMIT 100
   `
@@ -115,7 +119,7 @@ async function getColumnStats(
       SELECT
         min(${columnName}) as min_val,
         max(${columnName}) as max_val
-      FROM biai.${tableName}
+      FROM ${qualifiedTableName}
       WHERE ${columnName} IS NOT NULL
     `
 
