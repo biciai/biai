@@ -28,6 +28,21 @@ const upload = multer({
   }
 })
 
+const sanitizeConnectionSettings = (raw?: string) => {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || !parsed.host) {
+      return null
+    }
+    const { host, port, protocol, username } = parsed
+    return { host, port, protocol, username }
+  } catch (error) {
+    console.warn('Failed to parse connection settings for response:', error)
+    return null
+  }
+}
+
 // Create a new dataset
 router.post('/', async (req, res) => {
   try {
@@ -61,13 +76,46 @@ router.post('/', async (req, res) => {
 // Connect to existing database
 router.post('/connect', async (req, res) => {
   try {
-    const { databaseName, displayName, description = '', tags = [], customMetadata = {} } = req.body
+    const {
+      databaseName,
+      displayName,
+      description = '',
+      tags = [],
+      customMetadata = {},
+      host,
+      port,
+      protocol,
+      secure,
+      username,
+      password
+    } = req.body
 
-    if (!databaseName || !displayName) {
-      return res.status(400).json({ error: 'Database name and display name are required' })
+    if (!databaseName || !displayName || !host) {
+      return res.status(400).json({ error: 'Database name, display name, and host are required' })
     }
 
-    const dataset = await datasetService.connectDatabase(databaseName, displayName, description, 'system', tags, customMetadata)
+    const resolvedProtocol: 'http' | 'https' =
+      protocol === 'https' || secure === true ? 'https' : 'http'
+
+    const connectionSettings = {
+      host,
+      port: port !== undefined && port !== null && port !== '' ? Number(port) : undefined,
+      protocol: resolvedProtocol,
+      username: username || undefined,
+      password: password || undefined
+    }
+
+    const dataset = await datasetService.connectDatabase(
+      databaseName,
+      displayName,
+      description,
+      'system',
+      tags,
+      customMetadata,
+      connectionSettings
+    )
+
+    const connectionInfo = sanitizeConnectionSettings(dataset.connection_settings)
 
     return res.json({
       success: true,
@@ -78,6 +126,7 @@ router.post('/connect', async (req, res) => {
         database_type: dataset.database_type,
         description: dataset.description,
         tags: dataset.tags,
+        connectionInfo,
         createdAt: dataset.created_at
       }
     })
@@ -322,6 +371,7 @@ router.get('/', async (_req, res) => {
           displayName: t.display_name,
           rowCount: t.row_count
         })),
+        connectionInfo: sanitizeConnectionSettings(d.connection_settings),
         createdAt: d.created_at,
         updatedAt: d.updated_at
       }))
@@ -340,101 +390,7 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Dataset not found' })
     }
 
-    // If this is a connected database, use the databases API to get tables
-    if (dataset.database_type === 'connected' && dataset.database_name) {
-      // Forward to databases endpoint
-      const databasesRouter = await import('./databases.js')
-      const mockReq = { params: { database: dataset.database_name } } as any
-      const mockRes = {
-        json: (data: any) => {
-          // Merge database info with dataset metadata
-          return res.json({
-            dataset: {
-              ...data.dataset,
-              id: dataset.dataset_id,
-              name: dataset.dataset_name,
-              database_name: dataset.database_name,
-              database_type: dataset.database_type,
-              description: dataset.description,
-              tags: dataset.tags,
-              source: dataset.source,
-              citation: dataset.citation,
-              references: dataset.references,
-              createdBy: dataset.created_by,
-              createdAt: dataset.created_at,
-              updatedAt: dataset.updated_at
-            }
-          })
-        },
-        status: (code: number) => ({ json: (data: any) => res.status(code).json(data) })
-      }
-
-      // This is a workaround - better would be to extract the logic to a service
-      // For now, let's just query the database directly
-      const clickhouseClient = (await import('../config/clickhouse.js')).default
-
-      const tablesResult = await clickhouseClient.query({
-        query: `
-          SELECT name, engine, total_rows
-          FROM system.tables
-          WHERE database = {database:String}
-            AND name NOT LIKE '.%'
-          ORDER BY name
-        `,
-        query_params: { database: dataset.database_name },
-        format: 'JSONEachRow'
-      })
-
-      const tables = await tablesResult.json<{ name: string; engine: string; total_rows: string }>()
-
-      const tablesWithSchema = await Promise.all(
-        tables.map(async (table) => {
-          const columnsResult = await clickhouseClient.query({
-            query: `
-              SELECT name, type, position
-              FROM system.columns
-              WHERE database = {database:String}
-                AND table = {table:String}
-              ORDER BY position
-            `,
-            query_params: { database: dataset.database_name, table: table.name },
-            format: 'JSONEachRow'
-          })
-
-          const columns = await columnsResult.json<{ name: string; type: string; position: number }>()
-
-          return {
-            id: table.name,
-            name: table.name,
-            displayName: table.name,
-            rowCount: parseInt(table.total_rows) || 0,
-            columns: columns.map(col => ({
-              name: col.name,
-              type: col.type.replace(/Nullable\((.*)\)/, '$1'),
-              nullable: col.type.includes('Nullable')
-            }))
-          }
-        })
-      )
-
-      return res.json({
-        dataset: {
-          id: dataset.dataset_id,
-          name: dataset.dataset_name,
-          database_name: dataset.database_name,
-          database_type: dataset.database_type,
-          description: dataset.description,
-          tags: dataset.tags,
-          source: dataset.source,
-          citation: dataset.citation,
-          references: dataset.references,
-          tables: tablesWithSchema,
-          createdBy: dataset.created_by,
-          createdAt: dataset.created_at,
-          updatedAt: dataset.updated_at
-        }
-      })
-    }
+    const connectionInfo = sanitizeConnectionSettings(dataset.connection_settings)
 
     return res.json({
       dataset: {
@@ -448,13 +404,14 @@ router.get('/:id', async (req, res) => {
         citation: dataset.citation,
         references: dataset.references,
         customMetadata: dataset.custom_metadata,
+        connectionInfo,
         tables: dataset.tables?.map(t => ({
           id: t.table_id,
           name: t.table_name,
           displayName: t.display_name,
           filename: t.original_filename,
           rowCount: t.row_count,
-          columns: JSON.parse(t.schema_json),
+          columns: t.schema_json ? JSON.parse(t.schema_json) : [],
           primaryKey: t.primary_key,
           customMetadata: t.custom_metadata,
           relationships: t.relationships,
@@ -502,6 +459,71 @@ router.get('/:id/tables/:tableId/columns', async (req, res) => {
   } catch (error: any) {
     console.error('Get table columns error:', error)
     res.status(500).json({ error: 'Failed to get table columns', message: error.message })
+  }
+})
+
+// Update table primary key
+router.patch('/:id/tables/:tableId/primary-key', async (req, res) => {
+  try {
+    const primaryKey = req.body.primaryKey === undefined ? null : req.body.primaryKey
+    if (primaryKey !== null && typeof primaryKey !== 'string') {
+      return res.status(400).json({ error: 'Primary key must be a string or null' })
+    }
+
+    await datasetService.updatePrimaryKey(req.params.id, req.params.tableId, primaryKey)
+    res.json({ success: true })
+  } catch (error: any) {
+    console.error('Update primary key error:', error)
+    res.status(500).json({ error: 'Failed to update primary key', message: error.message })
+  }
+})
+
+// Add table relationship
+router.post('/:id/tables/:tableId/relationships', async (req, res) => {
+  try {
+    const { foreignKey, referencedTableId, referencedColumn, type } = req.body
+
+    if (!foreignKey || !referencedTableId || !referencedColumn) {
+      return res.status(400).json({ error: 'foreignKey, referencedTableId, and referencedColumn are required' })
+    }
+
+    await datasetService.addRelationship(req.params.id, req.params.tableId, {
+      foreign_key: foreignKey,
+      referenced_table: referencedTableId,
+      referenced_column: referencedColumn,
+      type
+    })
+
+    res.json({ success: true })
+  } catch (error: any) {
+    console.error('Add relationship error:', error)
+    res.status(500).json({ error: 'Failed to add relationship', message: error.message })
+  }
+})
+
+// Remove table relationship
+router.delete('/:id/tables/:tableId/relationships', async (req, res) => {
+  try {
+    const { foreignKey, referencedTable, referencedColumn } = req.query
+
+    if (!foreignKey || !referencedTable || !referencedColumn) {
+      return res.status(400).json({ error: 'foreignKey, referencedTable, and referencedColumn are required' })
+    }
+
+    await datasetService.deleteRelationship(
+      req.params.id,
+      req.params.tableId,
+      {
+        foreign_key: String(foreignKey),
+        referenced_table: String(referencedTable),
+        referenced_column: String(referencedColumn)
+      }
+    )
+
+    res.json({ success: true })
+  } catch (error: any) {
+    console.error('Delete relationship error:', error)
+    res.status(500).json({ error: 'Failed to delete relationship', message: error.message })
   }
 })
 

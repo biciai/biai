@@ -1,9 +1,19 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 
-const { commandMock, insertMock, queryMock } = vi.hoisted(() => ({
+const {
+  commandMock,
+  insertMock,
+  queryMock,
+  externalClientQueryMock,
+  externalClientCloseMock,
+  createClientMock
+} = vi.hoisted(() => ({
   commandMock: vi.fn(),
   insertMock: vi.fn(),
-  queryMock: vi.fn()
+  queryMock: vi.fn(),
+  externalClientQueryMock: vi.fn(),
+  externalClientCloseMock: vi.fn(),
+  createClientMock: vi.fn()
 }))
 
 vi.mock('../../config/clickhouse.js', () => ({
@@ -11,7 +21,11 @@ vi.mock('../../config/clickhouse.js', () => ({
     command: commandMock,
     insert: insertMock,
     query: queryMock
-  }
+  },
+  createClickHouseClient: createClientMock.mockImplementation(() => ({
+    query: externalClientQueryMock,
+    close: externalClientCloseMock
+  }))
 }))
 
 vi.mock('../columnAnalyzer.js', () => ({
@@ -29,6 +43,9 @@ describe('DatasetService', () => {
     insertMock.mockReset()
     queryMock.mockReset()
     mockAnalyzeColumn.mockReset()
+    externalClientQueryMock.mockReset()
+    externalClientCloseMock.mockReset()
+    createClientMock.mockClear()
   })
 
   test('addTableToDataset stores metadata and analyzes columns using fully qualified table names', async () => {
@@ -44,6 +61,7 @@ describe('DatasetService', () => {
       citation: '',
       references: [],
       custom_metadata: '{}',
+      connection_settings: '',
       created_by: 'system',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -142,7 +160,28 @@ describe('DatasetService', () => {
   describe('getTableData', () => {
     test('uses stored qualified table name when present', async () => {
       queryMock.mockResolvedValueOnce({
-        json: async () => [{ clickhouse_table_name: 'customdb.tbl_patients' }]
+        json: async () => [{
+          dataset_id: 'dataset-1',
+          dataset_name: 'Test',
+          database_name: 'customdb',
+          database_type: 'created',
+          connection_settings: ''
+        }]
+      } as any)
+      queryMock.mockResolvedValueOnce({
+        json: async () => [{
+          dataset_id: 'dataset-1',
+          table_id: 'patients',
+          table_name: 'patients',
+          display_name: 'patients',
+          row_count: 100,
+          clickhouse_table_name: 'customdb.tbl_patients',
+          schema_json: '[]',
+          created_at: new Date().toISOString()
+        }]
+      } as any)
+      queryMock.mockResolvedValueOnce({
+        json: async () => []
       } as any)
       queryMock.mockResolvedValueOnce({
         json: async () => [{ patient_id: 'GBM-1' }]
@@ -151,14 +190,35 @@ describe('DatasetService', () => {
       const rows = await datasetService.getTableData('dataset-1', 'patients', 25, 5)
 
       expect(rows).toEqual([{ patient_id: 'GBM-1' }])
-      expect(queryMock).toHaveBeenCalledTimes(2)
-      expect(queryMock.mock.calls[1]?.[0].query).toContain('FROM customdb.tbl_patients')
-      expect(queryMock.mock.calls[1]?.[0].query).toContain('LIMIT 25 OFFSET 5')
+      expect(queryMock).toHaveBeenCalledTimes(4)
+      expect(queryMock.mock.calls[3]?.[0].query).toContain('FROM customdb.tbl_patients')
+      expect(queryMock.mock.calls[3]?.[0].query).toContain('LIMIT 25 OFFSET 5')
     })
 
     test('defaults to biai schema when table name is unqualified', async () => {
       queryMock.mockResolvedValueOnce({
-        json: async () => [{ clickhouse_table_name: 'tbl_patients' }]
+        json: async () => [{
+          dataset_id: 'dataset-1',
+          dataset_name: 'Test',
+          database_name: 'biai',
+          database_type: 'created',
+          connection_settings: ''
+        }]
+      } as any)
+      queryMock.mockResolvedValueOnce({
+        json: async () => [{
+          dataset_id: 'dataset-1',
+          table_id: 'patients',
+          table_name: 'patients',
+          display_name: 'patients',
+          row_count: 100,
+          clickhouse_table_name: 'tbl_patients',
+          schema_json: '[]',
+          created_at: new Date().toISOString()
+        }]
+      } as any)
+      queryMock.mockResolvedValueOnce({
+        json: async () => []
       } as any)
       queryMock.mockResolvedValueOnce({
         json: async () => []
@@ -166,7 +226,174 @@ describe('DatasetService', () => {
 
       await datasetService.getTableData('dataset-1', 'patients', 10, 0)
 
-      expect(queryMock.mock.calls[1]?.[0].query).toContain('FROM biai.tbl_patients')
+      expect(queryMock.mock.calls[3]?.[0].query).toContain('FROM biai.tbl_patients')
     })
+  })
+
+  test('getTableColumns hydrates metadata for connected datasets', async () => {
+    queryMock.mockResolvedValueOnce({
+      json: async () => [{
+        dataset_id: 'dataset-1',
+        dataset_name: 'COVID',
+        database_name: 'covid',
+        database_type: 'connected',
+        description: '',
+        tags: [],
+        source: '',
+        citation: '',
+        references: [],
+        custom_metadata: '{}',
+        connection_settings: JSON.stringify({ host: 'remote.host', port: 8123 }),
+        created_by: 'system',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }]
+    } as any)
+
+    queryMock.mockResolvedValueOnce({ json: async () => [] } as any)
+    queryMock.mockResolvedValueOnce({ json: async () => [] } as any)
+
+    externalClientQueryMock
+      .mockResolvedValueOnce({
+        json: async () => [{ name: 'cases', engine: 'MergeTree', total_rows: '100' }]
+      } as any)
+      .mockResolvedValueOnce({
+        json: async () => [
+          { name: 'patient_id', type: 'Nullable(String)', position: 1 },
+          { name: 'age', type: 'UInt8', position: 2 }
+        ]
+      } as any)
+      .mockResolvedValueOnce({
+        json: async () => [
+          { name: 'patient_id', type: 'Nullable(String)', position: 1 },
+          { name: 'age', type: 'UInt8', position: 2 }
+        ]
+      } as any)
+
+    queryMock.mockResolvedValueOnce({
+      json: async () => [
+        { column_name: 'patient_id' },
+        { column_name: 'age' }
+      ]
+    } as any)
+    queryMock.mockResolvedValueOnce({
+      json: async () => [
+        {
+          column_name: 'patient_id',
+          column_type: 'String',
+          column_index: 0,
+          is_nullable: true,
+          display_name: 'patient_id',
+          description: '',
+          user_data_type: '',
+          user_priority: null,
+          display_type: 'categorical',
+          unique_value_count: 0,
+          null_count: 0,
+          min_value: null,
+          max_value: null,
+          suggested_chart: 'bar',
+          display_priority: 50,
+          is_hidden: false
+        },
+        {
+          column_name: 'age',
+          column_type: 'UInt8',
+          column_index: 1,
+          is_nullable: false,
+          display_name: 'age',
+          description: '',
+          user_data_type: '',
+          user_priority: null,
+          display_type: 'numeric',
+          unique_value_count: 0,
+          null_count: 0,
+          min_value: null,
+          max_value: null,
+          suggested_chart: 'histogram',
+          display_priority: 0,
+          is_hidden: false
+        }
+      ]
+    } as any)
+
+    const columns = await datasetService.getTableColumns('dataset-1', 'cases')
+
+    expect(createClientMock).toHaveBeenCalledTimes(2)
+    expect(externalClientQueryMock).toHaveBeenCalledTimes(3)
+
+    const tableInsertCall = insertMock.mock.calls.find(call => (call[0] as any).table === 'biai.dataset_tables')
+    expect(tableInsertCall).toBeTruthy()
+
+    const metadataInsertCall = insertMock.mock.calls.find(call => (call[0] as any).table === 'biai.dataset_columns')
+    expect(metadataInsertCall).toBeTruthy()
+    expect((metadataInsertCall![0] as any).values).toHaveLength(2)
+
+    expect(columns).toHaveLength(2)
+    expect(columns[0]).toMatchObject({ column_name: 'patient_id', display_name: 'patient_id' })
+    expect(externalClientCloseMock).toHaveBeenCalledTimes(2)
+  })
+
+  test('updatePrimaryKey updates dataset metadata', async () => {
+    commandMock.mockResolvedValue(undefined)
+    queryMock.mockResolvedValueOnce({
+      json: async () => [{
+        dataset_id: 'dataset-1',
+        table_id: 'table-1',
+        column_name: 'id',
+        column_type: 'String',
+        column_index: 0,
+        is_nullable: false,
+        display_name: 'id',
+        description: '',
+        user_data_type: '',
+        user_priority: null,
+        display_type: 'categorical',
+        unique_value_count: 0,
+        null_count: 0,
+        min_value: null,
+        max_value: null,
+        suggested_chart: 'bar',
+        display_priority: 0,
+        is_hidden: false
+      }]
+    } as any)
+    insertMock.mockResolvedValue(undefined)
+
+    await datasetService.updatePrimaryKey('dataset-1', 'table-1', 'id')
+
+    expect(commandMock).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.stringContaining('ALTER TABLE biai.dataset_tables')
+    }))
+    const columnInsert = insertMock.mock.calls.find(call => (call[0] as any).table === 'biai.dataset_columns')
+    expect(columnInsert).toBeTruthy()
+  })
+
+  test('addRelationship inserts new relationship', async () => {
+    queryMock.mockResolvedValueOnce({ json: async () => [] } as any)
+    insertMock.mockResolvedValue(undefined)
+
+    await datasetService.addRelationship('dataset-1', 'table-1', {
+      foreign_key: 'patient_id',
+      referenced_table: 'patients',
+      referenced_column: 'id'
+    })
+
+    const relationshipInsert = insertMock.mock.calls.find(call => (call[0] as any).table === 'biai.table_relationships')
+    expect(relationshipInsert).toBeTruthy()
+  })
+
+  test('deleteRelationship removes existing relationship', async () => {
+    commandMock.mockResolvedValue(undefined)
+
+    await datasetService.deleteRelationship('dataset-1', 'table-1', {
+      foreign_key: 'patient_id',
+      referenced_table: 'patients',
+      referenced_column: 'id'
+    })
+
+    expect(commandMock).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.stringContaining('ALTER TABLE biai.table_relationships')
+    }))
   })
 })
