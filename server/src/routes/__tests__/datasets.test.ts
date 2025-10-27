@@ -8,6 +8,7 @@ vi.mock('../../services/datasetService.js', () => ({
     createDataset: vi.fn(),
     listDatasets: vi.fn(),
     getDataset: vi.fn(),
+    connectDatabase: vi.fn(),
     getTableColumns: vi.fn(),
     updateColumnMetadata: vi.fn(),
     deleteDataset: vi.fn()
@@ -20,6 +21,7 @@ import datasetService from '../../services/datasetService.js'
 const mockCreateDataset = vi.mocked(datasetService.createDataset)
 const mockListDatasets = vi.mocked(datasetService.listDatasets)
 const mockGetDataset = vi.mocked(datasetService.getDataset)
+const mockConnectDatabase = vi.mocked(datasetService.connectDatabase)
 const mockGetTableColumns = vi.mocked(datasetService.getTableColumns)
 const mockUpdateColumnMetadata = vi.mocked(datasetService.updateColumnMetadata)
 const mockDeleteDataset = vi.mocked(datasetService.deleteDataset)
@@ -91,7 +93,8 @@ describe('Datasets API Routes', () => {
           tags: [],
           tables: [],
           created_at: new Date(),
-          updated_at: new Date()
+          updated_at: new Date(),
+          connection_settings: ''
         },
         {
           dataset_id: '2',
@@ -100,7 +103,8 @@ describe('Datasets API Routes', () => {
           tags: [],
           tables: [],
           created_at: new Date(),
-          updated_at: new Date()
+          updated_at: new Date(),
+          connection_settings: ''
         }
       ]
 
@@ -123,7 +127,8 @@ describe('Datasets API Routes', () => {
         tags: ['test'],
         tables: [],
         created_at: new Date(),
-        updated_at: new Date()
+        updated_at: new Date(),
+        connection_settings: ''
       }
 
       mockGetDataset.mockResolvedValue(mockDataset as any)
@@ -142,6 +147,74 @@ describe('Datasets API Routes', () => {
 
       expect(response.status).toBe(404)
       expect(response.body.error).toBe('Dataset not found')
+    })
+  })
+
+  describe('POST /api/datasets/connect', () => {
+    test('should require host', async () => {
+      const response = await request(app)
+        .post('/api/datasets/connect')
+        .send({
+          databaseName: 'analytics',
+          displayName: 'Analytics'
+        })
+
+      expect(response.status).toBe(400)
+      expect(response.body.error).toBe('Database name, display name, and host are required')
+    })
+
+    test('should connect dataset with connection info', async () => {
+      mockConnectDatabase.mockResolvedValue({
+        dataset_id: 'connected-1',
+        dataset_name: 'Analytics',
+        database_name: 'analytics',
+        database_type: 'connected',
+        description: '',
+        tags: [],
+        connection_settings: JSON.stringify({
+          host: 'remote.clickhouse.local',
+          port: 8443,
+          protocol: 'https',
+          username: 'readonly',
+          password: 'secret'
+        }),
+        created_at: new Date()
+      } as any)
+
+      const response = await request(app)
+        .post('/api/datasets/connect')
+        .send({
+          databaseName: 'analytics',
+          displayName: 'Analytics',
+          host: 'remote.clickhouse.local',
+          secure: true,
+          port: 8443,
+          username: 'readonly',
+          password: 'secret'
+        })
+
+      expect(response.status).toBe(200)
+      expect(mockConnectDatabase).toHaveBeenCalledWith(
+        'analytics',
+        'Analytics',
+        '',
+        'system',
+        [],
+        {},
+        {
+          host: 'remote.clickhouse.local',
+          port: 8443,
+          protocol: 'https',
+          username: 'readonly',
+          password: 'secret'
+        }
+      )
+      expect(response.body.dataset.connectionInfo).toEqual({
+        host: 'remote.clickhouse.local',
+        port: 8443,
+        protocol: 'https',
+        username: 'readonly'
+      })
     })
   })
 

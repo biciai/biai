@@ -10,10 +10,11 @@ interface Column {
 }
 
 interface Relationship {
-  foreign_key: string
-  referenced_table: string
-  referenced_column: string
+  foreignKey: string
+  referencedTable: string
+  referencedColumn: string
   type?: string
+  referencedTableDisplayName?: string
 }
 
 interface Table {
@@ -85,22 +86,93 @@ function DatasetManage() {
   const [loadingPreview, setLoadingPreview] = useState(false)
   const [selectedPrimaryKey, setSelectedPrimaryKey] = useState('')
   const [confirmedRelationships, setConfirmedRelationships] = useState<any[]>([])
+  const [showKeyEditor, setShowKeyEditor] = useState(false)
+  const [keyEditorTableId, setKeyEditorTableId] = useState<string | null>(null)
+  const [keyEditorColumns, setKeyEditorColumns] = useState<ColumnMetadata[]>([])
+  const [keyEditorLoading, setKeyEditorLoading] = useState(false)
+  const [primaryKeySelection, setPrimaryKeySelection] = useState('')
+  const [initialPrimaryKeySelection, setInitialPrimaryKeySelection] = useState('')
+  const [tableRelationships, setTableRelationships] = useState<Relationship[]>([])
+  const [relationshipForm, setRelationshipForm] = useState({
+    foreignKey: '',
+    referencedTableId: '',
+    referencedColumn: ''
+  })
+  const [referencedColumnsCache, setReferencedColumnsCache] = useState<Record<string, ColumnMetadata[]>>({})
+  const [referencedColumnsLoading, setReferencedColumnsLoading] = useState(false)
+  const [relationshipSaving, setRelationshipSaving] = useState(false)
+  const [primaryKeySaving, setPrimaryKeySaving] = useState(false)
 
   useEffect(() => {
-    loadDataset()
+    fetchDataset()
   }, [id])
 
-  const loadDataset = async () => {
-    try {
-      setLoading(true)
-      const response = await api.get(`/datasets/${id}`)
-      setDataset(response.data.dataset)
-    } catch (error) {
-      console.error('Failed to load dataset:', error)
-    } finally {
-      setLoading(false)
+  const normalizeDataset = (raw: any): Dataset => {
+    const rawTables = raw.tables || []
+    const tableIdToDisplayName: Record<string, string> = {}
+    const tableNameToDisplayName: Record<string, string> = {}
+
+    rawTables.forEach((table: any) => {
+      const displayName = table.displayName || table.tableDisplayName || table.name || table.table_name || table.id || table.table_id
+      if (table.id) tableIdToDisplayName[table.id] = displayName
+      if (table.table_id) tableIdToDisplayName[table.table_id] = displayName
+      if (table.name) tableNameToDisplayName[table.name] = displayName
+      if (table.table_name) tableNameToDisplayName[table.table_name] = displayName
+    })
+
+    return {
+      ...raw,
+      tables: rawTables.map((table: any) => ({
+        ...table,
+        relationships: (table.relationships || []).map((rel: any) => {
+          const referencedTableKey = rel.referencedTable ?? rel.referenced_table
+          const referencedDisplayName =
+            rel.referencedTableDisplayName ??
+            rel.referenced_table_display_name ??
+            tableIdToDisplayName[referencedTableKey] ??
+            tableNameToDisplayName[referencedTableKey] ??
+            referencedTableKey
+
+          return {
+            foreignKey: rel.foreignKey ?? rel.foreign_key,
+            referencedTable: referencedTableKey,
+            referencedColumn: rel.referencedColumn ?? rel.referenced_column,
+            type: rel.type ?? rel.relationship_type,
+            referencedTableDisplayName: referencedDisplayName
+          }
+        })
+      }))
     }
   }
+
+  const fetchDataset = async (withLoading: boolean = true) => {
+    try {
+      if (withLoading) setLoading(true)
+      const response = await api.get(`/datasets/${id}`)
+      const loaded = normalizeDataset(response.data.dataset)
+      setDataset(loaded)
+      return loaded
+    } catch (error) {
+      console.error('Failed to load dataset:', error)
+      return null
+    } finally {
+      if (withLoading) setLoading(false)
+    }
+  }
+
+  const resolveTableDisplayName = (tableIdOrName: string) => {
+    if (!dataset) return tableIdOrName
+    const match = dataset.tables.find(
+      (t) => t.id === tableIdOrName || t.name === tableIdOrName
+    )
+    return match?.displayName || match?.name || tableIdOrName
+  }
+
+  const hydrateRelationships = (relationships: Relationship[] = []) =>
+    relationships.map((rel) => ({
+      ...rel,
+      referencedTableDisplayName: rel.referencedTableDisplayName || resolveTableDisplayName(rel.referencedTable)
+    }))
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -219,7 +291,7 @@ function DatasetManage() {
       setDisplayName('')
       setSkipRows('0')
       setPrimaryKey('')
-      await loadDataset()
+      await fetchDataset()
     } catch (error: any) {
       console.error('Add table failed:', error)
       alert('Add table failed: ' + (error.response?.data?.message || error.message))
@@ -246,7 +318,7 @@ function DatasetManage() {
 
     try {
       await api.delete(`/datasets/${id}/tables/${tableId}`)
-      await loadDataset()
+      await fetchDataset()
       if (selectedTable === tableId) {
         setSelectedTable(null)
         setTableData([])
@@ -260,8 +332,8 @@ function DatasetManage() {
   const loadColumns = async (tableId: string) => {
     try {
       setLoadingColumns(true)
-      const response = await api.get(`/datasets/${id}/tables/${tableId}/columns`)
-      setColumns(response.data.columns)
+      const cols = await fetchTableColumns(tableId)
+      setColumns(cols)
       setEditingTableId(tableId)
       setShowColumnEditor(true)
     } catch (error) {
@@ -269,6 +341,146 @@ function DatasetManage() {
       alert('Failed to load columns')
     } finally {
       setLoadingColumns(false)
+    }
+  }
+
+  const fetchTableColumns = async (tableId: string) => {
+    const response = await api.get(`/datasets/${id}/tables/${tableId}/columns`)
+    return response.data.columns as ColumnMetadata[]
+  }
+
+  const openKeyEditor = async (table: Table) => {
+    setKeyEditorTableId(table.id)
+    const initialPk = table.primaryKey || ''
+    setPrimaryKeySelection(initialPk)
+    setInitialPrimaryKeySelection(initialPk)
+    setRelationshipForm({ foreignKey: '', referencedTableId: '', referencedColumn: '' })
+    setReferencedColumnsCache({})
+    setTableRelationships(hydrateRelationships(table.relationships || []))
+    setShowKeyEditor(true)
+    setKeyEditorLoading(true)
+    try {
+      const cols = await fetchTableColumns(table.id)
+      setKeyEditorColumns(cols)
+    } catch (error) {
+      console.error('Failed to load columns for key editor:', error)
+      alert('Failed to load columns for key editor')
+      setShowKeyEditor(false)
+    } finally {
+      setKeyEditorLoading(false)
+    }
+  }
+
+  const closeKeyEditor = () => {
+    setShowKeyEditor(false)
+    setKeyEditorTableId(null)
+    setKeyEditorColumns([])
+    setInitialPrimaryKeySelection('')
+    setTableRelationships([])
+    setRelationshipForm({ foreignKey: '', referencedTableId: '', referencedColumn: '' })
+    setReferencedColumnsCache({})
+  }
+
+  const ensureReferencedColumns = async (tableId: string) => {
+    if (referencedColumnsCache[tableId]) {
+      return referencedColumnsCache[tableId]
+    }
+    setReferencedColumnsLoading(true)
+    try {
+      const cols = await fetchTableColumns(tableId)
+      setReferencedColumnsCache(prev => ({ ...prev, [tableId]: cols }))
+      return cols
+    } catch (error) {
+      console.error('Failed to load referenced table columns:', error)
+      alert('Failed to load referenced table columns')
+      return []
+    } finally {
+      setReferencedColumnsLoading(false)
+    }
+  }
+
+  const handleSavePrimaryKey = async () => {
+    if (!keyEditorTableId) return
+    if (primaryKeySelection === initialPrimaryKeySelection) return
+    try {
+      setPrimaryKeySaving(true)
+      await api.patch(`/datasets/${id}/tables/${keyEditorTableId}/primary-key`, {
+        primaryKey: primaryKeySelection || null
+      })
+      const updated = await fetchDataset(false)
+      if (updated) {
+        const table = updated.tables.find(t => t.id === keyEditorTableId)
+        if (table) {
+          setTableRelationships(hydrateRelationships(table.relationships || []))
+          const newPrimaryKey = table.primaryKey || ''
+          setPrimaryKeySelection(newPrimaryKey)
+          setInitialPrimaryKeySelection(newPrimaryKey)
+        }
+      }
+    } catch (error) {
+      console.error('Failed to save primary key:', error)
+      alert('Failed to save primary key')
+    } finally {
+      setPrimaryKeySaving(false)
+    }
+  }
+
+  const handleAddRelationship = async () => {
+    if (!keyEditorTableId) return
+    const { foreignKey, referencedTableId, referencedColumn } = relationshipForm
+    if (!foreignKey || !referencedTableId || !referencedColumn) {
+      alert('Please select a column, referenced table, and referenced column')
+      return
+    }
+    try {
+      setRelationshipSaving(true)
+      const referencedTableName =
+        dataset?.tables.find((t) => t.id === referencedTableId)?.name || referencedTableId
+      await api.post(`/datasets/${id}/tables/${keyEditorTableId}/relationships`, {
+        foreignKey,
+        referencedTableId,
+        referencedTable: referencedTableName,
+        referencedColumn
+      })
+      const updated = await fetchDataset(false)
+      if (updated) {
+        const table = updated.tables.find(t => t.id === keyEditorTableId)
+        if (table) {
+          setTableRelationships(hydrateRelationships(table.relationships || []))
+        }
+      }
+      setRelationshipForm({ foreignKey: '', referencedTableId: '', referencedColumn: '' })
+    } catch (error) {
+      console.error('Failed to add relationship:', error)
+      alert('Failed to add relationship')
+    } finally {
+      setRelationshipSaving(false)
+    }
+  }
+
+  const handleDeleteRelationship = async (rel: Relationship) => {
+    if (!keyEditorTableId) return
+    try {
+      setRelationshipSaving(true)
+      await api.delete(`/datasets/${id}/tables/${keyEditorTableId}/relationships`, {
+        params: {
+          foreignKey: rel.foreignKey,
+          referencedTable: rel.referencedTable,
+          referencedColumn: rel.referencedColumn
+        }
+      })
+      const updated = await fetchDataset(false)
+      if (updated) {
+        const table = updated.tables.find(t => t.id === keyEditorTableId)
+        if (table) {
+          setTableRelationships(hydrateRelationships(table.relationships || []))
+        }
+      }
+    } catch (error) {
+      console.error('Failed to delete relationship:', error)
+      alert('Failed to delete relationship')
+    } finally {
+      setRelationshipSaving(false)
     }
   }
 
@@ -284,6 +496,14 @@ function DatasetManage() {
       alert('Failed to update column metadata')
     }
   }
+
+  const primaryKeySaveDisabled = primaryKeySaving || primaryKeySelection === initialPrimaryKeySelection
+  const relationshipActionDisabled =
+    relationshipSaving ||
+    keyEditorLoading ||
+    !relationshipForm.foreignKey ||
+    !relationshipForm.referencedTableId ||
+    !relationshipForm.referencedColumn
 
   if (loading) return <p>Loading dataset...</p>
 
@@ -895,8 +1115,8 @@ function DatasetManage() {
                     <div style={{ fontSize: '0.875rem', color: '#666', marginTop: '0.5rem' }}>
                       <strong>Relationships:</strong>
                       {table.relationships.map((rel, i) => (
-                        <div key={i} style={{ marginLeft: '1rem', marginTop: '0.25rem' }}>
-                          {rel.foreign_key} → {rel.referenced_table}.{rel.referenced_column} ({rel.type || 'many-to-one'})
+                        <div key={`${rel.foreignKey}-${rel.referencedTable}-${rel.referencedColumn}-${i}`} style={{ marginLeft: '1rem', marginTop: '0.25rem' }}>
+                          {rel.foreignKey} → {(rel.referencedTableDisplayName || resolveTableDisplayName(rel.referencedTable))}.{rel.referencedColumn} ({rel.type || 'many-to-one'})
                         </div>
                       ))}
                     </div>
@@ -915,6 +1135,19 @@ function DatasetManage() {
                     }}
                   >
                     View Data
+                  </button>
+                  <button
+                    onClick={() => openKeyEditor(table)}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      background: '#673AB7',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Manage Keys
                   </button>
                   <button
                     onClick={() => loadColumns(table.id)}
@@ -1135,6 +1368,203 @@ function DatasetManage() {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Key & Relationships Editor Modal */}
+      {showKeyEditor && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 1000
+        }}>
+          <div style={{
+            background: 'white',
+            borderRadius: '8px',
+            padding: '2rem',
+            maxWidth: '720px',
+            maxHeight: '80vh',
+            overflow: 'auto',
+            width: '90%'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+              <h3 style={{ margin: 0 }}>Manage Keys & Relationships</h3>
+              <button
+                onClick={closeKeyEditor}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '1.5rem',
+                  cursor: 'pointer',
+                  color: '#666'
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            {keyEditorLoading ? (
+              <p>Loading metadata...</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                <div>
+                  <h4 style={{ marginTop: 0 }}>Primary Key</h4>
+                  <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                    <select
+                      value={primaryKeySelection}
+                      onChange={(e) => setPrimaryKeySelection(e.target.value)}
+                      style={{
+                        flex: 1,
+                        padding: '0.5rem',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px'
+                      }}
+                    >
+                      <option value="">None</option>
+                      {keyEditorColumns.map(col => (
+                        <option key={col.column_name} value={col.column_name}>{col.column_name}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={handleSavePrimaryKey}
+                      disabled={primaryKeySaveDisabled}
+                      style={{
+                        padding: '0.5rem 1rem',
+                        background: primaryKeySaveDisabled ? '#ccc' : '#4CAF50',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: primaryKeySaveDisabled ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      {primaryKeySaving ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <h4 style={{ marginTop: 0 }}>Relationships</h4>
+                  {tableRelationships.length === 0 ? (
+                    <p style={{ color: '#666' }}>No relationships defined.</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                      {tableRelationships.map(rel => (
+                        <div
+                          key={`${rel.foreignKey}->${rel.referencedTable}.${rel.referencedColumn}`}
+                          style={{
+                            padding: '0.75rem',
+                            border: '1px solid #ddd',
+                            borderRadius: '4px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between'
+                          }}
+                        >
+                          <div>
+                            <strong>{rel.foreignKey}</strong> → {(rel.referencedTableDisplayName || resolveTableDisplayName(rel.referencedTable))}.{rel.referencedColumn}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteRelationship(rel)}
+                            disabled={relationshipSaving}
+                            style={{
+                              background: '#f44336',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              padding: '0.35rem 0.75rem',
+                              cursor: relationshipSaving ? 'not-allowed' : 'pointer',
+                              fontSize: '0.8rem'
+                            }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: '1rem', padding: '1rem', background: '#f9f9f9', borderRadius: '6px', border: '1px solid #e0e0e0' }}>
+                    <h5 style={{ margin: '0 0 0.75rem 0' }}>Add Relationship</h5>
+                    <div style={{ display: 'grid', gap: '0.75rem', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.85rem', color: '#666', marginBottom: '0.25rem' }}>Column</label>
+                        <select
+                          value={relationshipForm.foreignKey}
+                          onChange={(e) => setRelationshipForm(prev => ({ ...prev, foreignKey: e.target.value }))}
+                          style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px' }}
+                        >
+                          <option value="">Select column...</option>
+                          {keyEditorColumns.map(col => (
+                            <option key={col.column_name} value={col.column_name}>{col.column_name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.85rem', color: '#666', marginBottom: '0.25rem' }}>Referenced Table</label>
+                        <select
+                          value={relationshipForm.referencedTableId}
+                          onChange={async (e) => {
+                            const value = e.target.value
+                            setRelationshipForm(prev => ({ ...prev, referencedTableId: value, referencedColumn: '' }))
+                            if (value) {
+                              await ensureReferencedColumns(value)
+                            }
+                          }}
+                          style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px' }}
+                        >
+                          <option value="">Select table...</option>
+                          {dataset?.tables
+                            .filter(t => t.id !== keyEditorTableId)
+                            .map(t => (
+                              <option key={t.id} value={t.id}>{t.displayName}</option>
+                            ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '0.85rem', color: '#666', marginBottom: '0.25rem' }}>Referenced Column</label>
+                        <select
+                          value={relationshipForm.referencedColumn}
+                          onChange={(e) => setRelationshipForm(prev => ({ ...prev, referencedColumn: e.target.value }))}
+                          disabled={!relationshipForm.referencedTableId || referencedColumnsLoading}
+                          style={{ width: '100%', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '4px' }}
+                        >
+                          <option value="">Select column...</option>
+                          {(relationshipForm.referencedTableId ? referencedColumnsCache[relationshipForm.referencedTableId] || [] : []).map(col => (
+                            <option key={col.column_name} value={col.column_name}>{col.column_name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                        <button
+                          type="button"
+                          onClick={handleAddRelationship}
+                          disabled={relationshipActionDisabled}
+                          style={{
+                            padding: '0.5rem 1rem',
+                            background: relationshipActionDisabled ? '#ccc' : '#4CAF50',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: relationshipActionDisabled ? 'not-allowed' : 'pointer'
+                          }}
+                        >
+                          {relationshipSaving ? 'Saving...' : 'Add Relationship'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>

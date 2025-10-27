@@ -1,4 +1,4 @@
-import { createClient } from '@clickhouse/client'
+import { createClient, ClickHouseClient, ClickHouseClientConfigOptions } from '@clickhouse/client'
 import dotenv from 'dotenv'
 
 dotenv.config()
@@ -7,6 +7,35 @@ const clickhouseClient = createClient({
   url: process.env.CLICKHOUSE_HOST || 'http://localhost:8123',
   database: process.env.CLICKHOUSE_DATABASE || 'biai',
 })
+
+export interface ClickHouseConnectionSettings {
+  host: string
+  port?: number
+  protocol?: 'http' | 'https'
+  database?: string
+  username?: string
+  password?: string
+}
+
+export const createClickHouseClient = (settings: ClickHouseConnectionSettings): ClickHouseClient => {
+  const protocol = settings.protocol || 'http'
+  const port = settings.port ?? (protocol === 'https' ? 8443 : 8123)
+  const url = `${protocol}://${settings.host}:${port}`
+
+  const config: ClickHouseClientConfigOptions = {
+    url,
+    database: settings.database || 'default',
+  }
+
+  if (settings.username) {
+    config.username = settings.username
+  }
+  if (settings.password) {
+    config.password = settings.password
+  }
+
+  return createClient(config)
+}
 
 export const testConnection = async () => {
   try {

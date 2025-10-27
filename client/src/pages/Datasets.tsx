@@ -10,6 +10,13 @@ interface DatasetTable {
   rowCount: number
 }
 
+interface ConnectionInfo {
+  host: string
+  port?: number
+  protocol?: 'http' | 'https'
+  username?: string
+}
+
 interface Dataset {
   id: string
   name: string
@@ -22,6 +29,7 @@ interface Dataset {
   references?: string[]
   tableCount: number
   tables: DatasetTable[]
+  connectionInfo?: ConnectionInfo | null
   createdAt: string
   updatedAt: string
 }
@@ -46,6 +54,13 @@ function Datasets() {
   const [selectedDatabase, setSelectedDatabase] = useState('')
   const [importDisplayName, setImportDisplayName] = useState('')
   const [importDescription, setImportDescription] = useState('')
+  const [connectionHost, setConnectionHost] = useState('localhost')
+  const [connectionPort, setConnectionPort] = useState('8123')
+  const [connectionSecure, setConnectionSecure] = useState(false)
+  const [connectionUsername, setConnectionUsername] = useState('')
+  const [connectionPassword, setConnectionPassword] = useState('')
+  const [loadingDatabases, setLoadingDatabases] = useState(false)
+  const [databaseLoadError, setDatabaseLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     loadDatasets()
@@ -88,36 +103,89 @@ function Datasets() {
   }
 
   const loadAvailableDatabases = async () => {
+    if (!connectionHost.trim()) {
+      alert('Host is required to load databases')
+      return
+    }
+
     try {
-      const response = await api.get('/databases')
+      setLoadingDatabases(true)
+      setDatabaseLoadError(null)
+
+      const response = await api.post('/databases/list', {
+        host: connectionHost.trim(),
+        port: connectionPort ? Number(connectionPort) : undefined,
+        secure: connectionSecure,
+        username: connectionUsername || undefined,
+        password: connectionPassword || undefined
+      })
+
       const databases: DatabaseInfo[] = response.data?.databases || []
       setAvailableDatabases(databases)
-    } catch (error) {
+      if (databases.length === 1 && !selectedDatabase) {
+        setSelectedDatabase(databases[0].name)
+        if (!importDisplayName) {
+          setImportDisplayName(databases[0].name)
+        }
+      }
+    } catch (error: any) {
       console.error('Failed to load databases:', error)
+      const message = error.response?.data?.message || error.message || 'Failed to load databases'
+      setDatabaseLoadError(message)
+      setAvailableDatabases([])
+    } finally {
+      setLoadingDatabases(false)
     }
   }
 
   const handleShowImport = () => {
+    if (showImport) {
+      setShowImport(false)
+      return
+    }
     setShowImport(true)
     setShowCreate(false)
-    loadAvailableDatabases()
+    setAvailableDatabases([])
+    setSelectedDatabase('')
+    setImportDisplayName('')
+    setImportDescription('')
+    setConnectionHost('localhost')
+    setConnectionPort('8123')
+    setConnectionSecure(false)
+    setConnectionUsername('')
+    setConnectionPassword('')
+    setDatabaseLoadError(null)
   }
 
   const handleImport = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!selectedDatabase || !importDisplayName) return
+    if (!selectedDatabase || !importDisplayName || !connectionHost.trim()) {
+      alert('Host, database, and display name are required')
+      return
+    }
 
     try {
       setImporting(true)
-      const response = await api.post('/datasets/connect', {
+      await api.post('/datasets/connect', {
         databaseName: selectedDatabase,
         displayName: importDisplayName,
-        description: importDescription
+        description: importDescription,
+        host: connectionHost.trim(),
+        port: connectionPort ? Number(connectionPort) : undefined,
+        secure: connectionSecure,
+        username: connectionUsername || undefined,
+        password: connectionPassword || undefined
       })
       setShowImport(false)
       setSelectedDatabase('')
       setImportDisplayName('')
       setImportDescription('')
+      setConnectionHost('')
+      setConnectionPort('8123')
+      setConnectionSecure(false)
+      setConnectionUsername('')
+      setConnectionPassword('')
+      setAvailableDatabases([])
 
       // Reload datasets list
       loadDatasets()
@@ -152,13 +220,7 @@ function Datasets() {
             {showCreate ? 'Cancel' : '+ Create Dataset'}
           </button>
           <button
-            onClick={() => {
-              if (showImport) {
-                setShowImport(false)
-              } else {
-                handleShowImport()
-              }
-            }}
+            onClick={handleShowImport}
             style={{
               padding: '0.5rem 1rem',
               background: showImport ? '#ccc' : '#2196F3',
@@ -238,6 +300,88 @@ function Datasets() {
           </p>
           <form onSubmit={handleImport}>
             <div style={{ marginBottom: '1rem' }}>
+              <label style={{ display: 'block', marginBottom: '0.5rem' }}>Host *</label>
+              <input
+                type="text"
+                value={connectionHost}
+                onChange={(e) => setConnectionHost(e.target.value)}
+                required
+                placeholder="clickhouse.mycompany.com"
+                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', marginBottom: '0.5rem' }}>Port</label>
+                <input
+                  type="number"
+                  value={connectionPort}
+                  onChange={(e) => setConnectionPort(e.target.value)}
+                  placeholder={connectionSecure ? '8443' : '8123'}
+                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+                />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={connectionSecure}
+                    onChange={(e) => setConnectionSecure(e.target.checked)}
+                  />
+                  Use HTTPS
+                </label>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', marginBottom: '0.5rem' }}>Username</label>
+                <input
+                  type="text"
+                  value={connectionUsername}
+                  onChange={(e) => setConnectionUsername(e.target.value)}
+                  placeholder="default"
+                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={{ display: 'block', marginBottom: '0.5rem' }}>Password</label>
+                <input
+                  type="password"
+                  value={connectionPassword}
+                  onChange={(e) => setConnectionPassword(e.target.value)}
+                  placeholder="Optional"
+                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
+                />
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <button
+                type="button"
+                onClick={loadAvailableDatabases}
+                disabled={loadingDatabases || !connectionHost.trim()}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: (loadingDatabases || !connectionHost.trim()) ? '#ccc' : '#2196F3',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: (loadingDatabases || !connectionHost.trim()) ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {loadingDatabases ? 'Loading...' : 'Load Databases'}
+              </button>
+            </div>
+
+            {databaseLoadError && (
+              <div style={{ marginBottom: '1rem', color: '#d32f2f', fontSize: '0.875rem' }}>
+                {databaseLoadError}
+              </div>
+            )}
+
+            <div style={{ marginBottom: '1rem' }}>
               <label style={{ display: 'block', marginBottom: '0.5rem' }}>Select Database *</label>
               <select
                 value={selectedDatabase}
@@ -248,6 +392,7 @@ function Datasets() {
                   }
                 }}
                 required
+                disabled={availableDatabases.length === 0}
                 style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ddd' }}
               >
                 <option value="">Choose a database...</option>
@@ -282,14 +427,14 @@ function Datasets() {
 
             <button
               type="submit"
-              disabled={importing || !selectedDatabase || !importDisplayName}
+              disabled={importing || !selectedDatabase || !importDisplayName || !connectionHost.trim()}
               style={{
                 padding: '0.75rem 1.5rem',
-                background: (importing || !selectedDatabase || !importDisplayName) ? '#ccc' : '#2196F3',
+                background: (importing || !selectedDatabase || !importDisplayName || !connectionHost.trim()) ? '#ccc' : '#2196F3',
                 color: 'white',
                 border: 'none',
                 borderRadius: '4px',
-                cursor: (importing || !selectedDatabase || !importDisplayName) ? 'not-allowed' : 'pointer'
+                cursor: (importing || !selectedDatabase || !importDisplayName || !connectionHost.trim()) ? 'not-allowed' : 'pointer'
               }}
             >
               {importing ? 'Importing...' : 'Import Database'}
@@ -344,6 +489,14 @@ function Datasets() {
                       html={dataset.description}
                       style={{ margin: '0 0 0.5rem 0', color: '#666', display: 'block' }}
                     />
+                  )}
+                  {dataset.database_type === 'connected' && dataset.connectionInfo && (
+                    <div style={{ fontSize: '0.8rem', color: '#555', marginBottom: '0.5rem' }}>
+                      <strong>Host:</strong> {dataset.connectionInfo.host}
+                      {dataset.connectionInfo.port ? `:${dataset.connectionInfo.port}` : ''}
+                      {dataset.connectionInfo.protocol ? ` (${dataset.connectionInfo.protocol.toUpperCase()})` : ''}
+                      {dataset.connectionInfo.username ? ` • User: ${dataset.connectionInfo.username}` : ''}
+                    </div>
                   )}
                   {dataset.tags && dataset.tags.length > 0 && (
                     <div style={{ margin: '0.5rem 0', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>

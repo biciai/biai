@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS datasets_metadata (
     citation String DEFAULT '',
     references Array(String) DEFAULT [],
     custom_metadata String DEFAULT '{}',
+    connection_settings String DEFAULT '',
     created_by String,
     created_at DateTime DEFAULT now(),
     updated_at DateTime DEFAULT now()
