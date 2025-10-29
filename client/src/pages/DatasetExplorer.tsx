@@ -957,21 +957,6 @@ const renderNumericFilterMenu = (
         border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
-          <div style={{
-            background: tableColor || '#e0e0e0',
-            color: 'white',
-            fontSize: '0.6rem',
-            padding: '0.15rem 0.35rem',
-            borderRadius: '3px',
-            fontWeight: 600,
-            flexShrink: 0,
-            maxWidth: '60px',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-          }} title={tableName}>
-            {tableName}
-          </div>
           <h4
             style={{
               margin: 0,
@@ -1108,21 +1093,6 @@ const renderNumericFilterMenu = (
         border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
-          <div style={{
-            background: tableColor || '#e0e0e0',
-            color: 'white',
-            fontSize: '0.6rem',
-            padding: '0.15rem 0.35rem',
-            borderRadius: '3px',
-            fontWeight: 600,
-            flexShrink: 0,
-            maxWidth: '60px',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-          }} title={tableName}>
-            {tableName}
-          </div>
           <h4
             style={{
               margin: 0,
@@ -1315,21 +1285,6 @@ const renderNumericFilterMenu = (
         border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
-          <div style={{
-            background: tableColor || '#e0e0e0',
-            color: 'white',
-            fontSize: '0.6rem',
-            padding: '0.15rem 0.35rem',
-            borderRadius: '3px',
-            fontWeight: 600,
-            flexShrink: 0,
-            maxWidth: '60px',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-          }} title={tableName}>
-            {tableName}
-          </div>
           <h4
             style={{
               margin: 0,
