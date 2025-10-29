@@ -908,7 +908,14 @@ const renderNumericFilterMenu = (
     return ranges.some(range => rangesEqual(range, { start: binStart, end: binEnd }))
   }
 
-  const renderPieChart = (title: string, tableName: string, field: string) => {
+  const getTableColor = (tableName: string): string => {
+    // Generate a consistent color for each table using a simple hash
+    const hash = tableName.split('').reduce((acc, char) => char.charCodeAt(0) + ((acc << 5) - acc), 0)
+    const colors = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336', '#00BCD4', '#FFC107', '#E91E63']
+    return colors[Math.abs(hash) % colors.length]
+  }
+
+  const renderPieChart = (title: string, tableName: string, field: string, tableColor?: string) => {
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
 
@@ -946,7 +953,8 @@ const renderNumericFilterMenu = (
         boxSizing: 'border-box',
         flexShrink: 0,
         display: 'flex',
-        flexDirection: 'column'
+        flexDirection: 'column',
+        border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
           <h4
@@ -986,7 +994,8 @@ const renderNumericFilterMenu = (
               justifyContent: 'center',
               fontSize: '0.75rem',
               cursor: 'pointer',
-              lineHeight: 1
+              lineHeight: 1,
+              flexShrink: 0
             }}
             title="Filter values"
           >
@@ -1047,7 +1056,7 @@ const renderNumericFilterMenu = (
     )
   }
 
-  const renderBarChart = (title: string, tableName: string, field: string) => {
+  const renderBarChart = (title: string, tableName: string, field: string, tableColor?: string) => {
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
 
@@ -1080,7 +1089,8 @@ const renderNumericFilterMenu = (
         boxSizing: 'border-box',
         flexShrink: 0,
         display: 'flex',
-        flexDirection: 'column'
+        flexDirection: 'column',
+        border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
           <h4
@@ -1120,7 +1130,8 @@ const renderNumericFilterMenu = (
               justifyContent: 'center',
               fontSize: '0.75rem',
               cursor: 'pointer',
-              lineHeight: 1
+              lineHeight: 1,
+              flexShrink: 0
             }}
             title="Filter values"
           >
@@ -1194,7 +1205,7 @@ const renderNumericFilterMenu = (
     )
   }
 
-  const renderHistogram = (title: string, tableName: string, field: string) => {
+  const renderHistogram = (title: string, tableName: string, field: string, tableColor?: string) => {
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.numeric_stats) return null
 
@@ -1270,7 +1281,8 @@ const renderNumericFilterMenu = (
         boxSizing: 'border-box',
         flexShrink: 0,
         display: 'flex',
-        flexDirection: 'column'
+        flexDirection: 'column',
+        border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
           <h4
@@ -1310,7 +1322,8 @@ const renderNumericFilterMenu = (
               justifyContent: 'center',
               fontSize: '0.75rem',
               cursor: 'pointer',
-              lineHeight: 1
+              lineHeight: 1,
+              flexShrink: 0
             }}
             title="Filter values"
           >
@@ -1544,62 +1557,122 @@ const renderNumericFilterMenu = (
         </div>
       </div>
 
-      {/* Chart Grid */}
-      <div style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        gap: '0.5rem',
-        marginBottom: '2rem'
-      }}>
-        {/* Render charts based on aggregations */}
-        {dataset.tables.map(table => {
-          const tableAggregations = aggregations[table.name]
-          if (!tableAggregations) return null
+      {/* Chart Grid - Grouped by Table */}
+      {dataset.tables.map(table => {
+        const tableAggregations = aggregations[table.name]
+        if (!tableAggregations) return null
 
-          // Sort aggregations by display priority (if available from metadata)
-          const sortedAggregations = [...tableAggregations].sort((a, b) => {
-            const metaA = getColumnMetadata(table.name, a.column_name)
-            const metaB = getColumnMetadata(table.name, b.column_name)
-            const priorityA = metaA?.display_priority || 0
-            const priorityB = metaB?.display_priority || 0
-            return priorityB - priorityA
-          })
+        // Sort aggregations by display priority (if available from metadata)
+        const sortedAggregations = [...tableAggregations].sort((a, b) => {
+          const metaA = getColumnMetadata(table.name, a.column_name)
+          const metaB = getColumnMetadata(table.name, b.column_name)
+          const priorityA = metaA?.display_priority || 0
+          const priorityB = metaB?.display_priority || 0
+          return priorityB - priorityA
+        })
 
-          return sortedAggregations.map(agg => {
-            const displayTitle = getDisplayTitle(table.name, agg.column_name)
-            const metadata = getColumnMetadata(table.name, agg.column_name)
+        // Filter out hidden columns
+        const visibleAggregations = sortedAggregations.filter(agg => {
+          const metadata = getColumnMetadata(table.name, agg.column_name)
+          return !metadata?.is_hidden
+        })
 
-            // Skip hidden columns
-            if (metadata?.is_hidden) return null
+        if (visibleAggregations.length === 0) return null
 
-            if (agg.display_type === 'categorical' && agg.categories) {
-              // Pie chart for low cardinality
-              if (agg.categories.length <= 8) {
-                return (
-                  <div key={`${table.name}_${agg.column_name}`}>
-                    {renderPieChart(displayTitle, table.name, agg.column_name)}
+        const tableColor = getTableColor(table.name)
+        const tableRowCount = visibleAggregations[0]?.total_rows || table.rowCount || 0
+
+        return (
+          <div key={table.name} style={{ marginBottom: '2.5rem' }}>
+            {/* Table Section Header */}
+            <div style={{
+              background: `linear-gradient(135deg, ${tableColor}15, ${tableColor}05)`,
+              border: `2px solid ${tableColor}40`,
+              borderRadius: '8px',
+              padding: '0.75rem 1.25rem',
+              marginBottom: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '1rem'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <div style={{
+                  background: tableColor,
+                  color: 'white',
+                  width: '8px',
+                  height: '40px',
+                  borderRadius: '4px'
+                }} />
+                <div>
+                  <h3 style={{
+                    margin: 0,
+                    fontSize: '1.1rem',
+                    fontWeight: 600,
+                    color: '#333'
+                  }}>
+                    {table.displayName || table.name}
+                  </h3>
+                  <div style={{
+                    fontSize: '0.8rem',
+                    color: '#666',
+                    marginTop: '0.2rem'
+                  }}>
+                    {tableRowCount.toLocaleString()} rows · {visibleAggregations.length} columns
                   </div>
-                )
-              }
-              // Bar chart for higher cardinality
-              else {
-                return (
-                  <div key={`${table.name}_${agg.column_name}`}>
-                    {renderBarChart(displayTitle, table.name, agg.column_name)}
-                  </div>
-                )
-              }
-            } else if (agg.display_type === 'numeric' && agg.histogram) {
-              return (
-                <div key={`${table.name}_${agg.column_name}`}>
-                  {renderHistogram(displayTitle, table.name, agg.column_name)}
                 </div>
-              )
-            }
-            return null
-          })
-        })}
-      </div>
+              </div>
+              <div style={{
+                background: tableColor,
+                color: 'white',
+                fontSize: '0.7rem',
+                padding: '0.3rem 0.6rem',
+                borderRadius: '4px',
+                fontWeight: 600
+              }}>
+                {table.name}
+              </div>
+            </div>
+
+            {/* Table Charts */}
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '0.5rem'
+            }}>
+              {visibleAggregations.map(agg => {
+                const displayTitle = getDisplayTitle(table.name, agg.column_name)
+
+                if (agg.display_type === 'categorical' && agg.categories) {
+                  // Pie chart for low cardinality
+                  if (agg.categories.length <= 8) {
+                    return (
+                      <div key={`${table.name}_${agg.column_name}`}>
+                        {renderPieChart(displayTitle, table.name, agg.column_name, tableColor)}
+                      </div>
+                    )
+                  }
+                  // Bar chart for higher cardinality
+                  else {
+                    return (
+                      <div key={`${table.name}_${agg.column_name}`}>
+                        {renderBarChart(displayTitle, table.name, agg.column_name, tableColor)}
+                      </div>
+                    )
+                  }
+                } else if (agg.display_type === 'numeric' && agg.histogram) {
+                  return (
+                    <div key={`${table.name}_${agg.column_name}`}>
+                      {renderHistogram(displayTitle, table.name, agg.column_name, tableColor)}
+                    </div>
+                  )
+                }
+                return null
+              })}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
