@@ -3,6 +3,7 @@ import {
   getFilterColumn,
   getFilterTableName,
   filterContainsColumn,
+  findRelationshipPath,
   tablesHaveRelationship,
   getAllEffectiveFilters,
   type Filter,
@@ -150,6 +151,89 @@ describe('filterHelpers', () => {
     })
   })
 
+  describe('findRelationshipPath', () => {
+    const mockTables: Table[] = [
+      {
+        id: '1',
+        name: 'patients',
+        displayName: 'Patients',
+        rowCount: 100,
+        relationships: [],
+      },
+      {
+        id: '2',
+        name: 'samples',
+        displayName: 'Samples',
+        rowCount: 200,
+        relationships: [
+          {
+            foreign_key: 'patient_id',
+            referenced_table: 'patients',
+            referenced_column: 'patient_id',
+            type: 'many-to-one',
+          },
+        ],
+      },
+      {
+        id: '3',
+        name: 'mutations',
+        displayName: 'Mutations',
+        rowCount: 500,
+        relationships: [
+          {
+            foreign_key: 'sample_id',
+            referenced_table: 'samples',
+            referenced_column: 'sample_id',
+            type: 'many-to-one',
+          },
+        ],
+      },
+      {
+        id: '4',
+        name: 'unrelated',
+        displayName: 'Unrelated',
+        rowCount: 50,
+        relationships: [],
+      },
+    ]
+
+    test('finds direct relationship path', () => {
+      const path = findRelationshipPath('samples', 'patients', mockTables)
+
+      expect(path).toEqual(['samples', 'patients'])
+    })
+
+    test('finds reverse direct relationship path', () => {
+      const path = findRelationshipPath('patients', 'samples', mockTables)
+
+      expect(path).toEqual(['patients', 'samples'])
+    })
+
+    test('finds transitive 2-hop relationship path', () => {
+      const path = findRelationshipPath('mutations', 'patients', mockTables)
+
+      expect(path).toEqual(['mutations', 'samples', 'patients'])
+    })
+
+    test('finds reverse transitive 2-hop relationship path', () => {
+      const path = findRelationshipPath('patients', 'mutations', mockTables)
+
+      expect(path).toEqual(['patients', 'samples', 'mutations'])
+    })
+
+    test('returns null when no path exists', () => {
+      const path = findRelationshipPath('patients', 'unrelated', mockTables)
+
+      expect(path).toBeNull()
+    })
+
+    test('returns null for same table', () => {
+      const path = findRelationshipPath('patients', 'patients', mockTables)
+
+      expect(path).toBeNull()
+    })
+  })
+
   describe('tablesHaveRelationship', () => {
     const mockTables: Table[] = [
       {
@@ -175,8 +259,22 @@ describe('filterHelpers', () => {
       },
       {
         id: '3',
-        name: 'tests',
-        displayName: 'Tests',
+        name: 'mutations',
+        displayName: 'Mutations',
+        rowCount: 500,
+        relationships: [
+          {
+            foreign_key: 'sample_id',
+            referenced_table: 'samples',
+            referenced_column: 'sample_id',
+            type: 'many-to-one',
+          },
+        ],
+      },
+      {
+        id: '4',
+        name: 'unrelated',
+        displayName: 'Unrelated',
         rowCount: 50,
         relationships: [],
       },
@@ -196,11 +294,19 @@ describe('filterHelpers', () => {
       expect(tablesHaveRelationship(patients, samples, mockTables)).toBe(true)
     })
 
+    test('returns true for transitive relationships', () => {
+      const patients = mockTables[0]
+      const mutations = mockTables[2]
+
+      expect(tablesHaveRelationship(patients, mutations, mockTables)).toBe(true)
+      expect(tablesHaveRelationship(mutations, patients, mockTables)).toBe(true)
+    })
+
     test('returns false when no relationship exists', () => {
       const patients = mockTables[0]
-      const tests = mockTables[2]
+      const unrelated = mockTables[3]
 
-      expect(tablesHaveRelationship(patients, tests, mockTables)).toBe(false)
+      expect(tablesHaveRelationship(patients, unrelated, mockTables)).toBe(false)
     })
   })
 
@@ -229,8 +335,22 @@ describe('filterHelpers', () => {
       },
       {
         id: '3',
-        name: 'tests',
-        displayName: 'Tests',
+        name: 'mutations',
+        displayName: 'Mutations',
+        rowCount: 500,
+        relationships: [
+          {
+            foreign_key: 'sample_id',
+            referenced_table: 'samples',
+            referenced_column: 'sample_id',
+            type: 'many-to-one',
+          },
+        ],
+      },
+      {
+        id: '4',
+        name: 'unrelated',
+        displayName: 'Unrelated',
         rowCount: 50,
         relationships: [],
       },
@@ -274,9 +394,9 @@ describe('filterHelpers', () => {
       expect(result.samples.propagated).toHaveLength(1)
       expect(result.samples.propagated[0]).toEqual(filters[0])
 
-      // The filter is NOT propagated to tests (no relationship with patients)
-      expect(result.tests.direct).toHaveLength(0)
-      expect(result.tests.propagated).toHaveLength(0)
+      // The filter is NOT propagated to unrelated (no relationship with patients)
+      expect(result.unrelated.direct).toHaveLength(0)
+      expect(result.unrelated.propagated).toHaveLength(0)
     })
 
     test('handles bidirectional relationships', () => {
@@ -319,17 +439,50 @@ describe('filterHelpers', () => {
 
       const result = getAllEffectiveFilters(filters, mockTables)
 
-      // Patients has 1 direct, 1 propagated
+      // Patients has 1 direct, 1 propagated (from samples)
       expect(result.patients.direct).toHaveLength(1)
       expect(result.patients.propagated).toHaveLength(1)
 
-      // Samples has 1 direct, 1 propagated
+      // Samples has 1 direct, 1 propagated (from patients)
       expect(result.samples.direct).toHaveLength(1)
       expect(result.samples.propagated).toHaveLength(1)
 
-      // Tests has 0 direct, 0 propagated (no relationships)
-      expect(result.tests.direct).toHaveLength(0)
-      expect(result.tests.propagated).toHaveLength(0)
+      // Mutations has 0 direct, 2 propagated (from both patients and samples via transitive)
+      expect(result.mutations.direct).toHaveLength(0)
+      expect(result.mutations.propagated).toHaveLength(2)
+
+      // Unrelated has 0 direct, 0 propagated (no relationships)
+      expect(result.unrelated.direct).toHaveLength(0)
+      expect(result.unrelated.propagated).toHaveLength(0)
+    })
+
+    test('handles transitive filter propagation', () => {
+      const filters: Filter[] = [
+        {
+          column: 'age',
+          operator: 'gte',
+          value: 50,
+          tableName: 'patients',
+        },
+      ]
+
+      const result = getAllEffectiveFilters(filters, mockTables)
+
+      // Patients has 1 direct
+      expect(result.patients.direct).toHaveLength(1)
+      expect(result.patients.propagated).toHaveLength(0)
+
+      // Samples has 0 direct, 1 propagated (directly related to patients)
+      expect(result.samples.direct).toHaveLength(0)
+      expect(result.samples.propagated).toHaveLength(1)
+
+      // Mutations has 0 direct, 1 propagated (transitively related via samples)
+      expect(result.mutations.direct).toHaveLength(0)
+      expect(result.mutations.propagated).toHaveLength(1)
+
+      // Unrelated has 0 direct, 0 propagated
+      expect(result.unrelated.direct).toHaveLength(0)
+      expect(result.unrelated.propagated).toHaveLength(0)
     })
 
     test('ignores filters without tableName', () => {
@@ -356,10 +509,12 @@ describe('filterHelpers', () => {
 
       expect(result).toHaveProperty('patients')
       expect(result).toHaveProperty('samples')
-      expect(result).toHaveProperty('tests')
+      expect(result).toHaveProperty('mutations')
+      expect(result).toHaveProperty('unrelated')
       expect(result.patients).toEqual({ direct: [], propagated: [] })
       expect(result.samples).toEqual({ direct: [], propagated: [] })
-      expect(result.tests).toEqual({ direct: [], propagated: [] })
+      expect(result.mutations).toEqual({ direct: [], propagated: [] })
+      expect(result.unrelated).toEqual({ direct: [], propagated: [] })
     })
   })
 })

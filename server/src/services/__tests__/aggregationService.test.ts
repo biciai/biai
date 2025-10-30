@@ -112,6 +112,38 @@ describe('AggregationService - Cross-Table Filtering', () => {
     }
   ]
 
+  const mockTransitiveTablesMetadata = [
+    {
+      table_name: 'patients',
+      clickhouse_table_name: 'biai.patients_abc123',
+      relationships: []
+    },
+    {
+      table_name: 'samples',
+      clickhouse_table_name: 'biai.samples_abc123',
+      relationships: [
+        {
+          foreign_key: 'patient_id',
+          referenced_table: 'patients',
+          referenced_column: 'patient_id',
+          type: 'many-to-one'
+        }
+      ]
+    },
+    {
+      table_name: 'mutations',
+      clickhouse_table_name: 'biai.mutations_abc123',
+      relationships: [
+        {
+          foreign_key: 'sample_id',
+          referenced_table: 'samples',
+          referenced_column: 'sample_id',
+          type: 'many-to-one'
+        }
+      ]
+    }
+  ]
+
   describe('buildCrossTableSubquery', () => {
     test('generates subquery for child→parent relationship (samples filtered by patients)', () => {
       const filter = {
@@ -250,6 +282,120 @@ describe('AggregationService - Cross-Table Filtering', () => {
       expect(subquery).toBe(
         'patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE age BETWEEN 30 AND 50)'
       )
+    })
+
+    test('generates nested IN subquery for transitive 2-hop relationship (mutations→samples→patients)', () => {
+      const filter = {
+        column: 'age',
+        operator: 'gte' as const,
+        value: 50,
+        tableName: 'patients'
+      }
+
+      const subquery = callPrivate('buildCrossTableSubquery')(
+        'mutations',
+        filter,
+        mockTransitiveTablesMetadata
+      )
+
+      // Should use nested IN subqueries (ClickHouse-friendly, no JOINs)
+      expect(subquery).toContain('sample_id IN')
+      expect(subquery).toContain('SELECT sample_id FROM biai.samples_abc123')
+      expect(subquery).toContain('patient_id IN')
+      expect(subquery).toContain('SELECT patient_id FROM biai.patients_abc123')
+      expect(subquery).toContain('age >= 50')
+    })
+
+    test('generates nested IN subquery for reverse transitive relationship (patients→samples→mutations)', () => {
+      const filter = {
+        column: 'gene',
+        operator: 'eq' as const,
+        value: 'TP53',
+        tableName: 'mutations'
+      }
+
+      const subquery = callPrivate('buildCrossTableSubquery')(
+        'patients',
+        filter,
+        mockTransitiveTablesMetadata
+      )
+
+      // Should use nested IN subqueries (ClickHouse-friendly, no JOINs)
+      expect(subquery).toContain('patient_id IN')
+      expect(subquery).toContain('SELECT patient_id FROM biai.samples_abc123')
+      expect(subquery).toContain('sample_id IN')
+      expect(subquery).toContain('SELECT sample_id FROM biai.mutations_abc123')
+      expect(subquery).toContain("gene = 'TP53'")
+    })
+  })
+
+  describe('findRelationshipPath', () => {
+    test('finds direct relationship path', () => {
+      const path = callPrivate('findRelationshipPath')(
+        'samples',
+        'patients',
+        mockTablesMetadata
+      )
+
+      expect(path).toBeTruthy()
+      expect(path).toHaveLength(1)
+      expect(path[0].from).toBe('samples')
+      expect(path[0].to).toBe('patients')
+    })
+
+    test('finds transitive 2-hop relationship path', () => {
+      const path = callPrivate('findRelationshipPath')(
+        'mutations',
+        'patients',
+        mockTransitiveTablesMetadata
+      )
+
+      expect(path).toBeTruthy()
+      expect(path).toHaveLength(2)
+      expect(path[0].from).toBe('mutations')
+      expect(path[0].to).toBe('samples')
+      expect(path[1].from).toBe('samples')
+      expect(path[1].to).toBe('patients')
+    })
+
+    test('finds reverse transitive path', () => {
+      const path = callPrivate('findRelationshipPath')(
+        'patients',
+        'mutations',
+        mockTransitiveTablesMetadata
+      )
+
+      expect(path).toBeTruthy()
+      expect(path).toHaveLength(2)
+    })
+
+    test('returns null when no path exists', () => {
+      const noPathMetadata = [
+        ...mockTransitiveTablesMetadata,
+        {
+          table_name: 'unrelated',
+          clickhouse_table_name: 'biai.unrelated_abc123',
+          relationships: []
+        }
+      ]
+
+      const path = callPrivate('findRelationshipPath')(
+        'patients',
+        'unrelated',
+        noPathMetadata
+      )
+
+      expect(path).toBeNull()
+    })
+
+    test('returns null for same table', () => {
+      const path = callPrivate('findRelationshipPath')(
+        'patients',
+        'patients',
+        mockTablesMetadata
+      )
+
+      expect(path).toBeNull()
     })
   })
 

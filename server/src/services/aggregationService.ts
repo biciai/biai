@@ -69,10 +69,109 @@ export interface TableMetadata {
 
 class AggregationService {
   /**
+   * Find a relationship path between two tables (supports multi-hop transitive relationships).
+   *
+   * Uses BFS to find the shortest path between tables through foreign key relationships.
+   *
+   * @param fromTable - Starting table name
+   * @param toTable - Target table name
+   * @param allTablesMetadata - Metadata for all tables including relationships
+   * @returns Array of relationship steps, or null if no path exists
+   *
+   * @example
+   * // Direct relationship: mutations → samples
+   * // Returns: [{ from: 'mutations', to: 'samples', fk: 'sample_id', refCol: 'sample_id' }]
+   *
+   * // Transitive relationship: mutations → samples → patients
+   * // Returns: [
+   * //   { from: 'mutations', to: 'samples', fk: 'sample_id', refCol: 'sample_id' },
+   * //   { from: 'samples', to: 'patients', fk: 'patient_id', refCol: 'patient_id' }
+   * // ]
+   */
+  private findRelationshipPath(
+    fromTable: string,
+    toTable: string,
+    allTablesMetadata: TableMetadata[]
+  ): Array<{ from: string; to: string; fk: string; refCol: string; direction: 'forward' | 'backward' }> | null {
+    if (fromTable === toTable) return null
+
+    // BFS to find shortest path
+    const queue: Array<{
+      table: string
+      path: Array<{ from: string; to: string; fk: string; refCol: string; direction: 'forward' | 'backward' }>
+    }> = [{ table: fromTable, path: [] }]
+    const visited = new Set<string>([fromTable])
+
+    while (queue.length > 0) {
+      const { table: currentTable, path } = queue.shift()!
+
+      // Get current table metadata
+      const currentTableMeta = allTablesMetadata.find(t => t.table_name === currentTable)
+      if (!currentTableMeta) continue
+
+      // Check forward relationships (current table references other tables)
+      for (const rel of currentTableMeta.relationships || []) {
+        const nextTable = rel.referenced_table
+        if (visited.has(nextTable)) continue
+
+        const newPath = [
+          ...path,
+          {
+            from: currentTable,
+            to: nextTable,
+            fk: rel.foreign_key,
+            refCol: rel.referenced_column,
+            direction: 'forward' as const
+          }
+        ]
+
+        if (nextTable === toTable) {
+          return newPath
+        }
+
+        visited.add(nextTable)
+        queue.push({ table: nextTable, path: newPath })
+      }
+
+      // Check backward relationships (other tables reference current table)
+      for (const otherTableMeta of allTablesMetadata) {
+        if (otherTableMeta.table_name === currentTable) continue
+
+        for (const rel of otherTableMeta.relationships || []) {
+          if (rel.referenced_table !== currentTable) continue
+
+          const nextTable = otherTableMeta.table_name
+          if (visited.has(nextTable)) continue
+
+          const newPath = [
+            ...path,
+            {
+              from: currentTable,
+              to: nextTable,
+              fk: rel.foreign_key,
+              refCol: rel.referenced_column,
+              direction: 'backward' as const
+            }
+          ]
+
+          if (nextTable === toTable) {
+            return newPath
+          }
+
+          visited.add(nextTable)
+          queue.push({ table: nextTable, path: newPath })
+        }
+      }
+    }
+
+    return null // No path found
+  }
+
+  /**
    * Build a subquery for cross-table filtering.
    *
    * Generates SQL subqueries to filter a table based on filters from related tables
-   * through foreign key relationships. Supports bidirectional relationships.
+   * through foreign key relationships. Supports bidirectional and transitive (multi-hop) relationships.
    *
    * @param currentTableName - The table being filtered
    * @param filter - The filter to apply (must have tableName property for cross-table)
@@ -80,11 +179,15 @@ class AggregationService {
    * @returns SQL subquery string or null if not a cross-table filter or no relationship exists
    *
    * @example
-   * // Filtering samples by patient attributes:
+   * // Direct: Filtering samples by patient attributes:
    * // WHERE samples.patient_id IN (SELECT patient_id FROM patients WHERE radiation_therapy = 'Yes')
    *
-   * // Filtering patients by sample attributes:
-   * // WHERE patients.patient_id IN (SELECT patient_id FROM samples WHERE sample_type = 'Tumor')
+   * // Transitive: Filtering mutations by patient attributes (mutations → samples → patients):
+   * // WHERE mutations.sample_id IN (
+   * //   SELECT sample_id FROM samples WHERE patient_id IN (
+   * //     SELECT patient_id FROM patients WHERE radiation_therapy = 'Yes'
+   * //   )
+   * // )
    */
   private buildCrossTableSubquery(
     currentTableName: string,
@@ -103,44 +206,61 @@ class AggregationService {
       return null
     }
 
-    // Find current table metadata
-    const currentTable = allTablesMetadata.find(t => t.table_name === currentTableName)
-    if (!currentTable) {
+    // Find relationship path (supports transitive/multi-hop relationships)
+    const path = this.findRelationshipPath(currentTableName, filterTableName, allTablesMetadata)
+    if (!path || path.length === 0) {
+      console.warn(`No relationship path found between ${currentTableName} and ${filterTableName}`)
       return null
     }
 
-    // Check if current table has a foreign key to the filter table
-    const fkToFilterTable = currentTable.relationships?.find(
-      rel => rel.referenced_table === filterTableName
-    )
+    // Build the filter condition for the target table
+    const filterCondition = this.buildFilterCondition(filter)
+    if (!filterCondition) return null
 
-    if (fkToFilterTable) {
-      // Current table references filter table: samples.patient_id → patients.patient_id
-      // Generate: WHERE samples.patient_id IN (SELECT patient_id FROM patients WHERE ...)
-      const filterCondition = this.buildFilterCondition(filter)
-      if (!filterCondition) return null
+    // Build nested IN subqueries for ClickHouse (no JOINs, better performance)
+    // Example path: mutations → samples → patients
+    // Build: mutations.sample_id IN (
+    //          SELECT sample_id FROM samples WHERE patient_id IN (
+    //            SELECT patient_id FROM patients WHERE condition
+    //          )
+    //        )
 
-      const qualifiedFilterTable = this.qualifyTableName(filterTable.clickhouse_table_name)
-      return `${fkToFilterTable.foreign_key} IN (SELECT ${fkToFilterTable.referenced_column} FROM ${qualifiedFilterTable} WHERE ${filterCondition})`
+    // Start with the innermost query (filter table) and wrap outward
+    const lastStep = path[path.length - 1]
+    const lastTable = allTablesMetadata.find(t => t.table_name === lastStep.to)
+    if (!lastTable) return null
+
+    const qualifiedLastTable = this.qualifyTableName(lastTable.clickhouse_table_name)
+
+    // Innermost: SELECT key FROM filter_table WHERE condition
+    let subquery = lastStep.direction === 'forward'
+      ? `SELECT ${lastStep.refCol} FROM ${qualifiedLastTable} WHERE ${filterCondition}`
+      : `SELECT ${lastStep.fk} FROM ${qualifiedLastTable} WHERE ${filterCondition}`
+
+    // Work backwards through the path, wrapping each level
+    for (let i = path.length - 2; i >= 0; i--) {
+      const step = path[i]
+      const nextStep = path[i + 1]
+      const stepTable = allTablesMetadata.find(t => t.table_name === step.to)
+      if (!stepTable) return null
+
+      const qualifiedTable = this.qualifyTableName(stepTable.clickhouse_table_name)
+
+      // Determine SELECT column (what current table needs)
+      const selectCol = step.direction === 'forward' ? step.refCol : step.fk
+
+      // Determine WHERE column (what links to next table)
+      const whereCol = nextStep.direction === 'forward' ? nextStep.fk : nextStep.refCol
+
+      subquery = `SELECT ${selectCol} FROM ${qualifiedTable} WHERE ${whereCol} IN (${subquery})`
     }
 
-    // Check if filter table has a foreign key to current table
-    const fkFromFilterTable = filterTable.relationships?.find(
-      rel => rel.referenced_table === currentTableName
-    )
+    // Final wrap: current_table.column IN (subquery)
+    const firstStep = path[0]
+    const finalColumn = firstStep.direction === 'forward' ? firstStep.fk : firstStep.refCol
+    subquery = `${finalColumn} IN (${subquery})`
 
-    if (fkFromFilterTable) {
-      // Filter table references current table: patients.patient_id ← samples.patient_id
-      // Generate: WHERE patients.patient_id IN (SELECT patient_id FROM samples WHERE ...)
-      const filterCondition = this.buildFilterCondition(filter)
-      if (!filterCondition) return null
-
-      const qualifiedFilterTable = this.qualifyTableName(filterTable.clickhouse_table_name)
-      return `${fkFromFilterTable.referenced_column} IN (SELECT ${fkFromFilterTable.foreign_key} FROM ${qualifiedFilterTable} WHERE ${filterCondition})`
-    }
-
-    console.warn(`No foreign key relationship found between ${currentTableName} and ${filterTableName}`)
-    return null
+    return subquery
   }
 
   /**

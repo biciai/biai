@@ -4,6 +4,7 @@ import Plot from 'react-plotly.js'
 import type { PlotMouseEvent, PlotSelectionEvent } from 'plotly.js'
 import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
+import { findRelationshipPath } from '../utils/filterHelpers'
 
 interface Column {
   name: string
@@ -330,10 +331,9 @@ const getFilterTableName = (filter: Filter): string | undefined => (filter as an
           // Direct filter
           result[table.name].direct.push(filter)
         } else {
-          // Check if there's a relationship between these tables
-          const hasRelationship =
-            table.relationships?.some(r => r.referenced_table === filterTableName) || // table references filterTable
-            dataset.tables.find(t => t.name === filterTableName)?.relationships?.some(r => r.referenced_table === table.name) // filterTable references table
+          // Check if there's a relationship path between these tables (including transitive)
+          const path = findRelationshipPath(table.name, filterTableName, dataset.tables)
+          const hasRelationship = path !== null
 
           if (hasRelationship) {
             // This is a propagated filter for this table
@@ -1650,6 +1650,23 @@ const renderNumericFilterMenu = (
         const directFilterCount = tableFilters.direct.length
         const propagatedFilterCount = tableFilters.propagated.length
 
+        // Calculate maximum path length for transitive relationships (2+ hops only)
+        let maxPathLength = 0
+        if (propagatedFilterCount > 0 && dataset?.tables) {
+          for (const filter of tableFilters.propagated) {
+            if (filter.tableName) {
+              const path = findRelationshipPath(table.name, filter.tableName, dataset.tables)
+              if (path && path.length > 1) {
+                const pathLength = path.length - 1 // Number of hops
+                // Only track paths with 2+ hops (truly transitive)
+                if (pathLength >= 2) {
+                  maxPathLength = Math.max(maxPathLength, pathLength)
+                }
+              }
+            }
+          }
+        }
+
         return (
           <div key={table.name} style={{ marginBottom: '2.5rem' }}>
             {/* Table Section Header */}
@@ -1718,9 +1735,9 @@ const renderNumericFilterMenu = (
                       fontWeight: 600,
                       fontStyle: 'italic'
                     }}
-                    title={`${propagatedFilterCount} filter${propagatedFilterCount > 1 ? 's' : ''} propagated from related tables`}
+                    title={`${propagatedFilterCount} filter${propagatedFilterCount > 1 ? 's' : ''} propagated from related tables${maxPathLength > 0 ? ` (max ${maxPathLength} hop${maxPathLength > 1 ? 's' : ''})` : ''}`}
                   >
-                    +{propagatedFilterCount} linked
+                    +{propagatedFilterCount} linked{maxPathLength > 0 ? ` (${maxPathLength}-hop)` : ''}
                   </div>
                 )}
                 <div style={{

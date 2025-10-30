@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 
 const {
   commandMock,
@@ -38,6 +38,8 @@ import { analyzeColumn } from '../columnAnalyzer.js'
 const mockAnalyzeColumn = vi.mocked(analyzeColumn)
 
 describe('DatasetService', () => {
+  let consoleWarnSpy: ReturnType<typeof vi.spyOn>
+
   beforeEach(() => {
     commandMock.mockReset()
     insertMock.mockReset()
@@ -46,6 +48,11 @@ describe('DatasetService', () => {
     externalClientQueryMock.mockReset()
     externalClientCloseMock.mockReset()
     createClientMock.mockClear()
+    consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    consoleWarnSpy.mockRestore()
   })
 
   test('addTableToDataset stores metadata and analyzes columns using fully qualified table names', async () => {
@@ -332,6 +339,143 @@ describe('DatasetService', () => {
     expect(columns).toHaveLength(2)
     expect(columns[0]).toMatchObject({ column_name: 'patient_id', display_name: 'patient_id' })
     expect(externalClientCloseMock).toHaveBeenCalledTimes(2)
+  })
+
+  test('getTableColumns falls back to stored metadata when connection settings are missing', async () => {
+    queryMock
+      .mockResolvedValueOnce({
+        json: async () => [{
+          dataset_id: 'dataset-1',
+          dataset_name: 'Test dataset',
+          database_name: 'remote_db',
+          database_type: 'connected',
+          connection_settings: '',
+          description: '',
+          tags: [],
+          custom_metadata: '{}'
+        }]
+      } as any)
+      .mockResolvedValueOnce({
+        json: async () => [{
+          dataset_id: 'dataset-1',
+          table_id: 'cases',
+          table_name: 'cases',
+          display_name: 'Cases',
+          row_count: 10,
+          clickhouse_table_name: 'remote_db.cases',
+          schema_json: '[]',
+          primary_key: null,
+          custom_metadata: '{}',
+          created_at: new Date().toISOString()
+        }]
+      } as any)
+      .mockResolvedValueOnce({ json: async () => [] } as any)
+      .mockResolvedValueOnce({
+        json: async () => [{
+          column_name: 'sample_id',
+          column_type: 'String',
+          column_index: 0,
+          is_nullable: 0,
+          display_name: 'Sample ID',
+          description: '',
+          user_data_type: '',
+          user_priority: null,
+          display_type: 'id',
+          unique_value_count: 10,
+          null_count: 0,
+          min_value: null,
+          max_value: null,
+          suggested_chart: 'none',
+          display_priority: 0,
+          is_hidden: 0
+        }]
+      } as any)
+
+    const columns = await datasetService.getTableColumns('dataset-1', 'cases')
+
+    expect(columns).toEqual([
+      expect.objectContaining({
+        column_name: 'sample_id',
+        display_name: 'Sample ID',
+        display_type: 'id'
+      })
+    ])
+    expect(createClientMock).not.toHaveBeenCalled()
+  })
+
+  test('getTableColumns falls back to stored metadata when remote fetch fails', async () => {
+    queryMock
+      .mockResolvedValueOnce({
+        json: async () => [{
+          dataset_id: 'dataset-1',
+          dataset_name: 'Test dataset',
+          database_name: 'remote_db',
+          database_type: 'connected',
+          connection_settings: JSON.stringify({ host: 'remote.host', port: 8123 }),
+          description: '',
+          tags: [],
+          custom_metadata: '{}'
+        }]
+      } as any)
+      .mockResolvedValueOnce({ json: async () => [] } as any)
+      .mockResolvedValueOnce({ json: async () => [] } as any)
+      .mockResolvedValueOnce({
+        json: async () => [{
+          dataset_id: 'dataset-1',
+          table_id: 'cases',
+          table_name: 'cases',
+          display_name: 'Cases',
+          row_count: 10,
+          clickhouse_table_name: 'remote_db.cases',
+          schema_json: '[]',
+          primary_key: null,
+          custom_metadata: '{}',
+          created_at: new Date().toISOString()
+        }]
+      } as any)
+      .mockResolvedValueOnce({ json: async () => [] } as any)
+      .mockResolvedValueOnce({
+        json: async () => [{
+          column_name: 'sample_id',
+          column_type: 'String',
+          column_index: 0,
+          is_nullable: 0,
+          display_name: 'Sample ID',
+          description: '',
+          user_data_type: '',
+          user_priority: null,
+          display_type: 'id',
+          unique_value_count: 10,
+          null_count: 0,
+          min_value: null,
+          max_value: null,
+          suggested_chart: 'none',
+          display_priority: 0,
+          is_hidden: 0
+        }]
+      } as any)
+
+    externalClientQueryMock
+      .mockResolvedValueOnce({
+        json: async () => [{ name: 'cases', engine: 'MergeTree', total_rows: '10' }]
+      } as any)
+      .mockResolvedValueOnce({
+        json: async () => [{ name: 'sample_id', type: 'String', position: 1 }]
+      } as any)
+      .mockRejectedValueOnce(new Error('remote unavailable'))
+
+    const columns = await datasetService.getTableColumns('dataset-1', 'cases')
+
+    expect(columns).toEqual([
+      expect.objectContaining({
+        column_name: 'sample_id',
+        display_name: 'Sample ID',
+        display_type: 'id'
+      })
+    ])
+    expect(consoleWarnSpy).toHaveBeenCalled()
+    expect(createClientMock).toHaveBeenCalledTimes(2)
+    expect(externalClientQueryMock).toHaveBeenCalledTimes(3)
   })
 
   test('updatePrimaryKey updates dataset metadata', async () => {

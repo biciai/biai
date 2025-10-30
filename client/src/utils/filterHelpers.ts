@@ -69,24 +69,86 @@ export const filterContainsColumn = (filter: Filter, column: string): boolean =>
 }
 
 /**
- * Check if two tables have a relationship (bidirectional)
+ * Find a relationship path between two tables (supports multi-hop transitive relationships).
+ *
+ * Uses BFS to find the shortest path between tables through foreign key relationships.
+ *
+ * @returns Array of table names representing the path, or null if no path exists
+ *
+ * @example
+ * // Direct relationship: ['tableA', 'tableB']
+ * // Transitive relationship: ['tableA', 'tableB', 'tableC']
+ */
+export const findRelationshipPath = (
+  fromTableName: string,
+  toTableName: string,
+  allTables: Table[]
+): string[] | null => {
+  if (fromTableName === toTableName) return null
+
+  // BFS to find shortest path
+  const queue: Array<{ tableName: string; path: string[] }> = [
+    { tableName: fromTableName, path: [fromTableName] }
+  ]
+  const visited = new Set<string>([fromTableName])
+
+  while (queue.length > 0) {
+    const { tableName: currentTable, path } = queue.shift()!
+
+    // Get current table metadata
+    const currentTableMeta = allTables.find(t => t.name === currentTable)
+    if (!currentTableMeta) continue
+
+    // Check forward relationships (current table references other tables)
+    for (const rel of currentTableMeta.relationships || []) {
+      const nextTable = rel.referenced_table
+      if (visited.has(nextTable)) continue
+
+      const newPath = [...path, nextTable]
+
+      if (nextTable === toTableName) {
+        return newPath
+      }
+
+      visited.add(nextTable)
+      queue.push({ tableName: nextTable, path: newPath })
+    }
+
+    // Check backward relationships (other tables reference current table)
+    for (const otherTableMeta of allTables) {
+      if (otherTableMeta.name === currentTable) continue
+
+      for (const rel of otherTableMeta.relationships || []) {
+        if (rel.referenced_table !== currentTable) continue
+
+        const nextTable = otherTableMeta.name
+        if (visited.has(nextTable)) continue
+
+        const newPath = [...path, nextTable]
+
+        if (nextTable === toTableName) {
+          return newPath
+        }
+
+        visited.add(nextTable)
+        queue.push({ tableName: nextTable, path: newPath })
+      }
+    }
+  }
+
+  return null // No path found
+}
+
+/**
+ * Check if two tables have a relationship (bidirectional, including transitive)
  */
 export const tablesHaveRelationship = (
   table1: Table,
   table2: Table,
   allTables: Table[]
 ): boolean => {
-  // Check if table1 references table2
-  const table1RefersToTable2 = table1.relationships?.some(
-    rel => rel.referenced_table === table2.name
-  )
-  if (table1RefersToTable2) return true
-
-  // Check if table2 references table1
-  const table2RefersToTable1 = table2.relationships?.some(
-    rel => rel.referenced_table === table1.name
-  )
-  return !!table2RefersToTable1
+  const path = findRelationshipPath(table1.name, table2.name, allTables)
+  return path !== null
 }
 
 /**
@@ -119,7 +181,8 @@ export const getAllEffectiveFilters = (
         const filterTable = tables.find(t => t.name === filterTableName)
         if (!filterTable) continue
 
-        const hasRelationship = tablesHaveRelationship(table, filterTable, tables)
+        const path = findRelationshipPath(table.name, filterTableName, tables)
+        const hasRelationship = path !== null
 
         if (hasRelationship) {
           // This is a propagated filter for this table
