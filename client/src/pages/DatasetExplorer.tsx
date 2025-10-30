@@ -1464,10 +1464,13 @@ const renderNumericFilterMenu = (
   if (loading) return <p>Loading explorer...</p>
   if (!dataset) return <p>Dataset not found</p>
 
-  // Get total row count from aggregations
-  const totalRecords = Object.values(aggregations)
-    .flat()
-    .reduce((sum, agg) => Math.max(sum, agg.total_rows), 0)
+  // Calculate global total for dataset header
+  const baselineAggsList = Object.values(baselineAggregations).flat()
+  const currentAggsList = Object.values(aggregations).flat()
+
+  const totalRows = baselineAggsList.length > 0
+    ? baselineAggsList.reduce((max, agg) => Math.max(max, agg.total_rows), 0)
+    : currentAggsList.reduce((max, agg) => Math.max(max, agg.total_rows), 0)
 
   return (
     <div>
@@ -1611,7 +1614,7 @@ const renderNumericFilterMenu = (
 
         <div style={{ display: 'flex', gap: '2rem', marginTop: '1rem', fontSize: '0.875rem' }}>
           <div>
-            <strong>Total Records:</strong> {totalRecords.toLocaleString()}
+            <strong>Total Records:</strong> {totalRows.toLocaleString()}
           </div>
           <div>
             <strong>Tables:</strong> {dataset.tables.length}
@@ -1644,11 +1647,18 @@ const renderNumericFilterMenu = (
         const tableColor = getTableColor(table.name)
         const tableRowCount = visibleAggregations[0]?.total_rows || table.rowCount || 0
 
+        // Get baseline (unfiltered) row count for this table
+        const baselineTableAggs = baselineAggregations[table.name] || []
+        const baselineRowCount = baselineTableAggs.length > 0
+          ? baselineTableAggs[0]?.total_rows || tableRowCount
+          : tableRowCount
+
         // Get filter counts for this table
         const effectiveFilters = getAllEffectiveFilters()
         const tableFilters = effectiveFilters[table.name] || { direct: [], propagated: [] }
         const directFilterCount = tableFilters.direct.length
         const propagatedFilterCount = tableFilters.propagated.length
+        const hasTableFilters = directFilterCount > 0 || propagatedFilterCount > 0
 
         // Calculate maximum path length for transitive relationships (2+ hops only)
         let maxPathLength = 0
@@ -1703,7 +1713,29 @@ const renderNumericFilterMenu = (
                     color: '#666',
                     marginTop: '0.2rem'
                   }}>
-                    {tableRowCount.toLocaleString()} rows · {visibleAggregations.length} columns
+                    {hasTableFilters ? (
+                      <>
+                        <span style={{ color: '#E65100', fontWeight: 600 }}>
+                          {tableRowCount.toLocaleString()}
+                        </span>
+                        <span style={{ color: '#999' }}> / </span>
+                        <span>{baselineRowCount.toLocaleString()}</span>
+                        <span style={{
+                          marginLeft: '0.3rem',
+                          padding: '0.1rem 0.4rem',
+                          background: '#FF9800',
+                          color: 'white',
+                          borderRadius: '8px',
+                          fontSize: '0.7rem',
+                          fontWeight: 600
+                        }}>
+                          {baselineRowCount > 0 ? ((tableRowCount / baselineRowCount) * 100).toFixed(1) : '0'}%
+                        </span>
+                        <span> rows · {visibleAggregations.length} columns</span>
+                      </>
+                    ) : (
+                      <>{tableRowCount.toLocaleString()} rows · {visibleAggregations.length} columns</>
+                    )}
                   </div>
                 </div>
               </div>
