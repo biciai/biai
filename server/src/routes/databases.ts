@@ -1,6 +1,7 @@
 import express from 'express'
 import clickhouseClient, { createClickHouseClient } from '../config/clickhouse.js'
 import datasetService from '../services/datasetService.js'
+import aggregationService, { Filter } from '../services/aggregationService.js'
 
 const router = express.Router()
 
@@ -310,6 +311,26 @@ router.get('/:database/tables/:table/aggregations', async (req, res) => {
   try {
     const { database: databaseParam, table } = req.params
     const datasetId = req.query.datasetId as string | undefined
+    let filters: Filter[] = []
+
+    if (req.query.filters) {
+      try {
+        const parsed = JSON.parse(req.query.filters as string)
+        filters = parsed
+      } catch (error) {
+        return res.status(400).json({ error: 'Invalid filters JSON' })
+      }
+    }
+
+    if (datasetId) {
+      try {
+        const aggregations = await aggregationService.getTableAggregations(datasetId, table, filters)
+        return res.json({ aggregations })
+      } catch (error: any) {
+        console.error('Get database aggregations error:', error)
+        return res.status(500).json({ error: 'Failed to get table aggregations', message: error.message })
+      }
+    }
 
     const { client, shouldClose, databaseName } = await resolveClientForDataset(datasetId)
     const database = databaseName || databaseParam

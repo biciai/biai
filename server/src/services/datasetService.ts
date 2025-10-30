@@ -730,48 +730,56 @@ export class DatasetService {
 
     const connectionSettings = this.getDatasetConnectionSettings(dataset)
 
-    // In the new simplified model, always query from system.columns
-    return this.executeWithClient(connectionSettings, dataset.database_name, async (client) => {
-      const columnsResult = await client.query({
-        query: `
-          SELECT name, type, position
-          FROM system.columns
-          WHERE database = {database:String}
-            AND table = {table:String}
-          ORDER BY position
-        `,
-        query_params: { database: dataset.database_name, table: tableId },
-        format: 'JSONEachRow'
+    if (dataset.database_type === 'connected' && (!connectionSettings || !connectionSettings.host)) {
+      return this.getStoredColumnMetadata(datasetId, tableId)
+    }
+
+    try {
+      return await this.executeWithClient(connectionSettings ?? null, dataset.database_name, async (client) => {
+        const columnsResult = await client.query({
+          query: `
+            SELECT name, type, position
+            FROM system.columns
+            WHERE database = {database:String}
+              AND table = {table:String}
+            ORDER BY position
+          `,
+          query_params: { database: dataset.database_name, table: tableId },
+          format: 'JSONEachRow'
+        })
+
+        const columns = await columnsResult.json<{ name: string; type: string; position: number }>()
+
+        return columns.map((col, index) => {
+          const baseType = col.type.startsWith('Nullable(') && col.type.endsWith(')')
+            ? col.type.slice(9, -1)
+            : col.type
+          const displayType = this.inferDisplayType(baseType, col.name)
+
+          return {
+            column_name: col.name,
+            column_type: baseType,
+            column_index: index,
+            is_nullable: col.type.includes('Nullable'),
+            display_name: col.name,
+            description: '',
+            user_data_type: '',
+            user_priority: null,
+            display_type: displayType,
+            unique_value_count: 0,
+            null_count: 0,
+            min_value: null,
+            max_value: null,
+            suggested_chart: displayType === 'numeric' ? 'histogram' : 'bar',
+            display_priority: 50,
+            is_hidden: false
+          }
+        })
       })
-
-      const columns = await columnsResult.json<{ name: string; type: string; position: number }>()
-
-      return columns.map((col, index) => {
-        const baseType = col.type.startsWith('Nullable(') && col.type.endsWith(')')
-          ? col.type.slice(9, -1)
-          : col.type
-        const displayType = this.inferDisplayType(baseType, col.name)
-
-        return {
-          column_name: col.name,
-          column_type: baseType,
-          column_index: index,
-          is_nullable: col.type.includes('Nullable'),
-          display_name: col.name,
-          description: '',
-          user_data_type: '',
-          user_priority: null,
-          display_type: displayType,
-          unique_value_count: 0,
-          null_count: 0,
-          min_value: null,
-          max_value: null,
-          suggested_chart: displayType === 'numeric' ? 'histogram' : 'bar',
-          display_priority: 50,
-          is_hidden: false
-        }
-      })
-    })
+    } catch (error) {
+      console.warn(`Falling back to stored column metadata for ${datasetId}/${tableId}:`, error)
+      return this.getStoredColumnMetadata(datasetId, tableId)
+    }
   }
 
   private inferDisplayType(columnType: string, columnName: string): string {
@@ -1029,6 +1037,75 @@ export class DatasetService {
       }
     }
     dataset.custom_metadata = JSON.stringify({ ...metadata, ...updates })
+  }
+
+  private async getStoredColumnMetadata(datasetId: string, tableId: string): Promise<any[]> {
+    const storedResult = await clickhouseClient.query({
+      query: `
+        SELECT
+          column_name,
+          column_type,
+          column_index,
+          is_nullable,
+          display_name,
+          description,
+          user_data_type,
+          user_priority,
+          display_type,
+          unique_value_count,
+          null_count,
+          min_value,
+          max_value,
+          suggested_chart,
+          display_priority,
+          is_hidden
+        FROM biai.dataset_columns
+        WHERE dataset_id = {datasetId:String}
+          AND table_id = {tableId:String}
+        ORDER BY column_index, created_at DESC
+        LIMIT 1 BY column_name
+      `,
+      query_params: { datasetId, tableId },
+      format: 'JSONEachRow'
+    })
+
+    const rows = await storedResult.json<{
+      column_name: string
+      column_type: string
+      column_index: number
+      is_nullable: number | boolean
+      display_name: string
+      description: string
+      user_data_type: string
+      user_priority: number | null
+      display_type: string
+      unique_value_count: number | null
+      null_count: number | null
+      min_value: string | null
+      max_value: string | null
+      suggested_chart: string | null
+      display_priority: number | null
+      is_hidden: number | boolean
+    }>()
+
+    return rows.map((row, index) => ({
+      column_name: row.column_name,
+      column_type: row.column_type,
+      column_index: row.column_index ?? index,
+      is_nullable: Boolean(row.is_nullable),
+      display_name: row.display_name || row.column_name,
+      description: row.description || '',
+      user_data_type: row.user_data_type || '',
+      user_priority: row.user_priority ?? null,
+      display_type: row.display_type || this.inferDisplayType(row.column_type, row.column_name),
+      unique_value_count: row.unique_value_count ?? 0,
+      null_count: row.null_count ?? 0,
+      min_value: row.min_value ?? null,
+      max_value: row.max_value ?? null,
+      suggested_chart: row.suggested_chart || 'bar',
+      display_priority: row.display_priority ?? 0,
+      is_hidden: Boolean(row.is_hidden)
+    }))
   }
 
   async updateColumnMetadata(
