@@ -1478,13 +1478,34 @@ const renderNumericFilterMenu = (
       {filters.length > 0 && (
         <div style={{
           marginBottom: '1rem',
-          background: '#E3F2FD',
+          background: '#F5F5F5',
           padding: '1rem',
           borderRadius: '8px',
-          border: '1px solid #2196F3'
+          border: '1px solid #E0E0E0'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-            <strong style={{ fontSize: '0.875rem' }}>Active Filters:</strong>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+              <strong style={{ fontSize: '0.875rem' }}>Active Filters:</strong>
+              {/* Color Legend */}
+              <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.75rem', color: '#666' }}>
+                {Array.from(new Set(filters.map(f => getFilterTableName(f)).filter(Boolean))).map(tableName => {
+                  const table = dataset?.tables.find(t => t.name === tableName)
+                  if (!table) return null
+                  const color = getTableColor(tableName)
+                  return (
+                    <div key={tableName} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                      <div style={{
+                        width: '12px',
+                        height: '12px',
+                        borderRadius: '3px',
+                        background: color
+                      }} />
+                      <span>{table.displayName || table.name}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
             <button
               onClick={clearFilters}
               style={{
@@ -1504,6 +1525,8 @@ const renderNumericFilterMenu = (
             {filters.map((filter, idx) => {
               const columnName = getFilterColumn(filter)
               const tableName = getFilterTableName(filter)
+              const tableColor = tableName ? getTableColor(tableName) : '#9E9E9E'
+              const table = dataset?.tables.find(t => t.name === tableName)
 
               let displayValue = String(filter.value)
               let removeHandler = () => {
@@ -1541,31 +1564,38 @@ const renderNumericFilterMenu = (
                 displayValue = `(${ranges.join(' ∪ ')})`
               }
               const columnLabel = columnName ?? '(Column)'
+              const tooltipText = tableName ? `${table?.displayName || tableName}.${columnLabel}` : columnLabel
+
               return (
                 <div
                   key={idx}
                   style={{
-                    background: 'white',
+                    background: tableColor,
                     padding: '0.25rem 0.75rem',
                     borderRadius: '4px',
                     fontSize: '0.875rem',
                     display: 'flex',
                     alignItems: 'center',
                     gap: '0.5rem',
-                    border: '1px solid #2196F3'
+                    border: `2px solid ${tableColor}`,
+                    color: 'white',
+                    fontWeight: 500
                   }}
+                  title={tooltipText}
                 >
                   <span><strong>{columnLabel}:</strong> {displayValue}</span>
                   <button
                     onClick={removeHandler}
                     style={{
-                      background: 'none',
+                      background: 'rgba(255,255,255,0.3)',
                       border: 'none',
-                      color: '#666',
+                      color: 'white',
                       cursor: 'pointer',
-                      padding: '0',
+                      padding: '0 0.25rem',
                       fontSize: '1rem',
-                      lineHeight: '1'
+                      lineHeight: '1',
+                      borderRadius: '3px',
+                      fontWeight: 'bold'
                     }}
                   >
                     ×
