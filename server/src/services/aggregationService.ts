@@ -49,9 +49,100 @@ export interface Filter {
   and?: Filter[]
   or?: Filter[]
   not?: Filter
+
+  // Cross-table metadata (optional)
+  tableName?: string
+}
+
+export interface TableRelationship {
+  foreign_key: string
+  referenced_table: string
+  referenced_column: string
+  type?: string
+}
+
+export interface TableMetadata {
+  table_name: string
+  clickhouse_table_name: string
+  relationships?: TableRelationship[]
 }
 
 class AggregationService {
+  /**
+   * Build a subquery for cross-table filtering.
+   *
+   * Generates SQL subqueries to filter a table based on filters from related tables
+   * through foreign key relationships. Supports bidirectional relationships.
+   *
+   * @param currentTableName - The table being filtered
+   * @param filter - The filter to apply (must have tableName property for cross-table)
+   * @param allTablesMetadata - Metadata for all tables including relationships
+   * @returns SQL subquery string or null if not a cross-table filter or no relationship exists
+   *
+   * @example
+   * // Filtering samples by patient attributes:
+   * // WHERE samples.patient_id IN (SELECT patient_id FROM patients WHERE radiation_therapy = 'Yes')
+   *
+   * // Filtering patients by sample attributes:
+   * // WHERE patients.patient_id IN (SELECT patient_id FROM samples WHERE sample_type = 'Tumor')
+   */
+  private buildCrossTableSubquery(
+    currentTableName: string,
+    filter: Filter,
+    allTablesMetadata: TableMetadata[]
+  ): string | null {
+    const filterTableName = filter.tableName
+    if (!filterTableName || filterTableName === currentTableName) {
+      return null // Not a cross-table filter
+    }
+
+    // Find the filter's table metadata
+    const filterTable = allTablesMetadata.find(t => t.table_name === filterTableName)
+    if (!filterTable) {
+      console.warn(`Cross-table filter references unknown table: ${filterTableName}`)
+      return null
+    }
+
+    // Find current table metadata
+    const currentTable = allTablesMetadata.find(t => t.table_name === currentTableName)
+    if (!currentTable) {
+      return null
+    }
+
+    // Check if current table has a foreign key to the filter table
+    const fkToFilterTable = currentTable.relationships?.find(
+      rel => rel.referenced_table === filterTableName
+    )
+
+    if (fkToFilterTable) {
+      // Current table references filter table: samples.patient_id → patients.patient_id
+      // Generate: WHERE samples.patient_id IN (SELECT patient_id FROM patients WHERE ...)
+      const filterCondition = this.buildFilterCondition(filter)
+      if (!filterCondition) return null
+
+      const qualifiedFilterTable = this.qualifyTableName(filterTable.clickhouse_table_name)
+      return `${fkToFilterTable.foreign_key} IN (SELECT ${fkToFilterTable.referenced_column} FROM ${qualifiedFilterTable} WHERE ${filterCondition})`
+    }
+
+    // Check if filter table has a foreign key to current table
+    const fkFromFilterTable = filterTable.relationships?.find(
+      rel => rel.referenced_table === currentTableName
+    )
+
+    if (fkFromFilterTable) {
+      // Filter table references current table: patients.patient_id ← samples.patient_id
+      // Generate: WHERE patients.patient_id IN (SELECT patient_id FROM samples WHERE ...)
+      const filterCondition = this.buildFilterCondition(filter)
+      if (!filterCondition) return null
+
+      const qualifiedFilterTable = this.qualifyTableName(filterTable.clickhouse_table_name)
+      return `${fkFromFilterTable.referenced_column} IN (SELECT ${fkFromFilterTable.foreign_key} FROM ${qualifiedFilterTable} WHERE ${filterCondition})`
+    }
+
+    console.warn(`No foreign key relationship found between ${currentTableName} and ${filterTableName}`)
+    return null
+  }
+
   /**
    * Ensure numeric filter values are safe for interpolation
    */
@@ -141,40 +232,74 @@ class AggregationService {
   }
 
   /**
-   * Build WHERE clause from filters (supports AND, OR, NOT)
+   * Build WHERE clause from filters.
+   *
+   * Supports logical operators (AND, OR, NOT) and cross-table filtering through
+   * foreign key relationships. Filters can target columns in related tables.
+   *
+   * @param filters - Filter or array of filters to apply
+   * @param validColumns - Set of valid column names for the current table (optional)
+   * @param currentTableName - Name of the table being filtered (required for cross-table)
+   * @param allTablesMetadata - Metadata for all tables with relationships (required for cross-table)
+   * @returns SQL WHERE clause string (includes 'AND' prefix) or empty string
    */
-  private buildWhereClause(filters: Filter[] | Filter, validColumns?: Set<string>): string {
+  private buildWhereClause(
+    filters: Filter[] | Filter,
+    validColumns?: Set<string>,
+    currentTableName?: string,
+    allTablesMetadata?: TableMetadata[]
+  ): string {
     if (!filters) {
       return ''
     }
 
-    // Filter out columns that don't exist in the table
-    let filteredFilters = filters
-    if (validColumns) {
-      if (Array.isArray(filters)) {
-        const filtered = filters
-          .map(f => this.filterExistingColumns(f, validColumns))
-          .filter(f => f !== null) as Filter[]
-        if (filtered.length === 0) return ''
-        filteredFilters = filtered
+    const filterArray = Array.isArray(filters) ? filters : [filters]
+    const localFilters: Filter[] = []
+    const crossTableConditions: string[] = []
+
+    // Separate local filters from cross-table filters
+    for (const filter of filterArray) {
+      const isCrossTable = filter.tableName && currentTableName && allTablesMetadata && filter.tableName !== currentTableName
+
+      if (isCrossTable) {
+        // This is a cross-table filter - build subquery
+        const subquery = this.buildCrossTableSubquery(
+          currentTableName,
+          filter,
+          allTablesMetadata!
+        )
+        if (subquery) {
+          crossTableConditions.push(subquery)
+        }
       } else {
-        const filtered = this.filterExistingColumns(filters, validColumns)
-        if (!filtered) return ''
-        filteredFilters = filtered
+        // Local filter
+        localFilters.push(filter)
       }
     }
 
-    // Handle array of filters (legacy format)
-    if (Array.isArray(filteredFilters)) {
-      if (filteredFilters.length === 0) return ''
-      const filterTree: Filter = filteredFilters.length === 1 ? filteredFilters[0] : { and: filteredFilters }
-      const condition = this.buildFilterCondition(filterTree)
-      return condition ? `AND (${condition})` : ''
+    // Filter out columns that don't exist in the table (for local filters only)
+    let filteredLocalFilters = localFilters
+    if (validColumns && localFilters.length > 0) {
+      const filtered = localFilters
+        .map(f => this.filterExistingColumns(f, validColumns))
+        .filter(f => f !== null) as Filter[]
+      filteredLocalFilters = filtered
     }
 
-    // Handle single filter object (new format)
-    const condition = this.buildFilterCondition(filteredFilters)
-    return condition ? `AND (${condition})` : ''
+    // Build local filter condition
+    let localCondition = ''
+    if (filteredLocalFilters.length > 0) {
+      const filterTree: Filter = filteredLocalFilters.length === 1 ? filteredLocalFilters[0] : { and: filteredLocalFilters }
+      localCondition = this.buildFilterCondition(filterTree)
+    }
+
+    // Combine local and cross-table conditions
+    const allConditions = []
+    if (localCondition) allConditions.push(localCondition)
+    allConditions.push(...crossTableConditions)
+
+    if (allConditions.length === 0) return ''
+    return `AND (${allConditions.join(' AND ')})`
   }
 
   /**
@@ -321,7 +446,9 @@ class AggregationService {
     tableId: string,
     columnName: string,
     displayType: string,
-    filters: Filter[] | Filter = []
+    filters: Filter[] | Filter = [],
+    currentTableName?: string,
+    allTablesMetadata?: TableMetadata[]
   ): Promise<ColumnAggregation> {
     // Get the ClickHouse table name
     const tableResult = await clickhouseClient.query({
@@ -347,7 +474,7 @@ class AggregationService {
 
     // Get valid columns for this table
     const validColumns = await this.getTableColumns(clickhouseTableName)
-    const whereClause = this.buildWhereClause(filters, validColumns)
+    const whereClause = this.buildWhereClause(filters, validColumns, currentTableName, allTablesMetadata)
 
     // Get filtered row count if filters are applied
     let filteredTotalRows = totalRows
@@ -577,13 +704,99 @@ class AggregationService {
   }
 
   /**
-   * Get aggregations for all visible columns in a table
+   * Get aggregations for all visible columns in a table.
+   *
+   * Loads table metadata including foreign key relationships to support
+   * cross-table filtering. Filters from related tables are automatically
+   * propagated through relationship chains.
+   *
+   * @param datasetId - The dataset ID
+   * @param tableId - The table ID
+   * @param filters - Filters to apply (may include cross-table filters with tableName property)
+   * @returns Array of column aggregations
    */
   async getTableAggregations(
     datasetId: string,
     tableId: string,
     filters: Filter[] | Filter = []
   ): Promise<ColumnAggregation[]> {
+    // Get all tables metadata for cross-table filtering support
+    const tablesResult = await clickhouseClient.query({
+      query: `
+        SELECT
+          table_name,
+          clickhouse_table_name
+        FROM biai.dataset_tables
+        WHERE dataset_id = {datasetId:String}
+      `,
+      query_params: { datasetId },
+      format: 'JSONEachRow'
+    })
+
+    const tablesData = await tablesResult.json<{ table_name: string; clickhouse_table_name: string }>()
+
+    // Get relationships for all tables
+    const relationshipsResult = await clickhouseClient.query({
+      query: `
+        SELECT
+          table_id,
+          foreign_key,
+          referenced_table,
+          referenced_column,
+          relationship_type
+        FROM biai.table_relationships
+        WHERE dataset_id = {datasetId:String}
+      `,
+      query_params: { datasetId },
+      format: 'JSONEachRow'
+    })
+
+    const relationshipsData = await relationshipsResult.json<{
+      table_id: string
+      foreign_key: string
+      referenced_table: string
+      referenced_column: string
+      relationship_type: string
+    }>()
+
+    // Map table_id to table_name
+    const tableIdToNameResult = await clickhouseClient.query({
+      query: `
+        SELECT table_id, table_name
+        FROM biai.dataset_tables
+        WHERE dataset_id = {datasetId:String}
+      `,
+      query_params: { datasetId },
+      format: 'JSONEachRow'
+    })
+    const tableIdToName = await tableIdToNameResult.json<{ table_id: string; table_name: string }>()
+    const idToNameMap = new Map(tableIdToName.map(t => [t.table_id, t.table_name]))
+
+    // Build table metadata with relationships
+    const allTablesMetadata: TableMetadata[] = tablesData.map(table => {
+      const tableRelationships = relationshipsData
+        .filter(rel => {
+          const relTableName = idToNameMap.get(rel.table_id)
+          return relTableName === table.table_name
+        })
+        .map(rel => ({
+          foreign_key: rel.foreign_key,
+          referenced_table: rel.referenced_table,
+          referenced_column: rel.referenced_column,
+          type: rel.relationship_type
+        }))
+
+      return {
+        table_name: table.table_name,
+        clickhouse_table_name: table.clickhouse_table_name,
+        relationships: tableRelationships
+      }
+    })
+
+    // Get current table name
+    const currentTableIdName = tableIdToName.find(t => t.table_id === tableId)
+    const currentTableName = currentTableIdName?.table_name
+
     // Get column metadata
     const columnsResult = await clickhouseClient.query({
       query: `
@@ -611,7 +824,9 @@ class AggregationService {
           tableId,
           col.column_name,
           col.display_type,
-          filters
+          filters,
+          currentTableName,
+          allTablesMetadata
         )
       )
     )

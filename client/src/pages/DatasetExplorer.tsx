@@ -74,6 +74,13 @@ interface Filter {
   not?: Filter
 }
 
+interface TableRelationship {
+  foreign_key: string
+  referenced_table: string
+  referenced_column: string
+  type?: string
+}
+
 interface Table {
   id: string
   name: string
@@ -81,6 +88,7 @@ interface Table {
   rowCount: number
   columns: Column[]
   primaryKey?: string
+  relationships?: TableRelationship[]
 }
 
 interface Dataset {
@@ -136,11 +144,14 @@ function DatasetExplorer() {
     const shouldUseDatabaseAPI = isDatabaseMode || dataset.database_type === 'connected'
     const dbIdentifier = isDatabaseMode ? identifier : dataset.database_name
 
+    // Send ALL filters to ALL tables and let the backend figure out cross-table filtering
+    // The backend will detect which filters are for each table using the tableName property
     for (const table of dataset.tables) {
       await loadTableAggregations(table.id, table.name, {
         useDbAPI: shouldUseDatabaseAPI,
         dbName: dbIdentifier,
-        datasetId: dataset.id
+        datasetId: dataset.id,
+        tableFilters: filters // Send all filters to every table
       })
     }
   }
@@ -188,10 +199,12 @@ function DatasetExplorer() {
   const loadTableAggregations = async (
     tableId: string,
     tableName: string,
-    options?: { storeBaseline?: boolean; useDbAPI?: boolean; dbName?: string; datasetId?: string }
+    options?: { storeBaseline?: boolean; useDbAPI?: boolean; dbName?: string; datasetId?: string; tableFilters?: Filter[] }
   ) => {
     try {
-      const params: Record<string, any> = filters.length > 0 ? { filters: JSON.stringify(filters) } : {}
+      // Use table-specific filters if provided, otherwise fall back to global filters
+      const activeFilters = options?.tableFilters !== undefined ? options.tableFilters : filters
+      const params: Record<string, any> = activeFilters.length > 0 ? { filters: JSON.stringify(activeFilters) } : {}
       // Use provided values or fall back to computed values
       const shouldUseDbAPI = options?.useDbAPI !== undefined ? options.useDbAPI : usesDatabaseAPI
       const dbIdentifier = options?.dbName || databaseIdentifier
@@ -293,6 +306,45 @@ const getFilterColumn = (filter: Filter): string | undefined => {
 }
 
 const getFilterTableName = (filter: Filter): string | undefined => (filter as any).tableName
+
+  // Helper: Get all effective filters (direct + propagated) for all tables
+  const getAllEffectiveFilters = (): Record<string, { direct: Filter[]; propagated: Filter[] }> => {
+    if (!dataset) return {}
+
+    const result: Record<string, { direct: Filter[]; propagated: Filter[] }> = {}
+
+    // Initialize all tables
+    for (const table of dataset.tables) {
+      result[table.name] = { direct: [], propagated: [] }
+    }
+
+    // Group filters by their tableName property
+    for (const filter of filters) {
+      const filterTableName = getFilterTableName(filter)
+      if (!filterTableName) continue
+
+      // This filter belongs to filterTableName
+      // It's "direct" for that table, "propagated" for other tables with relationships
+      for (const table of dataset.tables) {
+        if (table.name === filterTableName) {
+          // Direct filter
+          result[table.name].direct.push(filter)
+        } else {
+          // Check if there's a relationship between these tables
+          const hasRelationship =
+            table.relationships?.some(r => r.referenced_table === filterTableName) || // table references filterTable
+            dataset.tables.find(t => t.name === filterTableName)?.relationships?.some(r => r.referenced_table === table.name) // filterTable references table
+
+          if (hasRelationship) {
+            // This is a propagated filter for this table
+            result[table.name].propagated.push(filter)
+          }
+        }
+      }
+    }
+
+    return result
+  }
 
 const filterContainsColumn = (filter: Filter, column: string): boolean => {
   if (filter.column === column) return true
@@ -430,7 +482,7 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
             <button
               key={`${tableName}-${columnName}-${label}`}
               onMouseDown={event => event.preventDefault()}
-              onClick={() => toggleFilter(columnName, rawValue)}
+              onClick={() => toggleFilter(columnName, rawValue, tableName)}
               style={{
                 border: active ? '1px solid #1976D2' : '1px solid #ccc',
                 background: active ? '#E3F2FD' : '#fafafa',
@@ -680,7 +732,7 @@ const renderNumericFilterMenu = (
               <div style={{ borderBottom: '1px solid #eee', margin: '0.25rem 0' }} />
               <button
                 onMouseDown={event => event.preventDefault()}
-                onClick={() => toggleFilter(columnName, '')}
+                onClick={() => toggleFilter(columnName, '', tableName)}
                 style={{
                   border: nullActive ? '1px solid #1976D2' : '1px solid #ccc',
                   background: nullActive ? '#E3F2FD' : '#fafafa',
@@ -812,7 +864,7 @@ const renderNumericFilterMenu = (
     )
   }
 
-  const toggleFilter = (column: string, value: string | number) => {
+  const toggleFilter = (column: string, value: string | number, tableName?: string) => {
     const filterValue = normalizeFilterValue(value)
 
     setFilters(prevFilters => {
@@ -820,7 +872,9 @@ const renderNumericFilterMenu = (
       const existingIndex = nextFilters.findIndex(f => f.column === column)
 
       if (existingIndex === -1) {
-        nextFilters.push({ column, operator: 'eq', value: filterValue })
+        const newFilter: any = { column, operator: 'eq', value: filterValue }
+        if (tableName) newFilter.tableName = tableName
+        nextFilters.push(newFilter)
         return nextFilters
       }
 
@@ -833,11 +887,13 @@ const renderNumericFilterMenu = (
           return nextFilters
         }
 
-        nextFilters[existingIndex] = {
+        const updatedFilter: any = {
           column,
           operator: 'in',
           value: [existingValue, filterValue]
         }
+        if (tableName) updatedFilter.tableName = tableName
+        nextFilters[existingIndex] = updatedFilter
         return nextFilters
       }
 
@@ -856,15 +912,21 @@ const renderNumericFilterMenu = (
         if (values.length === 0) {
           nextFilters.splice(existingIndex, 1)
         } else if (values.length === 1) {
-          nextFilters[existingIndex] = { column, operator: 'eq', value: values[0] }
+          const updatedFilter: any = { column, operator: 'eq', value: values[0] }
+          if (tableName) updatedFilter.tableName = tableName
+          nextFilters[existingIndex] = updatedFilter
         } else {
-          nextFilters[existingIndex] = { column, operator: 'in', value: values }
+          const updatedFilter: any = { column, operator: 'in', value: values }
+          if (tableName) updatedFilter.tableName = tableName
+          nextFilters[existingIndex] = updatedFilter
         }
 
         return nextFilters
       }
 
-      nextFilters[existingIndex] = { column, operator: 'eq', value: filterValue }
+      const updatedFilter: any = { column, operator: 'eq', value: filterValue }
+      if (tableName) updatedFilter.tableName = tableName
+      nextFilters[existingIndex] = updatedFilter
       return nextFilters
     })
   }
@@ -1047,7 +1109,7 @@ const renderNumericFilterMenu = (
             const index = point.pointNumber ?? point.pointIndex
             if (typeof index === 'number' && index >= 0 && index < filterValues.length) {
               const clickedValue = filterValues[index]
-              toggleFilter(field, clickedValue)
+              toggleFilter(field, clickedValue, tableName)
             }
           }}
         />
@@ -1182,7 +1244,7 @@ const renderNumericFilterMenu = (
             const pointIndex = point.pointIndex
             if (typeof pointIndex === 'number' && pointIndex >= 0 && pointIndex < filterValues.length) {
               const clickedValue = filterValues[pointIndex]
-              toggleFilter(field, clickedValue)
+              toggleFilter(field, clickedValue, tableName)
             }
           }}
           onSelected={(event: PlotSelectionEvent) => {
@@ -1195,7 +1257,7 @@ const renderNumericFilterMenu = (
             if (selectedValues.length > 0) {
               setFilters(prev => [
                 ...prev.filter(f => f.column !== field),
-                { column: field, operator: 'in', value: selectedValues }
+                { column: field, operator: 'in', value: selectedValues, tableName } as any
               ])
             }
           }}
@@ -1582,6 +1644,12 @@ const renderNumericFilterMenu = (
         const tableColor = getTableColor(table.name)
         const tableRowCount = visibleAggregations[0]?.total_rows || table.rowCount || 0
 
+        // Get filter counts for this table
+        const effectiveFilters = getAllEffectiveFilters()
+        const tableFilters = effectiveFilters[table.name] || { direct: [], propagated: [] }
+        const directFilterCount = tableFilters.direct.length
+        const propagatedFilterCount = tableFilters.propagated.length
+
         return (
           <div key={table.name} style={{ marginBottom: '2.5rem' }}>
             {/* Table Section Header */}
@@ -1622,15 +1690,49 @@ const renderNumericFilterMenu = (
                   </div>
                 </div>
               </div>
-              <div style={{
-                background: tableColor,
-                color: 'white',
-                fontSize: '0.7rem',
-                padding: '0.3rem 0.6rem',
-                borderRadius: '4px',
-                fontWeight: 600
-              }}>
-                {table.name}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {/* Filter badges */}
+                {directFilterCount > 0 && (
+                  <div
+                    style={{
+                      background: '#1976D2',
+                      color: 'white',
+                      fontSize: '0.7rem',
+                      padding: '0.3rem 0.6rem',
+                      borderRadius: '4px',
+                      fontWeight: 600
+                    }}
+                    title={`${directFilterCount} direct filter${directFilterCount > 1 ? 's' : ''} applied`}
+                  >
+                    {directFilterCount} filter{directFilterCount > 1 ? 's' : ''}
+                  </div>
+                )}
+                {propagatedFilterCount > 0 && (
+                  <div
+                    style={{
+                      background: '#64B5F6',
+                      color: 'white',
+                      fontSize: '0.7rem',
+                      padding: '0.3rem 0.6rem',
+                      borderRadius: '4px',
+                      fontWeight: 600,
+                      fontStyle: 'italic'
+                    }}
+                    title={`${propagatedFilterCount} filter${propagatedFilterCount > 1 ? 's' : ''} propagated from related tables`}
+                  >
+                    +{propagatedFilterCount} linked
+                  </div>
+                )}
+                <div style={{
+                  background: tableColor,
+                  color: 'white',
+                  fontSize: '0.7rem',
+                  padding: '0.3rem 0.6rem',
+                  borderRadius: '4px',
+                  fontWeight: 600
+                }}>
+                  {table.name}
+                </div>
               </div>
             </div>
 
