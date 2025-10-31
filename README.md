@@ -65,6 +65,14 @@ biai/
 └── docker-compose.yml          # Docker services
 ```
 
+## User Documentation
+
+For end-users working with the web interface:
+
+- **[User Guide](docs/USER_GUIDE.md)**: Comprehensive guide to exploring and analyzing data
+- **[Quick Reference](docs/QUICK_REFERENCE.md)**: At-a-glance guide for common tasks
+- **[FAQ](docs/FAQ.md)**: Answers to frequently asked questions
+
 ## Features
 
 - **Multi-table Datasets**: Create datasets with multiple related tables
@@ -77,6 +85,10 @@ biai/
 - **File Upload**: Support for CSV, TSV with configurable delimiters
 - **Data Preview**: View table data with pagination
 - **Custom Metadata**: Store domain-specific fields alongside standard metadata
+- **Interactive Data Exploration**: Filter and visualize data with automatic chart selection
+- **Relationship-Aware Filtering**: Filters automatically propagate across related tables
+- **Filter Presets**: Save and share common filter combinations
+- **URL-Based Sharing**: Share filtered views via URL parameters
 
 ## Available Scripts
 
