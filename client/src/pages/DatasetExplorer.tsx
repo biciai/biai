@@ -75,6 +75,13 @@ interface Filter {
   not?: Filter
 }
 
+interface FilterPreset {
+  id: string
+  name: string
+  filters: Filter[]
+  createdAt: string
+}
+
 interface TableRelationship {
   foreign_key: string
   referenced_table: string
@@ -128,6 +135,14 @@ function DatasetExplorer() {
   const [customRangeInputs, setCustomRangeInputs] = useState<Record<string, { min: string; max: string }>>({})
   const [rangeSelections, setRangeSelections] = useState<Record<string, Array<{ start: number; end: number }>>>({})
 
+  // Filter preset state
+  const [presets, setPresets] = useState<FilterPreset[]>([])
+  const [showSavePresetDialog, setShowSavePresetDialog] = useState(false)
+  const [showManagePresetsDialog, setShowManagePresetsDialog] = useState(false)
+  const [showPresetsDropdown, setShowPresetsDropdown] = useState(false)
+  const [presetNameInput, setPresetNameInput] = useState('')
+  const [editingPresetId, setEditingPresetId] = useState<string | null>(null)
+
   // Track if filters have been initialized from URL to prevent overwriting
   const filtersInitialized = useRef(false)
   const isUpdatingURL = useRef(false)
@@ -169,6 +184,97 @@ function DatasetExplorer() {
       console.error('Failed to load filters from localStorage:', error)
       return null
     }
+  }
+
+  // Helper functions for preset management
+  const savePresetsToLocalStorage = (presets: FilterPreset[]) => {
+    try {
+      localStorage.setItem(`presets_${identifier}`, JSON.stringify(presets))
+    } catch (error) {
+      console.error('Failed to save presets to localStorage:', error)
+    }
+  }
+
+  const loadPresetsFromLocalStorage = (): FilterPreset[] => {
+    try {
+      const stored = localStorage.getItem(`presets_${identifier}`)
+      return stored ? JSON.parse(stored) : []
+    } catch (error) {
+      console.error('Failed to load presets from localStorage:', error)
+      return []
+    }
+  }
+
+  const savePreset = () => {
+    if (!presetNameInput.trim() || filters.length === 0) return
+
+    const newPreset: FilterPreset = {
+      id: Date.now().toString(),
+      name: presetNameInput.trim(),
+      filters: JSON.parse(JSON.stringify(filters)), // Deep clone
+      createdAt: new Date().toISOString()
+    }
+
+    const updated = [...presets, newPreset]
+    setPresets(updated)
+    savePresetsToLocalStorage(updated)
+    setPresetNameInput('')
+    setShowSavePresetDialog(false)
+  }
+
+  const applyPreset = (preset: FilterPreset) => {
+    setFilters(JSON.parse(JSON.stringify(preset.filters))) // Deep clone
+    setShowPresetsDropdown(false)
+  }
+
+  const deletePreset = (presetId: string) => {
+    const updated = presets.filter(p => p.id !== presetId)
+    setPresets(updated)
+    savePresetsToLocalStorage(updated)
+  }
+
+  const renamePreset = (presetId: string, newName: string) => {
+    if (!newName.trim()) return
+    const updated = presets.map(p =>
+      p.id === presetId ? { ...p, name: newName.trim() } : p
+    )
+    setPresets(updated)
+    savePresetsToLocalStorage(updated)
+    setEditingPresetId(null)
+  }
+
+  const exportPresets = () => {
+    const json = JSON.stringify(presets, null, 2)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `saved-filters-${identifier}-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const importPresets = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      try {
+        const imported = JSON.parse(e.target?.result as string) as FilterPreset[]
+        if (Array.isArray(imported)) {
+          const updated = [...presets, ...imported]
+          setPresets(updated)
+          savePresetsToLocalStorage(updated)
+        }
+      } catch (error) {
+        console.error('Failed to import filters:', error)
+        alert('Failed to import filters. Invalid file format.')
+      }
+    }
+    reader.readAsText(file)
+    // Reset input so same file can be imported again
+    event.target.value = ''
   }
 
   // Restore filters from URL hash on mount
@@ -234,6 +340,12 @@ function DatasetExplorer() {
       }, 0)
     }
   }, [filters, location.pathname, location.search, location.hash, navigate, identifier])
+
+  // Load presets from localStorage on mount
+  useEffect(() => {
+    const stored = loadPresetsFromLocalStorage()
+    setPresets(stored)
+  }, [identifier])
 
   useEffect(() => {
     loadDataset()
@@ -1697,6 +1809,103 @@ const renderNumericFilterMenu = (
 
   return (
     <div>
+      {/* Header */}
+      <div style={{ marginBottom: '2rem', background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', position: 'relative' }}>
+        <button
+          onClick={() => navigate(`/datasets/${id}/manage`)}
+          style={{
+            position: 'absolute',
+            top: '1.5rem',
+            right: '1.5rem',
+            padding: '0.5rem',
+            background: '#757575',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '1.2rem',
+            lineHeight: '1',
+            width: '32px',
+            height: '32px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+          title="Manage dataset"
+        >
+          ✎
+        </button>
+
+        <h2 style={{ marginTop: 0, paddingRight: '3rem' }}>{dataset.name}</h2>
+        {dataset.description && (
+          <SafeHtml
+            html={dataset.description}
+            style={{ color: '#666', margin: '0.5rem 0', display: 'block' }}
+          />
+        )}
+
+        <div style={{ display: 'flex', gap: '2rem', marginTop: '1rem', fontSize: '0.875rem' }}>
+          <div>
+            <strong>Total Records:</strong> {totalRows.toLocaleString()}
+          </div>
+          <div>
+            <strong>Tables:</strong> {dataset.tables.length}
+          </div>
+        </div>
+      </div>
+
+      {/* Saved Filters Bar - Always visible when presets exist */}
+      {presets.length > 0 && (
+        <div style={{
+          marginBottom: '1rem',
+          background: '#E3F2FD',
+          padding: '0.75rem 1rem',
+          borderRadius: '8px',
+          border: '1px solid #90CAF9',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between'
+        }}>
+          <div style={{ fontSize: '0.875rem', color: '#1976D2', fontWeight: 500 }}>
+            {presets.length} saved filter{presets.length !== 1 ? 's' : ''}
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={() => setShowPresetsDropdown(!showPresetsDropdown)}
+                style={{
+                  padding: '0.25rem 0.75rem',
+                  background: '#2196F3',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem'
+                }}
+                title="Load a saved filter"
+              >
+                Load Filter
+              </button>
+            </div>
+            <button
+              onClick={() => setShowManagePresetsDialog(true)}
+              style={{
+                padding: '0.25rem 0.75rem',
+                background: '#FF9800',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '0.75rem'
+              }}
+              title="Manage saved filters"
+            >
+              Manage
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Active Filters */}
       {filters.length > 0 && (
         <div style={{
@@ -1729,20 +1938,37 @@ const renderNumericFilterMenu = (
                 })}
               </div>
             </div>
-            <button
-              onClick={clearFilters}
-              style={{
-                padding: '0.25rem 0.75rem',
-                background: '#f44336',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer',
-                fontSize: '0.75rem'
-              }}
-            >
-              Clear All
-            </button>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <button
+                onClick={() => setShowSavePresetDialog(true)}
+                style={{
+                  padding: '0.25rem 0.75rem',
+                  background: '#4CAF50',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem'
+                }}
+                title="Save current filters"
+              >
+                Save Filter
+              </button>
+              <button
+                onClick={clearFilters}
+                style={{
+                  padding: '0.25rem 0.75rem',
+                  background: '#f44336',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem'
+                }}
+              >
+                Clear All
+              </button>
+            </div>
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
             {filters.map((filter, idx) => {
@@ -1913,50 +2139,336 @@ const renderNumericFilterMenu = (
         </div>
       )}
 
-      {/* Header */}
-      <div style={{ marginBottom: '2rem', background: 'white', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', position: 'relative' }}>
-        <button
-          onClick={() => navigate(`/datasets/${id}/manage`)}
+      {/* Save Filter Dialog */}
+      {showSavePresetDialog && (
+        <div
           style={{
-            position: 'absolute',
-            top: '1.5rem',
-            right: '1.5rem',
-            padding: '0.5rem',
-            background: '#757575',
-            color: 'white',
-            border: 'none',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            fontSize: '1.2rem',
-            lineHeight: '1',
-            width: '32px',
-            height: '32px',
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.5)',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center'
+            justifyContent: 'center',
+            zIndex: 1000
           }}
-          title="Manage dataset"
+          onClick={() => setShowSavePresetDialog(false)}
         >
-          ✎
-        </button>
-
-        <h2 style={{ marginTop: 0, paddingRight: '3rem' }}>{dataset.name}</h2>
-        {dataset.description && (
-          <SafeHtml
-            html={dataset.description}
-            style={{ color: '#666', margin: '0.5rem 0', display: 'block' }}
-          />
-        )}
-
-        <div style={{ display: 'flex', gap: '2rem', marginTop: '1rem', fontSize: '0.875rem' }}>
-          <div>
-            <strong>Total Records:</strong> {totalRows.toLocaleString()}
-          </div>
-          <div>
-            <strong>Tables:</strong> {dataset.tables.length}
+          <div
+            style={{
+              background: 'white',
+              padding: '1.5rem',
+              borderRadius: '8px',
+              minWidth: '400px',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ marginTop: 0 }}>Save Filter</h3>
+            <input
+              type="text"
+              value={presetNameInput}
+              onChange={(e) => setPresetNameInput(e.target.value)}
+              placeholder="Enter filter name..."
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') savePreset()
+                if (e.key === 'Escape') setShowSavePresetDialog(false)
+              }}
+              autoFocus
+              style={{
+                width: '100%',
+                padding: '0.5rem',
+                marginBottom: '1rem',
+                border: '1px solid #ddd',
+                borderRadius: '4px',
+                fontSize: '0.875rem'
+              }}
+            />
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowSavePresetDialog(false)}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#f0f0f0',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={savePreset}
+                disabled={!presetNameInput.trim()}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: presetNameInput.trim() ? '#4CAF50' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: presetNameInput.trim() ? 'pointer' : 'not-allowed',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Save
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
+
+      {/* Load Filter Dropdown */}
+      {showPresetsDropdown && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 999
+          }}
+          onClick={() => setShowPresetsDropdown(false)}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              top: '120px',
+              right: '20px',
+              background: 'white',
+              border: '1px solid #ddd',
+              borderRadius: '8px',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              padding: '0.5rem',
+              minWidth: '300px',
+              maxHeight: '400px',
+              overflowY: 'auto'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ padding: '0.5rem', borderBottom: '1px solid #eee', marginBottom: '0.5rem' }}>
+              <strong style={{ fontSize: '0.875rem' }}>Select Filter</strong>
+            </div>
+            {presets.map((preset) => (
+              <div
+                key={preset.id}
+                onClick={() => applyPreset(preset)}
+                style={{
+                  padding: '0.75rem',
+                  cursor: 'pointer',
+                  borderRadius: '4px',
+                  marginBottom: '0.25rem',
+                  border: '1px solid #eee',
+                  transition: 'background 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = '#f0f0f0'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'white'}
+              >
+                <div style={{ fontWeight: 500, fontSize: '0.875rem', marginBottom: '0.25rem' }}>
+                  {preset.name}
+                </div>
+                <div style={{ fontSize: '0.7rem', color: '#666' }}>
+                  {preset.filters.length} filter{preset.filters.length !== 1 ? 's' : ''} · {new Date(preset.createdAt).toLocaleDateString()}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Manage Filters Dialog */}
+      {showManagePresetsDialog && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={() => setShowManagePresetsDialog(false)}
+        >
+          <div
+            style={{
+              background: 'white',
+              padding: '1.5rem',
+              borderRadius: '8px',
+              minWidth: '500px',
+              maxHeight: '600px',
+              overflowY: 'auto',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0 }}>Manage Saved Filters</h3>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  onClick={exportPresets}
+                  style={{
+                    padding: '0.4rem 0.75rem',
+                    background: '#2196F3',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '0.75rem'
+                  }}
+                >
+                  Export
+                </button>
+                <label style={{
+                  padding: '0.4rem 0.75rem',
+                  background: '#FF9800',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem'
+                }}>
+                  Import
+                  <input
+                    type="file"
+                    accept=".json"
+                    onChange={importPresets}
+                    style={{ display: 'none' }}
+                  />
+                </label>
+              </div>
+            </div>
+            {presets.length === 0 ? (
+              <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>
+                No filters saved yet.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {presets.map((preset) => (
+                  <div
+                    key={preset.id}
+                    style={{
+                      border: '1px solid #ddd',
+                      borderRadius: '6px',
+                      padding: '0.75rem'
+                    }}
+                  >
+                    {editingPresetId === preset.id ? (
+                      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                        <input
+                          type="text"
+                          defaultValue={preset.name}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') renamePreset(preset.id, e.currentTarget.value)
+                            if (e.key === 'Escape') setEditingPresetId(null)
+                          }}
+                          autoFocus
+                          style={{
+                            flex: 1,
+                            padding: '0.25rem 0.5rem',
+                            border: '1px solid #2196F3',
+                            borderRadius: '4px',
+                            fontSize: '0.875rem'
+                          }}
+                        />
+                        <button
+                          onClick={(e) => renamePreset(preset.id, e.currentTarget.previousElementSibling?.['value'] || '')}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#4CAF50',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '0.75rem'
+                          }}
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setEditingPresetId(null)}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#f0f0f0',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '0.75rem'
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <strong style={{ fontSize: '0.875rem' }}>{preset.name}</strong>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button
+                            onClick={() => setEditingPresetId(preset.id)}
+                            style={{
+                              padding: '0.25rem 0.5rem',
+                              background: '#2196F3',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '0.75rem'
+                            }}
+                          >
+                            Rename
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`Delete saved filter "${preset.name}"?`)) {
+                                deletePreset(preset.id)
+                              }
+                            }}
+                            style={{
+                              padding: '0.25rem 0.5rem',
+                              background: '#f44336',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '0.75rem'
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ fontSize: '0.75rem', color: '#666' }}>
+                      {preset.filters.length} filter{preset.filters.length !== 1 ? 's' : ''} · Created {new Date(preset.createdAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowManagePresetsDialog(false)}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#f0f0f0',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Chart Grid - Grouped by Table */}
       {dataset.tables.map(table => {
