@@ -364,9 +364,12 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
 
   const removeColumnFilters = (prev: Filter[], column: string): Filter[] =>
     prev.filter(filter => {
-      if (filter.column === column) return false
-      if (filter.or && Array.isArray(filter.or)) {
-        return !filter.or.every(child => filterContainsColumn(child, column))
+      // Unwrap NOT if present
+      const actualFilter = (filter as any).not || filter
+
+      if (actualFilter.column === column) return false
+      if (actualFilter.or && Array.isArray(actualFilter.or)) {
+        return !actualFilter.or.every(child => filterContainsColumn(child, column))
       }
       return true
     })
@@ -435,6 +438,35 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
 
     const columnHasFilter = hasColumnFilter(columnName)
 
+    // Check if the current filter for this column has NOT wrapper
+    const currentFilter = filters.find(f => {
+      const actualF = (f as any).not || f
+      return getFilterColumn(actualF) === columnName
+    })
+    const isNot = currentFilter ? !!(currentFilter as any).not : false
+
+    // Toggle NOT for this column's filter
+    const toggleColumnNot = () => {
+      setFilters(prev => {
+        const idx = prev.findIndex(f => {
+          const actualF = (f as any).not || f
+          return getFilterColumn(actualF) === columnName
+        })
+        if (idx === -1) return prev
+
+        const updated = [...prev]
+        const filter = prev[idx]
+        if ((filter as any).not) {
+          // Remove NOT wrapper
+          updated[idx] = (filter as any).not
+        } else {
+          // Add NOT wrapper
+          updated[idx] = { not: filter } as any
+        }
+        return updated
+      })
+    }
+
     return (
       <div
         style={{
@@ -456,22 +488,43 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
         }}
         onClick={(event) => event.stopPropagation()}
       >
-        <button
-          onClick={() => clearColumnFilter(tableName, columnName)}
-          style={{
-            border: 'none',
-            background: columnHasFilter ? '#1976D2' : '#eee',
-            color: columnHasFilter ? 'white' : '#555',
-            borderRadius: '4px',
-            padding: '0.25rem 0.5rem',
-            fontSize: '0.7rem',
-            cursor: columnHasFilter ? 'pointer' : 'default',
-            opacity: columnHasFilter ? 1 : 0.6
-          }}
-          disabled={!columnHasFilter}
-        >
-          Reset
-        </button>
+        <div style={{ display: 'flex', gap: '0.25rem' }}>
+          <button
+            onClick={() => clearColumnFilter(tableName, columnName)}
+            style={{
+              border: 'none',
+              background: columnHasFilter ? '#1976D2' : '#eee',
+              color: columnHasFilter ? 'white' : '#555',
+              borderRadius: '4px',
+              padding: '0.25rem 0.5rem',
+              fontSize: '0.7rem',
+              cursor: columnHasFilter ? 'pointer' : 'default',
+              opacity: columnHasFilter ? 1 : 0.6,
+              flex: 1
+            }}
+            disabled={!columnHasFilter}
+          >
+            Reset
+          </button>
+          <button
+            onClick={toggleColumnNot}
+            style={{
+              border: 'none',
+              background: isNot ? '#333' : '#f0f0f0',
+              color: isNot ? 'white' : '#555',
+              borderRadius: '4px',
+              padding: '0.25rem 0.5rem',
+              fontSize: '0.7rem',
+              cursor: columnHasFilter ? 'pointer' : 'default',
+              opacity: columnHasFilter ? 1 : 0.6,
+              fontWeight: isNot ? 'bold' : 'normal'
+            }}
+            disabled={!columnHasFilter}
+            title={isNot ? 'Remove NOT' : 'Add NOT'}
+          >
+            ¬
+          </button>
+        </div>
         <div style={{ borderBottom: '1px solid #eee', margin: '0.25rem 0' }} />
         {categories.map(category => {
           const rawValue = normalizeFilterValue(category.value)
@@ -688,6 +741,35 @@ const renderNumericFilterMenu = (
       Number.isFinite(maxValue) &&
       minValue <= maxValue
 
+    // Check if the current filter for this column has NOT wrapper
+    const currentFilter = filters.find(f => {
+      const actualF = (f as any).not || f
+      return getFilterColumn(actualF) === columnName
+    })
+    const isNot = currentFilter ? !!(currentFilter as any).not : false
+
+    // Toggle NOT for this column's filter
+    const toggleColumnNot = () => {
+      setFilters(prev => {
+        const idx = prev.findIndex(f => {
+          const actualF = (f as any).not || f
+          return getFilterColumn(actualF) === columnName
+        })
+        if (idx === -1) return prev
+
+        const updated = [...prev]
+        const filter = prev[idx]
+        if ((filter as any).not) {
+          // Remove NOT wrapper
+          updated[idx] = (filter as any).not
+        } else {
+          // Add NOT wrapper
+          updated[idx] = { not: filter } as any
+        }
+        return updated
+      })
+    }
+
     return (
       <div
         style={{
@@ -761,11 +843,30 @@ const renderNumericFilterMenu = (
               padding: '0.25rem 0.5rem',
               fontSize: '0.7rem',
               cursor: columnHasFilter ? 'pointer' : 'default',
-              opacity: columnHasFilter ? 1 : 0.6
+              opacity: columnHasFilter ? 1 : 0.6,
+              flex: 1
             }}
             disabled={!columnHasFilter}
           >
             Reset
+          </button>
+          <button
+            onClick={toggleColumnNot}
+            style={{
+              border: 'none',
+              background: isNot ? '#333' : '#f0f0f0',
+              color: isNot ? 'white' : '#555',
+              borderRadius: '4px',
+              padding: '0.25rem 0.5rem',
+              fontSize: '0.7rem',
+              cursor: columnHasFilter ? 'pointer' : 'default',
+              opacity: columnHasFilter ? 1 : 0.6,
+              fontWeight: isNot ? 'bold' : 'normal'
+            }}
+            disabled={!columnHasFilter}
+            title={isNot ? 'Remove NOT' : 'Add NOT'}
+          >
+            ¬
           </button>
         </div>
         {bins.length > 0 && (
@@ -869,7 +970,15 @@ const renderNumericFilterMenu = (
 
     setFilters(prevFilters => {
       const nextFilters = [...prevFilters]
-      const existingIndex = nextFilters.findIndex(f => f.column === column)
+
+      // Find existing filter, checking both regular and NOT-wrapped filters
+      const existingIndex = nextFilters.findIndex(f => {
+        const actualFilter = (f as any).not || f
+        return actualFilter.column === column
+      })
+
+      // Check if the found filter is NOT-wrapped
+      const isNot = existingIndex >= 0 && !!(nextFilters[existingIndex] as any).not
 
       if (existingIndex === -1) {
         const newFilter: any = { column, operator: 'eq', value: filterValue }
@@ -878,7 +987,8 @@ const renderNumericFilterMenu = (
         return nextFilters
       }
 
-      const existing = nextFilters[existingIndex]
+      // Get the actual filter (unwrap NOT if present)
+      const existing = isNot ? (nextFilters[existingIndex] as any).not : nextFilters[existingIndex]
 
       if (existing.operator === 'eq') {
         const existingValue = normalizeFilterValue(existing.value as string | number)
@@ -893,7 +1003,8 @@ const renderNumericFilterMenu = (
           value: [existingValue, filterValue]
         }
         if (tableName) updatedFilter.tableName = tableName
-        nextFilters[existingIndex] = updatedFilter
+        // Re-wrap with NOT if it was originally wrapped
+        nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
         return nextFilters
       }
 
@@ -914,11 +1025,13 @@ const renderNumericFilterMenu = (
         } else if (values.length === 1) {
           const updatedFilter: any = { column, operator: 'eq', value: values[0] }
           if (tableName) updatedFilter.tableName = tableName
-          nextFilters[existingIndex] = updatedFilter
+          // Re-wrap with NOT if it was originally wrapped
+          nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
         } else {
           const updatedFilter: any = { column, operator: 'in', value: values }
           if (tableName) updatedFilter.tableName = tableName
-          nextFilters[existingIndex] = updatedFilter
+          // Re-wrap with NOT if it was originally wrapped
+          nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
         }
 
         return nextFilters
@@ -926,7 +1039,8 @@ const renderNumericFilterMenu = (
 
       const updatedFilter: any = { column, operator: 'eq', value: filterValue }
       if (tableName) updatedFilter.tableName = tableName
-      nextFilters[existingIndex] = updatedFilter
+      // Re-wrap with NOT if it was originally wrapped
+      nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
       return nextFilters
     })
   }
@@ -940,12 +1054,14 @@ const renderNumericFilterMenu = (
   const isValueFiltered = (column: string, value: string | number): boolean => {
     const compareValue = normalizeFilterValue(value)
     return filters.some(f => {
-      if (f.column !== column) return false
-      if (f.operator === 'eq') {
-        return normalizeFilterValue(f.value as string | number) === compareValue
+      // Unwrap NOT if present
+      const actualFilter = (f as any).not || f
+      if (actualFilter.column !== column) return false
+      if (actualFilter.operator === 'eq') {
+        return normalizeFilterValue(actualFilter.value as string | number) === compareValue
       }
-      if (f.operator === 'in' && Array.isArray(f.value)) {
-        return f.value
+      if (actualFilter.operator === 'in' && Array.isArray(actualFilter.value)) {
+        return actualFilter.value
           .map(v => normalizeFilterValue(v as string | number))
           .includes(compareValue)
       }
@@ -1523,14 +1639,20 @@ const renderNumericFilterMenu = (
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
             {filters.map((filter, idx) => {
-              const columnName = getFilterColumn(filter)
-              const tableName = getFilterTableName(filter)
+              // Check if this filter is wrapped with NOT
+              const isNot = !!(filter as any).not
+              const actualFilter = isNot ? (filter as any).not : filter
+
+              const columnName = getFilterColumn(actualFilter)
+              const tableName = getFilterTableName(actualFilter)
               const tableColor = tableName ? getTableColor(tableName) : '#9E9E9E'
               const table = dataset?.tables.find(t => t.name === tableName)
 
-              let displayValue = String(filter.value)
+              let displayValue = String(actualFilter.value)
               let logicType = '' // For tooltip
-              let removeHandler = () => {
+
+              // Remove handler - uses actualFilter's column/table regardless of NOT wrapper
+              const removeHandler = () => {
                 if (tableName && columnName) {
                   clearColumnFilter(tableName, columnName)
                 } else {
@@ -1538,34 +1660,49 @@ const renderNumericFilterMenu = (
                 }
               }
 
-              if (filter.operator === 'between' && Array.isArray(filter.value)) {
-                displayValue = `[${typeof filter.value[0] === 'number' ? filter.value[0].toFixed(2) : filter.value[0]}, ${typeof filter.value[1] === 'number' ? filter.value[1].toFixed(2) : filter.value[1]}]`
+              // Toggle NOT wrapper
+              const toggleNot = () => {
+                setFilters(prev => {
+                  const updated = [...prev]
+                  if (isNot) {
+                    // Remove NOT wrapper
+                    updated[idx] = actualFilter
+                  } else {
+                    // Add NOT wrapper
+                    updated[idx] = { not: actualFilter } as any
+                  }
+                  return updated
+                })
+              }
+
+              if (actualFilter.operator === 'between' && Array.isArray(actualFilter.value)) {
+                displayValue = `[${typeof actualFilter.value[0] === 'number' ? actualFilter.value[0].toFixed(2) : actualFilter.value[0]}, ${typeof actualFilter.value[1] === 'number' ? actualFilter.value[1].toFixed(2) : actualFilter.value[1]}]`
                 logicType = 'Range'
-              } else if (filter.operator === 'in' && Array.isArray(filter.value)) {
-                const displayVals = filter.value.map(v => {
+              } else if (actualFilter.operator === 'in' && Array.isArray(actualFilter.value)) {
+                const displayVals = actualFilter.value.map(v => {
                   if (v === '') return '(Empty)'
                   if (v === ' ') return '(Space)'
                   return v
                 })
                 // Show OR for multi-value selections
-                if (filter.value.length > 1) {
+                if (actualFilter.value.length > 1) {
                   displayValue = displayVals.slice(0, 3).join(' OR ')
-                  if (filter.value.length > 3) {
-                    displayValue += ` OR ${filter.value.length - 3} more...`
+                  if (actualFilter.value.length > 3) {
+                    displayValue += ` OR ${actualFilter.value.length - 3} more...`
                   }
                 } else {
                   displayValue = displayVals[0] || ''
                 }
-                logicType = filter.value.length > 1 ? `OR (${filter.value.length} values)` : 'Single value'
-              } else if (filter.operator === 'eq') {
-                if (filter.value === '') displayValue = '(Empty)'
-                else if (filter.value === ' ') displayValue = '(Space)'
-                else displayValue = String(filter.value)
+                logicType = actualFilter.value.length > 1 ? `OR (${actualFilter.value.length} values)` : 'Single value'
+              } else if (actualFilter.operator === 'eq') {
+                if (actualFilter.value === '') displayValue = '(Empty)'
+                else if (actualFilter.value === ' ') displayValue = '(Space)'
+                else displayValue = String(actualFilter.value)
                 logicType = 'Equals'
-              } else if (filter.or && Array.isArray(filter.or)) {
-                const ranges = filter.or
+              } else if (actualFilter.or && Array.isArray(actualFilter.or)) {
+                const ranges = actualFilter.or
                   .map(rangeFilter => rangeFilter as Filter)
-                  .filter(rangeFilter => rangeFilter.column === filter.column && rangeFilter.operator === 'between' && Array.isArray(rangeFilter.value))
+                  .filter(rangeFilter => rangeFilter.column === actualFilter.column && rangeFilter.operator === 'between' && Array.isArray(rangeFilter.value))
                   .map(rangeFilter => {
                     const [start, end] = rangeFilter.value
                     const startLabel = typeof start === 'number' ? formatRangeValue(start) : String(start)
@@ -1577,8 +1714,9 @@ const renderNumericFilterMenu = (
                 logicType = `OR (${ranges.length} ranges)`
               }
               const columnLabel = columnName ?? '(Column)'
+              const notPrefix = isNot ? 'NOT: ' : ''
               const tooltipText = tableName
-                ? `${table?.displayName || tableName}.${columnLabel}\n${logicType}\nValue: ${displayValue}`
+                ? `${table?.displayName || tableName}.${columnLabel}\n${notPrefix}${logicType}\nValue: ${displayValue}`
                 : columnLabel
 
               const showAndSeparator = idx > 0
@@ -1598,20 +1736,52 @@ const renderNumericFilterMenu = (
                   )}
                   <div
                     style={{
-                      background: tableColor,
+                      background: isNot ? `linear-gradient(135deg, ${tableColor}DD, ${tableColor}BB)` : tableColor,
                       padding: '0.25rem 0.75rem',
                       borderRadius: '4px',
                       fontSize: '0.875rem',
                       display: 'flex',
                       alignItems: 'center',
                       gap: '0.5rem',
-                      border: `2px solid ${tableColor}`,
+                      border: isNot ? `2px dashed ${tableColor}` : `2px solid ${tableColor}`,
                       color: 'white',
-                      fontWeight: 500
+                      fontWeight: 500,
+                      opacity: isNot ? 0.9 : 1
                     }}
                     title={tooltipText}
                   >
-                    <span><strong>{columnLabel}:</strong> {displayValue}</span>
+                    {isNot && (
+                      <span style={{
+                        background: 'rgba(0,0,0,0.3)',
+                        padding: '0.1rem 0.35rem',
+                        borderRadius: '3px',
+                        fontSize: '0.7rem',
+                        fontWeight: 700,
+                        marginRight: '0.1rem'
+                      }}>
+                        NOT
+                      </span>
+                    )}
+                    <span style={{ textDecoration: isNot ? 'line-through' : 'none' }}>
+                      <strong>{columnLabel}:</strong> {displayValue}
+                    </span>
+                    <button
+                      onClick={toggleNot}
+                      style={{
+                        background: isNot ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)',
+                        border: 'none',
+                        color: 'white',
+                        cursor: 'pointer',
+                        padding: '0 0.3rem',
+                        fontSize: '0.75rem',
+                        lineHeight: '1',
+                        borderRadius: '3px',
+                        fontWeight: 'bold'
+                      }}
+                      title={isNot ? 'Remove NOT' : 'Add NOT'}
+                    >
+                      ¬
+                    </button>
                     <button
                       onClick={removeHandler}
                       style={{
