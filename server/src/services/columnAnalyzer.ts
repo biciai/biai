@@ -186,9 +186,10 @@ function detectDisplayType(
     }
   }
 
-  // Text columns (high cardinality)
+  // High cardinality categorical (was: text)
+  // Keep as categorical instead of text so they remain visible
   if (stats.unique_count > 100) {
-    return 'text'
+    return 'categorical'
   }
 
   // Default to categorical
@@ -225,15 +226,19 @@ function suggestChartType(
 
   // Categorical
   if (displayType === 'categorical') {
-    // Pie chart for few categories
+    // Pie chart for few categories (2-8)
     if (stats.unique_count >= 2 && stats.unique_count <= 8) {
       return 'pie'
     }
-    // Bar chart for more categories
+    // Bar chart for medium categories (9-50), but will default to table in UI
     if (stats.unique_count > 8 && stats.unique_count <= 50) {
       return 'bar'
     }
-    // Too many categories
+    // Bar chart for high cardinality too (will default to table in UI)
+    // Changed from 'none' to 'bar' so UI can toggle between chart and table
+    if (stats.unique_count > 50) {
+      return 'bar'
+    }
     return 'none'
   }
 
@@ -290,10 +295,8 @@ function shouldHideColumn(
     return true
   }
 
-  // Hide text columns
-  if (displayType === 'text') {
-    return true
-  }
+  // Don't hide text columns anymore - they'll be shown as tables
+  // (Removed text column hiding)
 
   // Hide if mostly null (>90%)
   const nullPercent = (stats.null_count / stats.total_count) * 100
