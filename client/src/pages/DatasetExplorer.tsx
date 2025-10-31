@@ -143,6 +143,10 @@ function DatasetExplorer() {
   const [presetNameInput, setPresetNameInput] = useState('')
   const [editingPresetId, setEditingPresetId] = useState<string | null>(null)
 
+  // View preferences: track whether each column should show chart or table
+  // Key format: "tableName.columnName", Value: "chart" | "table"
+  const [viewPreferences, setViewPreferences] = useState<Record<string, 'chart' | 'table'>>({})
+
   // Track if filters have been initialized from URL to prevent overwriting
   const filtersInitialized = useRef(false)
   const isUpdatingURL = useRef(false)
@@ -276,6 +280,45 @@ function DatasetExplorer() {
     // Reset input so same file can be imported again
     event.target.value = ''
   }
+
+  // Helper functions for view preferences
+  const getViewPreference = (tableName: string, columnName: string, categoryCount: number): 'chart' | 'table' => {
+    const key = `${tableName}.${columnName}`
+    // Check if user has set a preference
+    if (viewPreferences[key]) {
+      return viewPreferences[key]
+    }
+    // Default: table for >8 categories, chart for ≤8
+    return categoryCount > 8 ? 'table' : 'chart'
+  }
+
+  const toggleViewPreference = (tableName: string, columnName: string) => {
+    const key = `${tableName}.${columnName}`
+    setViewPreferences(prev => {
+      const current = prev[key]
+      const newValue = current === 'table' ? 'chart' : 'table'
+      const updated = { ...prev, [key]: newValue }
+      // Save to localStorage
+      try {
+        localStorage.setItem(`viewPrefs_${identifier}`, JSON.stringify(updated))
+      } catch (error) {
+        console.error('Failed to save view preferences:', error)
+      }
+      return updated
+    })
+  }
+
+  // Load view preferences from localStorage on mount
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(`viewPrefs_${identifier}`)
+      if (stored) {
+        setViewPreferences(JSON.parse(stored))
+      }
+    } catch (error) {
+      console.error('Failed to load view preferences:', error)
+    }
+  }, [identifier])
 
   // Restore filters from URL hash on mount
   useEffect(() => {
@@ -1312,6 +1355,219 @@ const renderNumericFilterMenu = (
     return colors[Math.abs(hash) % colors.length]
   }
 
+  const renderTableView = (title: string, tableName: string, field: string, tableColor?: string) => {
+    const aggregation = getAggregation(tableName, field)
+    if (!aggregation?.categories || aggregation.categories.length === 0) return null
+
+    const metadata = getColumnMetadata(tableName, field)
+    const tooltipText = [
+      metadata?.display_name || title,
+      `ID: ${field}`,
+      metadata?.description || ''
+    ].filter(Boolean).join('\n')
+
+    const baselineAggregation = getBaselineAggregation(tableName, field)
+    const categoriesForMenu = baselineAggregation?.categories || aggregation.categories
+    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
+    const columnActive = hasColumnFilter(field)
+
+    // Prepare table data
+    const totalRows = aggregation.categories.reduce((sum, cat) => sum + cat.count, 0)
+
+    const tableData = aggregation.categories.map(cat => ({
+      category: cat.display_value ?? (cat.value === '' ? '(Empty)' : String(cat.value)),
+      rawValue: cat.value,
+      count: cat.count,
+      percentage: totalRows > 0 ? (cat.count / totalRows) * 100 : 0
+    }))
+
+    // Sort by count descending by default
+    const sortedData = [...tableData].sort((a, b) => b.count - a.count)
+
+    const showLimit = 100
+    const visibleData = sortedData.slice(0, showLimit)
+    const hasMore = sortedData.length > showLimit
+
+    return (
+      <div style={{
+        position: 'relative',
+        background: 'white',
+        padding: '0.5rem',
+        borderRadius: '8px',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+        width: '358px',
+        height: '358px',
+        boxSizing: 'border-box',
+        flexShrink: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        border: tableColor ? `2px solid ${tableColor}20` : undefined
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.5rem' }}>
+          <h4
+            style={{
+              margin: 0,
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              cursor: 'help',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              flexGrow: 1
+            }}
+            title={tooltipText}
+          >
+            {metadata?.display_name || title}
+          </h4>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleViewPreference(tableName, field)
+            }}
+            style={{
+              border: 'none',
+              background: '#f0f0f0',
+              color: '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title="Switch to chart view"
+          >
+            ◐
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              setActiveFilterMenu(prev =>
+                prev && prev.tableName === tableName && prev.columnName === field
+                  ? null
+                  : { tableName, columnName: field }
+              )
+            }}
+            style={{
+              border: 'none',
+              background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
+              color: menuOpen || columnActive ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.75rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title="Filter values"
+          >
+            ⚲
+          </button>
+        </div>
+
+        {/* Table */}
+        <div style={{
+          overflowY: 'auto',
+          flex: 1,
+          minHeight: 0,
+          fontSize: '0.75rem'
+        }}>
+          <table style={{
+            width: '100%',
+            borderCollapse: 'collapse',
+            fontSize: '0.75rem'
+          }}>
+            <thead style={{
+              position: 'sticky',
+              top: 0,
+              background: '#f5f5f5',
+              borderBottom: '2px solid #ddd'
+            }}>
+              <tr>
+                <th style={{
+                  padding: '0.4rem 0.5rem',
+                  textAlign: 'left',
+                  fontWeight: 600
+                }}>
+                  Category
+                </th>
+                <th style={{
+                  padding: '0.4rem 0.5rem',
+                  textAlign: 'right',
+                  fontWeight: 600
+                }}>
+                  Count ↓
+                </th>
+                <th style={{
+                  padding: '0.4rem 0.5rem',
+                  textAlign: 'right',
+                  fontWeight: 600
+                }}>
+                  %
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleData.map((row, idx) => {
+                const rawValue = normalizeFilterValue(row.rawValue)
+                const isFiltered = isValueFiltered(field, rawValue)
+                return (
+                  <tr
+                    key={idx}
+                    onClick={() => toggleFilter(field, rawValue, tableName)}
+                    style={{
+                      cursor: 'pointer',
+                      background: isFiltered ? '#E3F2FD' : idx % 2 === 0 ? 'white' : '#fafafa',
+                      borderLeft: isFiltered ? '3px solid #1976D2' : '3px solid transparent'
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isFiltered) e.currentTarget.style.background = '#f0f0f0'
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isFiltered) e.currentTarget.style.background = idx % 2 === 0 ? 'white' : '#fafafa'
+                    }}
+                  >
+                    <td style={{
+                      padding: '0.4rem 0.5rem',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      maxWidth: '180px'
+                    }}>
+                      {row.category}
+                    </td>
+                    <td style={{ padding: '0.4rem 0.5rem', textAlign: 'right' }}>
+                      {row.count.toLocaleString()}
+                    </td>
+                    <td style={{ padding: '0.4rem 0.5rem', textAlign: 'right' }}>
+                      {row.percentage.toFixed(1)}%
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          {hasMore && (
+            <div style={{ textAlign: 'center', padding: '0.5rem', fontSize: '0.7rem', color: '#666' }}>
+              Showing first {showLimit} of {sortedData.length} categories
+            </div>
+          )}
+        </div>
+        {renderFilterMenu(tableName, field, categoriesForMenu)}
+      </div>
+    )
+  }
+
   const renderPieChart = (title: string, tableName: string, field: string, tableColor?: string) => {
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
@@ -1369,6 +1625,31 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleViewPreference(tableName, field)
+            }}
+            style={{
+              border: 'none',
+              background: '#f0f0f0',
+              color: '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title="Switch to table view"
+          >
+            ⊞
+          </button>
           <button
             type="button"
             onClick={(event) => {
@@ -1505,6 +1786,31 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleViewPreference(tableName, field)
+            }}
+            style={{
+              border: 'none',
+              background: '#f0f0f0',
+              color: '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title="Switch to table view"
+          >
+            ⊞
+          </button>
           <button
             type="button"
             onClick={(event) => {
@@ -2635,33 +2941,45 @@ const renderNumericFilterMenu = (
 
             {/* Table Charts */}
             <div style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '0.5rem'
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, 175px)',
+              gridAutoRows: '175px',
+              gap: '0.5rem',
+              gridAutoFlow: 'dense'
             }}>
               {visibleAggregations.map(agg => {
                 const displayTitle = getDisplayTitle(table.name, agg.column_name)
 
                 if (agg.display_type === 'categorical' && agg.categories) {
-                  // Pie chart for low cardinality
-                  if (agg.categories.length <= 8) {
+                  const categoryCount = agg.categories.length
+                  const viewPref = getViewPreference(table.name, agg.column_name, categoryCount)
+
+                  // Show table if user chose table or if >8 categories by default
+                  if (viewPref === 'table') {
+                    return (
+                      <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2', gridRow: 'span 2' }}>
+                        {renderTableView(displayTitle, table.name, agg.column_name, tableColor)}
+                      </div>
+                    )
+                  }
+
+                  // Otherwise show chart (pie for ≤8, bar for >8)
+                  if (categoryCount <= 8) {
                     return (
                       <div key={`${table.name}_${agg.column_name}`}>
                         {renderPieChart(displayTitle, table.name, agg.column_name, tableColor)}
                       </div>
                     )
-                  }
-                  // Bar chart for higher cardinality
-                  else {
+                  } else {
                     return (
-                      <div key={`${table.name}_${agg.column_name}`}>
+                      <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2' }}>
                         {renderBarChart(displayTitle, table.name, agg.column_name, tableColor)}
                       </div>
                     )
                   }
                 } else if (agg.display_type === 'numeric' && agg.histogram) {
                   return (
-                    <div key={`${table.name}_${agg.column_name}`}>
+                    <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2' }}>
                       {renderHistogram(displayTitle, table.name, agg.column_name, tableColor)}
                     </div>
                   )
