@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import React, { useState, useEffect, useRef } from 'react'
+import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import Plot from 'react-plotly.js'
 import type { PlotMouseEvent, PlotSelectionEvent } from 'plotly.js'
 import SafeHtml from '../components/SafeHtml'
@@ -105,6 +105,7 @@ interface Dataset {
 function DatasetExplorer() {
   const { id, database } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
 
   // Determine if we're in database mode or dataset mode
   const isDatabaseMode = !!database
@@ -127,6 +128,112 @@ function DatasetExplorer() {
   const [customRangeInputs, setCustomRangeInputs] = useState<Record<string, { min: string; max: string }>>({})
   const [rangeSelections, setRangeSelections] = useState<Record<string, Array<{ start: number; end: number }>>>({})
 
+  // Track if filters have been initialized from URL to prevent overwriting
+  const filtersInitialized = useRef(false)
+  const isUpdatingURL = useRef(false)
+
+  // Helper functions for URL persistence
+  const serializeFilters = (filters: Filter[]): string => {
+    try {
+      const json = JSON.stringify(filters)
+      return btoa(encodeURIComponent(json))
+    } catch (error) {
+      console.error('Failed to serialize filters:', error)
+      return ''
+    }
+  }
+
+  const deserializeFilters = (encoded: string): Filter[] | null => {
+    try {
+      const json = decodeURIComponent(atob(encoded))
+      return JSON.parse(json)
+    } catch (error) {
+      console.error('Failed to deserialize filters:', error)
+      return null
+    }
+  }
+
+  const saveFiltersToLocalStorage = (filters: Filter[]) => {
+    try {
+      localStorage.setItem(`filters_${identifier}`, JSON.stringify(filters))
+    } catch (error) {
+      console.error('Failed to save filters to localStorage:', error)
+    }
+  }
+
+  const loadFiltersFromLocalStorage = (): Filter[] | null => {
+    try {
+      const stored = localStorage.getItem(`filters_${identifier}`)
+      return stored ? JSON.parse(stored) : null
+    } catch (error) {
+      console.error('Failed to load filters from localStorage:', error)
+      return null
+    }
+  }
+
+  // Restore filters from URL hash on mount
+  useEffect(() => {
+    if (filtersInitialized.current) return
+
+    // Parse hash fragment for filters
+    const hash = location.hash
+    const match = hash.match(/filters=([^&]+)/)
+    const encodedFilters = match ? match[1] : null
+
+    if (encodedFilters) {
+      const restored = deserializeFilters(encodedFilters)
+      if (restored && restored.length > 0) {
+        setFilters(restored)
+        filtersInitialized.current = true
+        return
+      }
+    }
+
+    // Fallback to localStorage if hash doesn't have filters
+    const localFilters = loadFiltersFromLocalStorage()
+    if (localFilters && localFilters.length > 0) {
+      setFilters(localFilters)
+    }
+
+    filtersInitialized.current = true
+  }, [location.hash, identifier])
+
+  // Update URL hash when filters change
+  useEffect(() => {
+    if (!filtersInitialized.current || isUpdatingURL.current) return
+
+    let newHash = ''
+
+    if (filters.length === 0) {
+      // Remove filters from hash
+      newHash = ''
+      // Clear localStorage
+      try {
+        localStorage.removeItem(`filters_${identifier}`)
+      } catch (error) {
+        console.error('Failed to clear localStorage:', error)
+      }
+    } else {
+      // Encode and add filters to hash
+      const encoded = serializeFilters(filters)
+      newHash = `#filters=${encoded}`
+
+      // Save to localStorage as backup
+      saveFiltersToLocalStorage(filters)
+    }
+
+    const newURL = `${location.pathname}${location.search}${newHash}`
+
+    // Only update if hash actually changed
+    if (newHash !== location.hash) {
+      isUpdatingURL.current = true
+      navigate(newURL, { replace: true })
+      // Reset flag after navigation
+      setTimeout(() => {
+        isUpdatingURL.current = false
+      }, 0)
+    }
+  }, [filters, location.pathname, location.search, location.hash, navigate, identifier])
 
   useEffect(() => {
     loadDataset()
