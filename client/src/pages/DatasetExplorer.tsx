@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import Plot from 'react-plotly.js'
 import type { PlotMouseEvent, PlotSelectionEvent } from 'plotly.js'
@@ -1521,7 +1521,7 @@ const renderNumericFilterMenu = (
               Clear All
             </button>
           </div>
-          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
             {filters.map((filter, idx) => {
               const columnName = getFilterColumn(filter)
               const tableName = getFilterTableName(filter)
@@ -1529,6 +1529,7 @@ const renderNumericFilterMenu = (
               const table = dataset?.tables.find(t => t.name === tableName)
 
               let displayValue = String(filter.value)
+              let logicType = '' // For tooltip
               let removeHandler = () => {
                 if (tableName && columnName) {
                   clearColumnFilter(tableName, columnName)
@@ -1539,17 +1540,28 @@ const renderNumericFilterMenu = (
 
               if (filter.operator === 'between' && Array.isArray(filter.value)) {
                 displayValue = `[${typeof filter.value[0] === 'number' ? filter.value[0].toFixed(2) : filter.value[0]}, ${typeof filter.value[1] === 'number' ? filter.value[1].toFixed(2) : filter.value[1]}]`
+                logicType = 'Range'
               } else if (filter.operator === 'in' && Array.isArray(filter.value)) {
                 const displayVals = filter.value.map(v => {
                   if (v === '') return '(Empty)'
                   if (v === ' ') return '(Space)'
                   return v
                 })
-                displayValue = `{${displayVals.slice(0, 3).join(', ')}${filter.value.length > 3 ? '...' : ''}}`
+                // Show OR for multi-value selections
+                if (filter.value.length > 1) {
+                  displayValue = displayVals.slice(0, 3).join(' OR ')
+                  if (filter.value.length > 3) {
+                    displayValue += ` OR ${filter.value.length - 3} more...`
+                  }
+                } else {
+                  displayValue = displayVals[0] || ''
+                }
+                logicType = filter.value.length > 1 ? `OR (${filter.value.length} values)` : 'Single value'
               } else if (filter.operator === 'eq') {
                 if (filter.value === '') displayValue = '(Empty)'
                 else if (filter.value === ' ') displayValue = '(Space)'
                 else displayValue = String(filter.value)
+                logicType = 'Equals'
               } else if (filter.or && Array.isArray(filter.or)) {
                 const ranges = filter.or
                   .map(rangeFilter => rangeFilter as Filter)
@@ -1558,49 +1570,66 @@ const renderNumericFilterMenu = (
                     const [start, end] = rangeFilter.value
                     const startLabel = typeof start === 'number' ? formatRangeValue(start) : String(start)
                     const endLabel = typeof end === 'number' ? formatRangeValue(end) : String(end)
-                    return `${startLabel} – ${endLabel}`
+                    return `${startLabel}–${endLabel}`
                   })
 
-                displayValue = `(${ranges.join(' ∪ ')})`
+                displayValue = ranges.join(' OR ')
+                logicType = `OR (${ranges.length} ranges)`
               }
               const columnLabel = columnName ?? '(Column)'
-              const tooltipText = tableName ? `${table?.displayName || tableName}.${columnLabel}` : columnLabel
+              const tooltipText = tableName
+                ? `${table?.displayName || tableName}.${columnLabel}\n${logicType}\nValue: ${displayValue}`
+                : columnLabel
+
+              const showAndSeparator = idx > 0
 
               return (
-                <div
-                  key={idx}
-                  style={{
-                    background: tableColor,
-                    padding: '0.25rem 0.75rem',
-                    borderRadius: '4px',
-                    fontSize: '0.875rem',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    border: `2px solid ${tableColor}`,
-                    color: 'white',
-                    fontWeight: 500
-                  }}
-                  title={tooltipText}
-                >
-                  <span><strong>{columnLabel}:</strong> {displayValue}</span>
-                  <button
-                    onClick={removeHandler}
-                    style={{
-                      background: 'rgba(255,255,255,0.3)',
-                      border: 'none',
-                      color: 'white',
-                      cursor: 'pointer',
+                <React.Fragment key={idx}>
+                  {showAndSeparator && (
+                    <div style={{
+                      color: '#666',
+                      fontSize: '0.75rem',
+                      fontWeight: 600,
                       padding: '0 0.25rem',
-                      fontSize: '1rem',
-                      lineHeight: '1',
-                      borderRadius: '3px',
-                      fontWeight: 'bold'
+                      userSelect: 'none'
+                    }}>
+                      AND
+                    </div>
+                  )}
+                  <div
+                    style={{
+                      background: tableColor,
+                      padding: '0.25rem 0.75rem',
+                      borderRadius: '4px',
+                      fontSize: '0.875rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      border: `2px solid ${tableColor}`,
+                      color: 'white',
+                      fontWeight: 500
                     }}
+                    title={tooltipText}
                   >
-                    ×
-                  </button>
-                </div>
+                    <span><strong>{columnLabel}:</strong> {displayValue}</span>
+                    <button
+                      onClick={removeHandler}
+                      style={{
+                        background: 'rgba(255,255,255,0.3)',
+                        border: 'none',
+                        color: 'white',
+                        cursor: 'pointer',
+                        padding: '0 0.25rem',
+                        fontSize: '1rem',
+                        lineHeight: '1',
+                        borderRadius: '3px',
+                        fontWeight: 'bold'
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                </React.Fragment>
               )
             })}
           </div>
