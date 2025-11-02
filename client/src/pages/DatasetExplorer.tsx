@@ -2105,14 +2105,6 @@ const renderNumericFilterMenu = (
   if (loading) return <p>Loading explorer...</p>
   if (!dataset) return <p>Dataset not found</p>
 
-  // Calculate global total for dataset header
-  const baselineAggsList = Object.values(baselineAggregations).flat()
-  const currentAggsList = Object.values(aggregations).flat()
-
-  const totalRows = baselineAggsList.length > 0
-    ? baselineAggsList.reduce((max, agg) => Math.max(max, agg.total_rows), 0)
-    : currentAggsList.reduce((max, agg) => Math.max(max, agg.total_rows), 0)
-
   return (
     <div>
       {/* Header */}
@@ -2151,9 +2143,6 @@ const renderNumericFilterMenu = (
         )}
 
         <div style={{ display: 'flex', gap: '2rem', marginTop: '1rem', fontSize: '0.875rem' }}>
-          <div>
-            <strong>Total Records:</strong> {totalRows.toLocaleString()}
-          </div>
           <div>
             <strong>Tables:</strong> {dataset.tables.length}
           </div>
