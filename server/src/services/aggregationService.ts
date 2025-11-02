@@ -614,10 +614,11 @@ class AggregationService {
     }
 
     // Get basic stats (null count, unique count)
+    // Use uniq() instead of uniqExact() for memory efficiency on high-cardinality columns
     const basicStatsQuery = `
       SELECT
         countIf(isNull(${columnName})) AS null_count,
-        uniqExact(${columnName}) AS unique_count
+        uniq(${columnName}) AS unique_count
       FROM ${qualifiedTableName}
       WHERE 1=1 ${whereClause}
     `
