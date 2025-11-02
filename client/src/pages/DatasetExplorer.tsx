@@ -147,6 +147,9 @@ function DatasetExplorer() {
   // Key format: "tableName.columnName", Value: "chart" | "table"
   const [viewPreferences, setViewPreferences] = useState<Record<string, 'chart' | 'table'>>({})
 
+  // Tab navigation state: track which table tab is currently active
+  const [activeTab, setActiveTab] = useState<string | null>(null)
+
   // Track if filters have been initialized from URL to prevent overwriting
   const filtersInitialized = useRef(false)
   const isUpdatingURL = useRef(false)
@@ -433,6 +436,11 @@ function DatasetExplorer() {
       setCustomRangeInputs({})
       setRangeSelections({})
       setActiveFilterMenu(null)
+
+      // Initialize active tab to first table
+      if (loadedDataset.tables && loadedDataset.tables.length > 0) {
+        setActiveTab(loadedDataset.tables[0].name)
+      }
 
       // Determine if this dataset uses database API
       const shouldUseDatabaseAPI = isDatabaseMode || loadedDataset.database_type === 'connected'
@@ -1349,10 +1357,13 @@ const renderNumericFilterMenu = (
   }
 
   const getTableColor = (tableName: string): string => {
-    // Generate a consistent color for each table using a simple hash
-    const hash = tableName.split('').reduce((acc, char) => char.charCodeAt(0) + ((acc << 5) - acc), 0)
+    if (!dataset?.tables) return '#9E9E9E'
+
+    // Assign colors based on table index for more consistent, predictable coloring
+    const tableIndex = dataset.tables.findIndex(t => t.name === tableName)
     const colors = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336', '#00BCD4', '#FFC107', '#E91E63']
-    return colors[Math.abs(hash) % colors.length]
+
+    return tableIndex >= 0 ? colors[tableIndex % colors.length] : '#9E9E9E'
   }
 
   const renderTableView = (title: string, tableName: string, field: string, tableColor?: string) => {
@@ -2211,28 +2222,7 @@ const renderNumericFilterMenu = (
           border: '1px solid #E0E0E0'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-              <strong style={{ fontSize: '0.875rem' }}>Active Filters:</strong>
-              {/* Color Legend */}
-              <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.75rem', color: '#666' }}>
-                {Array.from(new Set(filters.map(f => getFilterTableName(f)).filter(Boolean))).map(tableName => {
-                  const table = dataset?.tables.find(t => t.name === tableName)
-                  if (!table) return null
-                  const color = getTableColor(tableName)
-                  return (
-                    <div key={tableName} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                      <div style={{
-                        width: '12px',
-                        height: '12px',
-                        borderRadius: '3px',
-                        background: color
-                      }} />
-                      <span>{table.displayName || table.name}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
+            <strong style={{ fontSize: '0.875rem' }}>Active Filters:</strong>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <button
                 onClick={() => setShowSavePresetDialog(true)}
@@ -2765,8 +2755,68 @@ const renderNumericFilterMenu = (
         </div>
       )}
 
+      {/* Tab Navigation */}
+      <div style={{
+        marginBottom: '1.5rem',
+        background: 'white',
+        padding: '0.5rem',
+        borderRadius: '8px',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+        display: 'flex',
+        gap: '0.5rem',
+        flexWrap: 'wrap'
+      }}>
+        {dataset.tables.map(table => {
+          const tableColor = getTableColor(table.name)
+          const isActive = activeTab === table.name
+
+          return (
+            <button
+              key={table.name}
+              onClick={() => setActiveTab(table.name)}
+              style={{
+                padding: '0.75rem 1.5rem',
+                background: isActive ? tableColor : 'transparent',
+                color: isActive ? 'white' : '#333',
+                border: `2px solid ${isActive ? tableColor : '#E0E0E0'}`,
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '0.875rem',
+                fontWeight: isActive ? 600 : 400,
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}
+              onMouseEnter={(e) => {
+                if (!isActive) {
+                  e.currentTarget.style.borderColor = tableColor
+                  e.currentTarget.style.color = tableColor
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!isActive) {
+                  e.currentTarget.style.borderColor = '#E0E0E0'
+                  e.currentTarget.style.color = '#333'
+                }
+              }}
+            >
+              <div style={{
+                width: '8px',
+                height: '20px',
+                borderRadius: '2px',
+                background: isActive ? 'white' : tableColor
+              }} />
+              {table.displayName || table.name}
+            </button>
+          )
+        })}
+      </div>
+
       {/* Chart Grid - Grouped by Table */}
-      {dataset.tables.map(table => {
+      {dataset.tables
+        .filter(table => table.name === activeTab)
+        .map(table => {
         const tableAggregations = aggregations[table.name]
         if (!tableAggregations) return null
 
