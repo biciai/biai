@@ -82,6 +82,14 @@ interface FilterPreset {
   createdAt: string
 }
 
+interface SavedDashboard {
+  id: string
+  name: string
+  charts: Array<{ tableName: string; columnName: string; addedAt: string }>
+  createdAt: string
+  updatedAt: string
+}
+
 interface TableRelationship {
   foreign_key: string
   referenced_table: string
@@ -147,9 +155,28 @@ function DatasetExplorer() {
   // Key format: "tableName.columnName", Value: "chart" | "table"
   const [viewPreferences, setViewPreferences] = useState<Record<string, 'chart' | 'table'>>({})
 
+  // Tab navigation state: track which table tab is currently active
+  const [activeTab, setActiveTab] = useState<string | null>(null)
+
+  // Dashboard state: track which charts are pinned to dashboard
+  // Structure: { tableName: string, columnName: string, addedAt: string }[]
+  const [dashboardCharts, setDashboardCharts] = useState<Array<{ tableName: string; columnName: string; addedAt: string }>>([])
+
+  // Saved dashboards state
+  const [savedDashboards, setSavedDashboards] = useState<SavedDashboard[]>([])
+  const [activeDashboardId, setActiveDashboardId] = useState<string | null>(null) // null = "Most Recent"
+  const [showSaveDashboardDialog, setShowSaveDashboardDialog] = useState(false)
+  const [showLoadDashboardDialog, setShowLoadDashboardDialog] = useState(false)
+  const [showManageDashboardsDialog, setShowManageDashboardsDialog] = useState(false)
+  const [newDashboardName, setNewDashboardName] = useState('')
+  const [editingDashboardId, setEditingDashboardId] = useState<string | null>(null)
+  const [editingDashboardName, setEditingDashboardName] = useState('')
+
   // Track if filters have been initialized from URL to prevent overwriting
   const filtersInitialized = useRef(false)
   const isUpdatingURL = useRef(false)
+  const dashboardInitialized = useRef(false)
+  const savedDashboardsInitialized = useRef(false)
 
   // Helper functions for URL persistence
   const serializeFilters = (filters: Filter[]): string => {
@@ -308,6 +335,151 @@ function DatasetExplorer() {
     })
   }
 
+  // Dashboard chart management
+  const isOnDashboard = (tableName: string, columnName: string): boolean => {
+    return dashboardCharts.some(chart => chart.tableName === tableName && chart.columnName === columnName)
+  }
+
+  const toggleDashboard = (tableName: string, columnName: string) => {
+    if (isOnDashboard(tableName, columnName)) {
+      // Remove from dashboard
+      setDashboardCharts(prev => prev.filter(chart => !(chart.tableName === tableName && chart.columnName === columnName)))
+    } else {
+      // Add to dashboard
+      setDashboardCharts(prev => [...prev, { tableName, columnName, addedAt: new Date().toISOString() }])
+    }
+  }
+
+  const addAllChartsToTable = (tableName: string) => {
+    const tableAggregations = aggregations[tableName]
+    const tableMetadata = columnMetadata[tableName]
+    if (!tableAggregations || !Array.isArray(tableAggregations)) return
+    if (!tableMetadata || !Array.isArray(tableMetadata)) return
+
+    // Get all visible aggregations for this table
+    const visibleAggregations = tableAggregations.filter(agg => {
+      const metadata = tableMetadata.find(m => m.column_name === agg.column_name)
+      return !metadata?.is_hidden
+    })
+
+    // Add all charts that aren't already on dashboard
+    const newCharts = visibleAggregations
+      .filter(agg => !isOnDashboard(tableName, agg.column_name))
+      .map(agg => ({
+        tableName,
+        columnName: agg.column_name,
+        addedAt: new Date().toISOString()
+      }))
+
+    if (newCharts.length > 0) {
+      setDashboardCharts(prev => [...prev, ...newCharts])
+    }
+  }
+
+  const getTableChartCount = (tableName: string): number => {
+    const tableAggregations = aggregations[tableName]
+    const tableMetadata = columnMetadata[tableName]
+    if (!tableAggregations || !Array.isArray(tableAggregations)) return 0
+    if (!tableMetadata || !Array.isArray(tableMetadata)) return 0
+
+    // Count visible aggregations for this table
+    return tableAggregations.filter(agg => {
+      const metadata = tableMetadata.find(m => m.column_name === agg.column_name)
+      return !metadata?.is_hidden
+    }).length
+  }
+
+  // Saved dashboard management
+  const saveDashboard = async (name: string) => {
+    const newDashboard: SavedDashboard = {
+      id: `dashboard_${Date.now()}`,
+      name,
+      charts: [...dashboardCharts],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+
+    try {
+      // Save to database
+      await api.post(`/datasets/${identifier}/dashboards`, {
+        dashboard_id: newDashboard.id,
+        dashboard_name: newDashboard.name,
+        charts: newDashboard.charts,
+        is_most_recent: false
+      })
+
+      // Update local state
+      setSavedDashboards(prev => [...prev, newDashboard])
+      setShowSaveDashboardDialog(false)
+      setNewDashboardName('')
+    } catch (error) {
+      console.error('Failed to save dashboard:', error)
+      alert('Failed to save dashboard. Please try again.')
+    }
+  }
+
+  const loadDashboard = (dashboardId: string) => {
+    const dashboard = savedDashboards.find(d => d.id === dashboardId)
+    if (dashboard) {
+      setDashboardCharts(dashboard.charts)
+      setActiveDashboardId(dashboardId)
+    }
+  }
+
+  const loadMostRecent = () => {
+    // Most Recent is the current dashboardCharts state (already loaded from database)
+    setActiveDashboardId(null)
+  }
+
+  const deleteDashboard = async (dashboardId: string) => {
+    try {
+      // Delete from database
+      await api.delete(`/datasets/${identifier}/dashboards/${dashboardId}`)
+
+      // Update local state
+      setSavedDashboards(prev => prev.filter(d => d.id !== dashboardId))
+      if (activeDashboardId === dashboardId) {
+        setActiveDashboardId(null)
+      }
+    } catch (error) {
+      console.error('Failed to delete dashboard:', error)
+      alert('Failed to delete dashboard. Please try again.')
+    }
+  }
+
+  const renameDashboard = async (dashboardId: string, newName: string) => {
+    const dashboard = savedDashboards.find(d => d.id === dashboardId)
+    if (!dashboard) return
+
+    try {
+      // Update in database
+      await api.post(`/datasets/${identifier}/dashboards`, {
+        dashboard_id: dashboardId,
+        dashboard_name: newName,
+        charts: dashboard.charts,
+        is_most_recent: false
+      })
+
+      // Update local state
+      setSavedDashboards(prev => prev.map(d =>
+        d.id === dashboardId
+          ? { ...d, name: newName, updatedAt: new Date().toISOString() }
+          : d
+      ))
+      setEditingDashboardId(null)
+      setEditingDashboardName('')
+    } catch (error) {
+      console.error('Failed to rename dashboard:', error)
+      alert('Failed to rename dashboard. Please try again.')
+    }
+  }
+
+  const getCurrentDashboardName = (): string => {
+    if (!activeDashboardId) return 'Most Recent'
+    const dashboard = savedDashboards.find(d => d.id === activeDashboardId)
+    return dashboard?.name || 'Most Recent'
+  }
+
   // Load view preferences from localStorage on mount
   useEffect(() => {
     try {
@@ -319,6 +491,173 @@ function DatasetExplorer() {
       console.error('Failed to load view preferences:', error)
     }
   }, [identifier])
+
+  // Load "Most Recent" dashboard from database on mount (only once)
+  useEffect(() => {
+    if (!identifier || dashboardInitialized.current) return
+
+    const loadMostRecentDashboard = async () => {
+      try {
+        // Try to load from API first
+        const response = await api.get(`/datasets/${identifier}/dashboards`)
+        const dashboards = response.data.dashboards || []
+        const mostRecent = dashboards.find((d: any) => d.is_most_recent)
+
+        if (mostRecent) {
+          setDashboardCharts(mostRecent.charts)
+        } else {
+          // Migration: check localStorage for legacy data
+          const key = `dashboard_${identifier}`
+          const stored = localStorage.getItem(key)
+          if (stored) {
+            const charts = JSON.parse(stored)
+            setDashboardCharts(charts)
+            // Migrate to database
+            if (charts.length > 0) {
+              await api.post(`/datasets/${identifier}/dashboards`, {
+                dashboard_id: 'most_recent',
+                dashboard_name: 'Most Recent',
+                charts,
+                is_most_recent: true
+              })
+            }
+            // Clear localStorage after migration
+            localStorage.removeItem(key)
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load most recent dashboard:', error)
+        // Fallback to localStorage if API fails
+        try {
+          const key = `dashboard_${identifier}`
+          const stored = localStorage.getItem(key)
+          if (stored) {
+            setDashboardCharts(JSON.parse(stored))
+          }
+        } catch (e) {
+          console.error('Failed to load from localStorage:', e)
+        }
+      } finally {
+        setTimeout(() => {
+          dashboardInitialized.current = true
+        }, 50)
+      }
+    }
+
+    loadMostRecentDashboard()
+  }, [identifier])
+
+  // Save "Most Recent" dashboard to database when changed (only after initial load)
+  useEffect(() => {
+    if (!dashboardInitialized.current || !identifier) return
+
+    const saveMostRecentDashboard = async () => {
+      try {
+        await api.post(`/datasets/${identifier}/dashboards`, {
+          dashboard_id: 'most_recent',
+          dashboard_name: 'Most Recent',
+          charts: dashboardCharts,
+          is_most_recent: true
+        })
+      } catch (error) {
+        console.error('Failed to save most recent dashboard:', error)
+        // Fallback to localStorage if API fails
+        try {
+          const key = `dashboard_${identifier}`
+          localStorage.setItem(key, JSON.stringify(dashboardCharts))
+        } catch (e) {
+          console.error('Failed to save to localStorage:', e)
+        }
+      }
+    }
+
+    saveMostRecentDashboard()
+  }, [dashboardCharts, identifier])
+
+  // Load saved dashboards from database on mount (only once)
+  useEffect(() => {
+    if (!identifier || savedDashboardsInitialized.current) return
+
+    const loadSavedDashboards = async () => {
+      try {
+        // Try to load from API first
+        const response = await api.get(`/datasets/${identifier}/dashboards`)
+        const dashboards = response.data.dashboards || []
+
+        // Filter out "Most Recent" (is_most_recent = true)
+        const savedOnly = dashboards
+          .filter((d: any) => !d.is_most_recent)
+          .map((d: any) => ({
+            id: d.dashboard_id,
+            name: d.dashboard_name,
+            charts: d.charts,
+            createdAt: d.created_at,
+            updatedAt: d.updated_at
+          }))
+
+        setSavedDashboards(savedOnly)
+
+        // Migration: check localStorage for legacy data
+        const key = `savedDashboards_${identifier}`
+        const stored = localStorage.getItem(key)
+        if (stored) {
+          const localDashboards = JSON.parse(stored)
+
+          // Migrate each dashboard to database
+          for (const dashboard of localDashboards) {
+            try {
+              await api.post(`/datasets/${identifier}/dashboards`, {
+                dashboard_id: dashboard.id,
+                dashboard_name: dashboard.name,
+                charts: dashboard.charts,
+                is_most_recent: false
+              })
+            } catch (err) {
+              console.error(`Failed to migrate dashboard ${dashboard.id}:`, err)
+            }
+          }
+
+          // Clear localStorage after migration
+          localStorage.removeItem(key)
+
+          // Reload dashboards after migration
+          const updatedResponse = await api.get(`/datasets/${identifier}/dashboards`)
+          const updatedDashboards = updatedResponse.data.dashboards || []
+          const updatedSavedOnly = updatedDashboards
+            .filter((d: any) => !d.is_most_recent)
+            .map((d: any) => ({
+              id: d.dashboard_id,
+              name: d.dashboard_name,
+              charts: d.charts,
+              createdAt: d.created_at,
+              updatedAt: d.updated_at
+            }))
+          setSavedDashboards(updatedSavedOnly)
+        }
+      } catch (error) {
+        console.error('Failed to load saved dashboards from database:', error)
+        // Fallback to localStorage if API fails
+        try {
+          const key = `savedDashboards_${identifier}`
+          const stored = localStorage.getItem(key)
+          if (stored) {
+            setSavedDashboards(JSON.parse(stored))
+          }
+        } catch (e) {
+          console.error('Failed to load from localStorage:', e)
+        }
+      } finally {
+        setTimeout(() => {
+          savedDashboardsInitialized.current = true
+        }, 50)
+      }
+    }
+
+    loadSavedDashboards()
+  }, [identifier])
+
+  // Note: Saved dashboards are now persisted individually through save/update/delete functions
+  // No need for a bulk save effect since each operation updates the database directly
 
   // Restore filters from URL hash on mount
   useEffect(() => {
@@ -433,6 +772,9 @@ function DatasetExplorer() {
       setCustomRangeInputs({})
       setRangeSelections({})
       setActiveFilterMenu(null)
+
+      // Initialize active tab to dashboard
+      setActiveTab('dashboard')
 
       // Determine if this dataset uses database API
       const shouldUseDatabaseAPI = isDatabaseMode || loadedDataset.database_type === 'connected'
@@ -1349,10 +1691,13 @@ const renderNumericFilterMenu = (
   }
 
   const getTableColor = (tableName: string): string => {
-    // Generate a consistent color for each table using a simple hash
-    const hash = tableName.split('').reduce((acc, char) => char.charCodeAt(0) + ((acc << 5) - acc), 0)
+    if (!dataset?.tables) return '#9E9E9E'
+
+    // Assign colors based on table index for more consistent, predictable coloring
+    const tableIndex = dataset.tables.findIndex(t => t.name === tableName)
     const colors = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0', '#F44336', '#00BCD4', '#FFC107', '#E91E63']
-    return colors[Math.abs(hash) % colors.length]
+
+    return tableIndex >= 0 ? colors[tableIndex % colors.length] : '#9E9E9E'
   }
 
   const renderTableView = (title: string, tableName: string, field: string, tableColor?: string) => {
@@ -1404,6 +1749,15 @@ const renderNumericFilterMenu = (
         border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.5rem' }}>
+          {tableColor && (
+            <div style={{
+              width: '3px',
+              height: '14px',
+              borderRadius: '1.5px',
+              background: tableColor,
+              flexShrink: 0
+            }} />
+          )}
           <h4
             style={{
               margin: 0,
@@ -1443,6 +1797,31 @@ const renderNumericFilterMenu = (
             title="Switch to chart view"
           >
             ◐
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleDashboard(tableName, field)
+            }}
+            style={{
+              border: 'none',
+              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+              color: isOnDashboard(tableName, field) ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
+          >
+            {isOnDashboard(tableName, field) ? '✓' : '+'}
           </button>
           <button
             type="button"
@@ -1610,6 +1989,15 @@ const renderNumericFilterMenu = (
         border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
+          {tableColor && (
+            <div style={{
+              width: '3px',
+              height: '14px',
+              borderRadius: '1.5px',
+              background: tableColor,
+              flexShrink: 0
+            }} />
+          )}
           <h4
             style={{
               margin: 0,
@@ -1649,6 +2037,31 @@ const renderNumericFilterMenu = (
             title="Switch to table view"
           >
             ⊞
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleDashboard(tableName, field)
+            }}
+            style={{
+              border: 'none',
+              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+              color: isOnDashboard(tableName, field) ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
+          >
+            {isOnDashboard(tableName, field) ? '✓' : '+'}
           </button>
           <button
             type="button"
@@ -1771,6 +2184,15 @@ const renderNumericFilterMenu = (
         border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
+          {tableColor && (
+            <div style={{
+              width: '3px',
+              height: '14px',
+              borderRadius: '1.5px',
+              background: tableColor,
+              flexShrink: 0
+            }} />
+          )}
           <h4
             style={{
               margin: 0,
@@ -1810,6 +2232,31 @@ const renderNumericFilterMenu = (
             title="Switch to table view"
           >
             ⊞
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleDashboard(tableName, field)
+            }}
+            style={{
+              border: 'none',
+              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+              color: isOnDashboard(tableName, field) ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
+          >
+            {isOnDashboard(tableName, field) ? '✓' : '+'}
           </button>
           <button
             type="button"
@@ -1988,6 +2435,15 @@ const renderNumericFilterMenu = (
         border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
+          {tableColor && (
+            <div style={{
+              width: '3px',
+              height: '14px',
+              borderRadius: '1.5px',
+              background: tableColor,
+              flexShrink: 0
+            }} />
+          )}
           <h4
             style={{
               margin: 0,
@@ -2003,6 +2459,31 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleDashboard(tableName, field)
+            }}
+            style={{
+              border: 'none',
+              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+              color: isOnDashboard(tableName, field) ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
+          >
+            {isOnDashboard(tableName, field) ? '✓' : '+'}
+          </button>
           <button
             type="button"
             onClick={(event) => {
@@ -2211,28 +2692,7 @@ const renderNumericFilterMenu = (
           border: '1px solid #E0E0E0'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-              <strong style={{ fontSize: '0.875rem' }}>Active Filters:</strong>
-              {/* Color Legend */}
-              <div style={{ display: 'flex', gap: '0.75rem', fontSize: '0.75rem', color: '#666' }}>
-                {Array.from(new Set(filters.map(f => getFilterTableName(f)).filter(Boolean))).map(tableName => {
-                  const table = dataset?.tables.find(t => t.name === tableName)
-                  if (!table) return null
-                  const color = getTableColor(tableName)
-                  return (
-                    <div key={tableName} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                      <div style={{
-                        width: '12px',
-                        height: '12px',
-                        borderRadius: '3px',
-                        background: color
-                      }} />
-                      <span>{table.displayName || table.name}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
+            <strong style={{ fontSize: '0.875rem' }}>Active Filters:</strong>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <button
                 onClick={() => setShowSavePresetDialog(true)}
@@ -2765,8 +3225,612 @@ const renderNumericFilterMenu = (
         </div>
       )}
 
+      {/* Save Dashboard Dialog */}
+      {showSaveDashboardDialog && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={() => setShowSaveDashboardDialog(false)}
+        >
+          <div
+            style={{
+              background: 'white',
+              padding: '1.5rem',
+              borderRadius: '8px',
+              minWidth: '400px',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ marginTop: 0 }}>Save Dashboard</h3>
+            <input
+              type="text"
+              value={newDashboardName}
+              onChange={(e) => setNewDashboardName(e.target.value)}
+              placeholder="Enter dashboard name..."
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && newDashboardName.trim()) saveDashboard(newDashboardName.trim())
+                if (e.key === 'Escape') setShowSaveDashboardDialog(false)
+              }}
+              autoFocus
+              style={{
+                width: '100%',
+                padding: '0.5rem',
+                marginBottom: '1rem',
+                border: '1px solid #ddd',
+                borderRadius: '4px',
+                fontSize: '0.875rem'
+              }}
+            />
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => {
+                  setShowSaveDashboardDialog(false)
+                  setNewDashboardName('')
+                }}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#f0f0f0',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => saveDashboard(newDashboardName.trim())}
+                disabled={!newDashboardName.trim()}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: newDashboardName.trim() ? '#4CAF50' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: newDashboardName.trim() ? 'pointer' : 'not-allowed',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Load Dashboard Dialog */}
+      {showLoadDashboardDialog && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={() => setShowLoadDashboardDialog(false)}
+        >
+          <div
+            style={{
+              background: 'white',
+              padding: '1.5rem',
+              borderRadius: '8px',
+              minWidth: '400px',
+              maxWidth: '500px',
+              maxHeight: '600px',
+              overflowY: 'auto',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ marginTop: 0 }}>Load Dashboard</h3>
+            {savedDashboards.length === 0 ? (
+              <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>
+                No saved dashboards yet.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {savedDashboards.map(dashboard => (
+                  <div
+                    key={dashboard.id}
+                    onClick={() => {
+                      loadDashboard(dashboard.id)
+                      setShowLoadDashboardDialog(false)
+                    }}
+                    style={{
+                      padding: '0.75rem',
+                      border: activeDashboardId === dashboard.id ? '2px solid #2196F3' : '1px solid #ddd',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      transition: 'background 0.2s, border-color 0.2s',
+                      background: activeDashboardId === dashboard.id ? '#E3F2FD' : 'white'
+                    }}
+                    onMouseEnter={(e) => {
+                      if (activeDashboardId !== dashboard.id) {
+                        e.currentTarget.style.background = '#f5f5f5'
+                        e.currentTarget.style.borderColor = '#2196F3'
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (activeDashboardId !== dashboard.id) {
+                        e.currentTarget.style.background = 'white'
+                        e.currentTarget.style.borderColor = '#ddd'
+                      }
+                    }}
+                  >
+                    <div style={{ fontWeight: 500, fontSize: '0.875rem', marginBottom: '0.25rem' }}>
+                      {dashboard.name}
+                      {activeDashboardId === dashboard.id && (
+                        <span style={{ marginLeft: '0.5rem', color: '#2196F3', fontSize: '0.75rem' }}>(Most Recently Loaded)</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: '#666' }}>
+                      {dashboard.charts.length} chart{dashboard.charts.length !== 1 ? 's' : ''} · Created {new Date(dashboard.createdAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowLoadDashboardDialog(false)}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#f0f0f0',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manage Dashboards Dialog */}
+      {showManageDashboardsDialog && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={() => setShowManageDashboardsDialog(false)}
+        >
+          <div
+            style={{
+              background: 'white',
+              padding: '1.5rem',
+              borderRadius: '8px',
+              minWidth: '500px',
+              maxHeight: '600px',
+              overflowY: 'auto',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 1rem 0' }}>Manage Saved Dashboards</h3>
+            {savedDashboards.length === 0 ? (
+              <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>
+                No dashboards saved yet.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {savedDashboards.map((dashboard) => (
+                  <div
+                    key={dashboard.id}
+                    style={{
+                      border: '1px solid #ddd',
+                      borderRadius: '6px',
+                      padding: '0.75rem'
+                    }}
+                  >
+                    {editingDashboardId === dashboard.id ? (
+                      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                        <input
+                          type="text"
+                          defaultValue={dashboard.name}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') renameDashboard(dashboard.id, e.currentTarget.value)
+                            if (e.key === 'Escape') setEditingDashboardId(null)
+                          }}
+                          autoFocus
+                          style={{
+                            flex: 1,
+                            padding: '0.25rem 0.5rem',
+                            border: '1px solid #2196F3',
+                            borderRadius: '4px',
+                            fontSize: '0.875rem'
+                          }}
+                        />
+                        <button
+                          onClick={(e) => {
+                            const input = e.currentTarget.previousElementSibling as HTMLInputElement
+                            renameDashboard(dashboard.id, input?.value || '')
+                          }}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#4CAF50',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '0.75rem'
+                          }}
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setEditingDashboardId(null)}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#f0f0f0',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '0.75rem'
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <strong style={{ fontSize: '0.875rem' }}>{dashboard.name}</strong>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button
+                            onClick={() => {
+                              setEditingDashboardId(dashboard.id)
+                              setEditingDashboardName(dashboard.name)
+                            }}
+                            style={{
+                              padding: '0.25rem 0.5rem',
+                              background: '#2196F3',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '0.75rem'
+                            }}
+                          >
+                            Rename
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`Delete dashboard "${dashboard.name}"?`)) {
+                                deleteDashboard(dashboard.id)
+                              }
+                            }}
+                            style={{
+                              padding: '0.25rem 0.5rem',
+                              background: '#f44336',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '0.75rem'
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ fontSize: '0.75rem', color: '#666' }}>
+                      {dashboard.charts.length} chart{dashboard.charts.length !== 1 ? 's' : ''} · Created {new Date(dashboard.createdAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowManageDashboardsDialog(false)}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#f0f0f0',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tab Navigation */}
+      <div style={{
+        marginBottom: '1.5rem',
+        background: 'white',
+        padding: '0.5rem',
+        borderRadius: '8px',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+        display: 'flex',
+        gap: '0.5rem',
+        flexWrap: 'wrap'
+      }}>
+        {/* Dashboard Tab */}
+        <button
+          onClick={() => setActiveTab('dashboard')}
+          style={{
+            padding: '0.75rem 1.5rem',
+            background: activeTab === 'dashboard' ? '#607D8B' : 'transparent',
+            color: activeTab === 'dashboard' ? 'white' : '#333',
+            border: `2px solid ${activeTab === 'dashboard' ? '#607D8B' : '#E0E0E0'}`,
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontSize: '0.875rem',
+            fontWeight: activeTab === 'dashboard' ? 600 : 400,
+            transition: 'all 0.2s ease',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}
+          onMouseEnter={(e) => {
+            if (activeTab !== 'dashboard') {
+              e.currentTarget.style.borderColor = '#607D8B'
+              e.currentTarget.style.color = '#607D8B'
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (activeTab !== 'dashboard') {
+              e.currentTarget.style.borderColor = '#E0E0E0'
+              e.currentTarget.style.color = '#333'
+            }
+          }}
+        >
+          <div style={{
+            width: '8px',
+            height: '20px',
+            borderRadius: '2px',
+            background: activeTab === 'dashboard' ? 'white' : '#607D8B'
+          }} />
+          Dashboard {dashboardCharts.length > 0 && `(${dashboardCharts.length})`}
+        </button>
+
+        {/* Table Tabs */}
+        {dataset.tables.map(table => {
+          const tableColor = getTableColor(table.name)
+          const isActive = activeTab === table.name
+          const chartCount = getTableChartCount(table.name)
+
+          return (
+            <button
+              key={table.name}
+              onClick={() => setActiveTab(table.name)}
+              style={{
+                padding: '0.75rem 1.5rem',
+                background: isActive ? tableColor : 'transparent',
+                color: isActive ? 'white' : '#333',
+                border: `2px solid ${isActive ? tableColor : '#E0E0E0'}`,
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '0.875rem',
+                fontWeight: isActive ? 600 : 400,
+                transition: 'all 0.2s ease',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem'
+              }}
+              onMouseEnter={(e) => {
+                if (!isActive) {
+                  e.currentTarget.style.borderColor = tableColor
+                  e.currentTarget.style.color = tableColor
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!isActive) {
+                  e.currentTarget.style.borderColor = '#E0E0E0'
+                  e.currentTarget.style.color = '#333'
+                }
+              }}
+            >
+              <div style={{
+                width: '8px',
+                height: '20px',
+                borderRadius: '2px',
+                background: isActive ? 'white' : tableColor
+              }} />
+              {table.displayName || table.name} {chartCount > 0 && `(${chartCount})`}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Dashboard View */}
+      {activeTab === 'dashboard' && (
+        <div>
+          {/* Dashboard Controls - always visible */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '1rem',
+            gap: '1rem'
+          }}>
+            <h3 style={{ margin: 0 }}>
+              {activeDashboardId
+                ? `Dashboard: ${savedDashboards.find(d => d.id === activeDashboardId)?.name || 'Unknown'}`
+                : `Dashboard (${dashboardCharts.length} charts)`}
+            </h3>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button
+                onClick={() => setShowLoadDashboardDialog(true)}
+                disabled={savedDashboards.length === 0}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: savedDashboards.length > 0 ? '#4CAF50' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: savedDashboards.length > 0 ? 'pointer' : 'not-allowed',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Load Dashboard
+              </button>
+              <button
+                onClick={() => setShowSaveDashboardDialog(true)}
+                disabled={dashboardCharts.length === 0}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: dashboardCharts.length > 0 ? '#2196F3' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: dashboardCharts.length > 0 ? 'pointer' : 'not-allowed',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Save Dashboard
+              </button>
+              <button
+                onClick={() => setShowManageDashboardsDialog(true)}
+                disabled={savedDashboards.length === 0}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: savedDashboards.length > 0 ? '#FF9800' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: savedDashboards.length > 0 ? 'pointer' : 'not-allowed',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Manage
+              </button>
+              <button
+                onClick={() => {
+                  if (window.confirm('Clear all charts from dashboard?')) {
+                    setDashboardCharts([])
+                    setActiveDashboardId(null)
+                  }
+                }}
+                disabled={dashboardCharts.length === 0}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: dashboardCharts.length > 0 ? '#f44336' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: dashboardCharts.length > 0 ? 'pointer' : 'not-allowed',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+
+          {/* Dashboard Content */}
+          {dashboardCharts.length === 0 ? (
+            <div style={{
+              background: 'white',
+              padding: '3rem',
+              borderRadius: '8px',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+              textAlign: 'center',
+              color: '#666'
+            }}>
+              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📊</div>
+              <h3 style={{ margin: '0 0 0.5rem 0', color: '#333' }}>Your Dashboard is Empty</h3>
+              <p style={{ margin: 0 }}>
+                Click on the <strong>+ Add to Dashboard</strong> button on any chart in the table tabs to pin it here.
+                {savedDashboards.length > 0 && <><br />Or use the <strong>Load Dashboard</strong> button above to load a saved dashboard.</>}
+              </p>
+            </div>
+          ) : (
+            <div>
+
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, 175px)',
+                gridAutoRows: '175px',
+                gap: '0.5rem',
+                gridAutoFlow: 'dense'
+              }}>
+                {dashboardCharts.map(({ tableName, columnName }) => {
+                  const aggregation = getAggregation(tableName, columnName)
+                  if (!aggregation) return null
+
+                  const tableColor = getTableColor(tableName)
+                  const displayTitle = getDisplayTitle(tableName, columnName)
+                  const table = dataset.tables.find(t => t.name === tableName)
+
+                  if (aggregation.display_type === 'categorical' && aggregation.categories) {
+                    const categoryCount = aggregation.categories.length
+                    const viewPref = getViewPreference(tableName, columnName, categoryCount)
+
+                    if (viewPref === 'table') {
+                      return (
+                        <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2', gridRow: 'span 2' }}>
+                          {renderTableView(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                        </div>
+                      )
+                    }
+
+                    if (categoryCount <= 8) {
+                      return (
+                        <div key={`${tableName}_${columnName}`}>
+                          {renderPieChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                        </div>
+                      )
+                    } else {
+                      return (
+                        <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2' }}>
+                          {renderBarChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                        </div>
+                      )
+                    }
+                  } else if (aggregation.display_type === 'numeric' && aggregation.histogram) {
+                    return (
+                      <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2' }}>
+                        {renderHistogram(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                      </div>
+                    )
+                  }
+                  return null
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Chart Grid - Grouped by Table */}
-      {dataset.tables.map(table => {
+      {dataset.tables
+        .filter(table => table.name === activeTab)
+        .map(table => {
         const tableAggregations = aggregations[table.name]
         if (!tableAggregations) return null
 
@@ -2915,6 +3979,32 @@ const renderNumericFilterMenu = (
                     +{propagatedFilterCount} linked{maxPathLength > 0 ? ` (${maxPathLength}-hop)` : ''}
                   </div>
                 )}
+                {/* Add All Charts button */}
+                <button
+                  onClick={() => {
+                    addAllChartsToTable(table.name)
+                  }}
+                  style={{
+                    padding: '0.3rem 0.6rem',
+                    background: '#4CAF50',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '0.7rem',
+                    fontWeight: 600,
+                    transition: 'background 0.2s'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = '#45a049'
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = '#4CAF50'
+                  }}
+                  title="Add all charts from this table to dashboard"
+                >
+                  + Add All
+                </button>
                 <div style={{
                   background: tableColor,
                   color: 'white',
