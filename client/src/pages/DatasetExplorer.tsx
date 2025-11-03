@@ -82,6 +82,14 @@ interface FilterPreset {
   createdAt: string
 }
 
+interface SavedDashboard {
+  id: string
+  name: string
+  charts: Array<{ tableName: string; columnName: string; addedAt: string }>
+  createdAt: string
+  updatedAt: string
+}
+
 interface TableRelationship {
   foreign_key: string
   referenced_table: string
@@ -154,10 +162,21 @@ function DatasetExplorer() {
   // Structure: { tableName: string, columnName: string, addedAt: string }[]
   const [dashboardCharts, setDashboardCharts] = useState<Array<{ tableName: string; columnName: string; addedAt: string }>>([])
 
+  // Saved dashboards state
+  const [savedDashboards, setSavedDashboards] = useState<SavedDashboard[]>([])
+  const [activeDashboardId, setActiveDashboardId] = useState<string | null>(null) // null = "Most Recent"
+  const [showSaveDashboardDialog, setShowSaveDashboardDialog] = useState(false)
+  const [showLoadDashboardDialog, setShowLoadDashboardDialog] = useState(false)
+  const [showManageDashboardsDialog, setShowManageDashboardsDialog] = useState(false)
+  const [newDashboardName, setNewDashboardName] = useState('')
+  const [editingDashboardId, setEditingDashboardId] = useState<string | null>(null)
+  const [editingDashboardName, setEditingDashboardName] = useState('')
+
   // Track if filters have been initialized from URL to prevent overwriting
   const filtersInitialized = useRef(false)
   const isUpdatingURL = useRef(false)
   const dashboardInitialized = useRef(false)
+  const savedDashboardsInitialized = useRef(false)
 
   // Helper functions for URL persistence
   const serializeFilters = (filters: Filter[]): string => {
@@ -370,6 +389,56 @@ function DatasetExplorer() {
     }).length
   }
 
+  // Saved dashboard management
+  const saveDashboard = (name: string) => {
+    const newDashboard: SavedDashboard = {
+      id: `dashboard_${Date.now()}`,
+      name,
+      charts: [...dashboardCharts],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }
+    setSavedDashboards(prev => [...prev, newDashboard])
+    setShowSaveDashboardDialog(false)
+    setNewDashboardName('')
+  }
+
+  const loadDashboard = (dashboardId: string) => {
+    const dashboard = savedDashboards.find(d => d.id === dashboardId)
+    if (dashboard) {
+      setDashboardCharts(dashboard.charts)
+      setActiveDashboardId(dashboardId)
+    }
+  }
+
+  const loadMostRecent = () => {
+    // Most Recent is the current dashboardCharts state (already loaded from localStorage)
+    setActiveDashboardId(null)
+  }
+
+  const deleteDashboard = (dashboardId: string) => {
+    setSavedDashboards(prev => prev.filter(d => d.id !== dashboardId))
+    if (activeDashboardId === dashboardId) {
+      setActiveDashboardId(null)
+    }
+  }
+
+  const renameDashboard = (dashboardId: string, newName: string) => {
+    setSavedDashboards(prev => prev.map(d =>
+      d.id === dashboardId
+        ? { ...d, name: newName, updatedAt: new Date().toISOString() }
+        : d
+    ))
+    setEditingDashboardId(null)
+    setEditingDashboardName('')
+  }
+
+  const getCurrentDashboardName = (): string => {
+    if (!activeDashboardId) return 'Most Recent'
+    const dashboard = savedDashboards.find(d => d.id === activeDashboardId)
+    return dashboard?.name || 'Most Recent'
+  }
+
   // Load view preferences from localStorage on mount
   useEffect(() => {
     try {
@@ -413,6 +482,37 @@ function DatasetExplorer() {
       console.error('Failed to save dashboard:', error)
     }
   }, [dashboardCharts])
+
+  // Load saved dashboards from localStorage on mount (only once)
+  useEffect(() => {
+    if (!identifier || savedDashboardsInitialized.current) return
+
+    try {
+      const key = `savedDashboards_${identifier}`
+      const stored = localStorage.getItem(key)
+      if (stored) {
+        setSavedDashboards(JSON.parse(stored))
+      }
+      setTimeout(() => {
+        savedDashboardsInitialized.current = true
+      }, 50)
+    } catch (error) {
+      console.error('Failed to load saved dashboards:', error)
+      savedDashboardsInitialized.current = true
+    }
+  }, [identifier])
+
+  // Save saved dashboards to localStorage when changed
+  useEffect(() => {
+    if (!savedDashboardsInitialized.current || !identifier) return
+
+    try {
+      const key = `savedDashboards_${identifier}`
+      localStorage.setItem(key, JSON.stringify(savedDashboards))
+    } catch (error) {
+      console.error('Failed to save dashboards:', error)
+    }
+  }, [savedDashboards])
 
   // Restore filters from URL hash on mount
   useEffect(() => {
@@ -2980,6 +3080,349 @@ const renderNumericFilterMenu = (
         </div>
       )}
 
+      {/* Save Dashboard Dialog */}
+      {showSaveDashboardDialog && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={() => setShowSaveDashboardDialog(false)}
+        >
+          <div
+            style={{
+              background: 'white',
+              padding: '1.5rem',
+              borderRadius: '8px',
+              minWidth: '400px',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ marginTop: 0 }}>Save Dashboard</h3>
+            <input
+              type="text"
+              value={newDashboardName}
+              onChange={(e) => setNewDashboardName(e.target.value)}
+              placeholder="Enter dashboard name..."
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && newDashboardName.trim()) saveDashboard(newDashboardName.trim())
+                if (e.key === 'Escape') setShowSaveDashboardDialog(false)
+              }}
+              autoFocus
+              style={{
+                width: '100%',
+                padding: '0.5rem',
+                marginBottom: '1rem',
+                border: '1px solid #ddd',
+                borderRadius: '4px',
+                fontSize: '0.875rem'
+              }}
+            />
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => {
+                  setShowSaveDashboardDialog(false)
+                  setNewDashboardName('')
+                }}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#f0f0f0',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => saveDashboard(newDashboardName.trim())}
+                disabled={!newDashboardName.trim()}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: newDashboardName.trim() ? '#4CAF50' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: newDashboardName.trim() ? 'pointer' : 'not-allowed',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Load Dashboard Dialog */}
+      {showLoadDashboardDialog && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={() => setShowLoadDashboardDialog(false)}
+        >
+          <div
+            style={{
+              background: 'white',
+              padding: '1.5rem',
+              borderRadius: '8px',
+              minWidth: '400px',
+              maxWidth: '500px',
+              maxHeight: '600px',
+              overflowY: 'auto',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ marginTop: 0 }}>Load Dashboard</h3>
+            {savedDashboards.length === 0 ? (
+              <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>
+                No saved dashboards yet.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {savedDashboards.map(dashboard => (
+                  <div
+                    key={dashboard.id}
+                    onClick={() => {
+                      loadDashboard(dashboard.id)
+                      setShowLoadDashboardDialog(false)
+                    }}
+                    style={{
+                      padding: '0.75rem',
+                      border: activeDashboardId === dashboard.id ? '2px solid #2196F3' : '1px solid #ddd',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      transition: 'background 0.2s, border-color 0.2s',
+                      background: activeDashboardId === dashboard.id ? '#E3F2FD' : 'white'
+                    }}
+                    onMouseEnter={(e) => {
+                      if (activeDashboardId !== dashboard.id) {
+                        e.currentTarget.style.background = '#f5f5f5'
+                        e.currentTarget.style.borderColor = '#2196F3'
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (activeDashboardId !== dashboard.id) {
+                        e.currentTarget.style.background = 'white'
+                        e.currentTarget.style.borderColor = '#ddd'
+                      }
+                    }}
+                  >
+                    <div style={{ fontWeight: 500, fontSize: '0.875rem', marginBottom: '0.25rem' }}>
+                      {dashboard.name}
+                      {activeDashboardId === dashboard.id && (
+                        <span style={{ marginLeft: '0.5rem', color: '#2196F3', fontSize: '0.75rem' }}>(Most Recently Loaded)</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: '#666' }}>
+                      {dashboard.charts.length} chart{dashboard.charts.length !== 1 ? 's' : ''} · Created {new Date(dashboard.createdAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowLoadDashboardDialog(false)}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#f0f0f0',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manage Dashboards Dialog */}
+      {showManageDashboardsDialog && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={() => setShowManageDashboardsDialog(false)}
+        >
+          <div
+            style={{
+              background: 'white',
+              padding: '1.5rem',
+              borderRadius: '8px',
+              minWidth: '500px',
+              maxHeight: '600px',
+              overflowY: 'auto',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: '0 0 1rem 0' }}>Manage Saved Dashboards</h3>
+            {savedDashboards.length === 0 ? (
+              <p style={{ color: '#999', textAlign: 'center', padding: '2rem' }}>
+                No dashboards saved yet.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                {savedDashboards.map((dashboard) => (
+                  <div
+                    key={dashboard.id}
+                    style={{
+                      border: '1px solid #ddd',
+                      borderRadius: '6px',
+                      padding: '0.75rem'
+                    }}
+                  >
+                    {editingDashboardId === dashboard.id ? (
+                      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                        <input
+                          type="text"
+                          defaultValue={dashboard.name}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') renameDashboard(dashboard.id, e.currentTarget.value)
+                            if (e.key === 'Escape') setEditingDashboardId(null)
+                          }}
+                          autoFocus
+                          style={{
+                            flex: 1,
+                            padding: '0.25rem 0.5rem',
+                            border: '1px solid #2196F3',
+                            borderRadius: '4px',
+                            fontSize: '0.875rem'
+                          }}
+                        />
+                        <button
+                          onClick={(e) => {
+                            const input = e.currentTarget.previousElementSibling as HTMLInputElement
+                            renameDashboard(dashboard.id, input?.value || '')
+                          }}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#4CAF50',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '0.75rem'
+                          }}
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setEditingDashboardId(null)}
+                          style={{
+                            padding: '0.25rem 0.5rem',
+                            background: '#f0f0f0',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '0.75rem'
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <strong style={{ fontSize: '0.875rem' }}>{dashboard.name}</strong>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button
+                            onClick={() => {
+                              setEditingDashboardId(dashboard.id)
+                              setEditingDashboardName(dashboard.name)
+                            }}
+                            style={{
+                              padding: '0.25rem 0.5rem',
+                              background: '#2196F3',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '0.75rem'
+                            }}
+                          >
+                            Rename
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`Delete dashboard "${dashboard.name}"?`)) {
+                                deleteDashboard(dashboard.id)
+                              }
+                            }}
+                            style={{
+                              padding: '0.25rem 0.5rem',
+                              background: '#f44336',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              fontSize: '0.75rem'
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <div style={{ fontSize: '0.75rem', color: '#666' }}>
+                      {dashboard.charts.length} chart{dashboard.charts.length !== 1 ? 's' : ''} · Created {new Date(dashboard.createdAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowManageDashboardsDialog(false)}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: '#f0f0f0',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tab Navigation */}
       <div style={{
         marginBottom: '1.5rem',
@@ -3082,6 +3525,89 @@ const renderNumericFilterMenu = (
       {/* Dashboard View */}
       {activeTab === 'dashboard' && (
         <div>
+          {/* Dashboard Controls - always visible */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '1rem',
+            gap: '1rem'
+          }}>
+            <h3 style={{ margin: 0 }}>
+              {activeDashboardId
+                ? `Dashboard: ${savedDashboards.find(d => d.id === activeDashboardId)?.name || 'Unknown'}`
+                : `Dashboard (${dashboardCharts.length} charts)`}
+            </h3>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button
+                onClick={() => setShowLoadDashboardDialog(true)}
+                disabled={savedDashboards.length === 0}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: savedDashboards.length > 0 ? '#4CAF50' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: savedDashboards.length > 0 ? 'pointer' : 'not-allowed',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Load Dashboard
+              </button>
+              <button
+                onClick={() => setShowSaveDashboardDialog(true)}
+                disabled={dashboardCharts.length === 0}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: dashboardCharts.length > 0 ? '#2196F3' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: dashboardCharts.length > 0 ? 'pointer' : 'not-allowed',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Save Dashboard
+              </button>
+              <button
+                onClick={() => setShowManageDashboardsDialog(true)}
+                disabled={savedDashboards.length === 0}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: savedDashboards.length > 0 ? '#FF9800' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: savedDashboards.length > 0 ? 'pointer' : 'not-allowed',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Manage
+              </button>
+              <button
+                onClick={() => {
+                  if (window.confirm('Clear all charts from dashboard?')) {
+                    setDashboardCharts([])
+                    setActiveDashboardId(null)
+                  }
+                }}
+                disabled={dashboardCharts.length === 0}
+                style={{
+                  padding: '0.5rem 1rem',
+                  background: dashboardCharts.length > 0 ? '#f44336' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: dashboardCharts.length > 0 ? 'pointer' : 'not-allowed',
+                  fontSize: '0.875rem'
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+
+          {/* Dashboard Content */}
           {dashboardCharts.length === 0 ? (
             <div style={{
               background: 'white',
@@ -3095,36 +3621,11 @@ const renderNumericFilterMenu = (
               <h3 style={{ margin: '0 0 0.5rem 0', color: '#333' }}>Your Dashboard is Empty</h3>
               <p style={{ margin: 0 }}>
                 Click on the <strong>+ Add to Dashboard</strong> button on any chart in the table tabs to pin it here.
+                {savedDashboards.length > 0 && <><br />Or use the <strong>Load Dashboard</strong> button above to load a saved dashboard.</>}
               </p>
             </div>
           ) : (
             <div>
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                marginBottom: '1rem'
-              }}>
-                <h3 style={{ margin: 0 }}>Dashboard ({dashboardCharts.length} charts)</h3>
-                <button
-                  onClick={() => {
-                    if (window.confirm('Clear all charts from dashboard?')) {
-                      setDashboardCharts([])
-                    }
-                  }}
-                  style={{
-                    padding: '0.5rem 1rem',
-                    background: '#f44336',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontSize: '0.875rem'
-                  }}
-                >
-                  Clear Dashboard
-                </button>
-              </div>
 
               <div style={{
                 display: 'grid',
