@@ -8,6 +8,8 @@ import api from '../../services/api'
 vi.mock('../../services/api', () => ({
   default: {
     get: vi.fn(),
+    post: vi.fn(),
+    delete: vi.fn(),
   },
 }))
 
@@ -159,6 +161,26 @@ describe('DatasetExplorer', () => {
       }
       if (url.includes('/columns')) {
         return Promise.resolve({ data: { columns: mockColumnMetadata } })
+      }
+      if (url.includes('/dashboards')) {
+        // Return empty dashboards array for tests
+        return Promise.resolve({ data: { dashboards: [] } })
+      }
+      return Promise.reject(new Error(`Unknown endpoint: ${url}`))
+    })
+
+    // Mock dashboard API POST endpoint (for saving dashboards)
+    vi.mocked(api.post as any).mockImplementation((url: string) => {
+      if (url.includes('/dashboards')) {
+        return Promise.resolve({ data: { success: true } })
+      }
+      return Promise.reject(new Error(`Unknown endpoint: ${url}`))
+    })
+
+    // Mock dashboard API DELETE endpoint
+    vi.mocked(api.delete as any).mockImplementation((url: string) => {
+      if (url.includes('/dashboards')) {
+        return Promise.resolve({ data: { success: true } })
       }
       return Promise.reject(new Error(`Unknown endpoint: ${url}`))
     })

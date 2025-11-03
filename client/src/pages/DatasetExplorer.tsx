@@ -390,7 +390,7 @@ function DatasetExplorer() {
   }
 
   // Saved dashboard management
-  const saveDashboard = (name: string) => {
+  const saveDashboard = async (name: string) => {
     const newDashboard: SavedDashboard = {
       id: `dashboard_${Date.now()}`,
       name,
@@ -398,9 +398,24 @@ function DatasetExplorer() {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     }
-    setSavedDashboards(prev => [...prev, newDashboard])
-    setShowSaveDashboardDialog(false)
-    setNewDashboardName('')
+
+    try {
+      // Save to database
+      await api.post(`/datasets/${identifier}/dashboards`, {
+        dashboard_id: newDashboard.id,
+        dashboard_name: newDashboard.name,
+        charts: newDashboard.charts,
+        is_most_recent: false
+      })
+
+      // Update local state
+      setSavedDashboards(prev => [...prev, newDashboard])
+      setShowSaveDashboardDialog(false)
+      setNewDashboardName('')
+    } catch (error) {
+      console.error('Failed to save dashboard:', error)
+      alert('Failed to save dashboard. Please try again.')
+    }
   }
 
   const loadDashboard = (dashboardId: string) => {
@@ -412,25 +427,51 @@ function DatasetExplorer() {
   }
 
   const loadMostRecent = () => {
-    // Most Recent is the current dashboardCharts state (already loaded from localStorage)
+    // Most Recent is the current dashboardCharts state (already loaded from database)
     setActiveDashboardId(null)
   }
 
-  const deleteDashboard = (dashboardId: string) => {
-    setSavedDashboards(prev => prev.filter(d => d.id !== dashboardId))
-    if (activeDashboardId === dashboardId) {
-      setActiveDashboardId(null)
+  const deleteDashboard = async (dashboardId: string) => {
+    try {
+      // Delete from database
+      await api.delete(`/datasets/${identifier}/dashboards/${dashboardId}`)
+
+      // Update local state
+      setSavedDashboards(prev => prev.filter(d => d.id !== dashboardId))
+      if (activeDashboardId === dashboardId) {
+        setActiveDashboardId(null)
+      }
+    } catch (error) {
+      console.error('Failed to delete dashboard:', error)
+      alert('Failed to delete dashboard. Please try again.')
     }
   }
 
-  const renameDashboard = (dashboardId: string, newName: string) => {
-    setSavedDashboards(prev => prev.map(d =>
-      d.id === dashboardId
-        ? { ...d, name: newName, updatedAt: new Date().toISOString() }
-        : d
-    ))
-    setEditingDashboardId(null)
-    setEditingDashboardName('')
+  const renameDashboard = async (dashboardId: string, newName: string) => {
+    const dashboard = savedDashboards.find(d => d.id === dashboardId)
+    if (!dashboard) return
+
+    try {
+      // Update in database
+      await api.post(`/datasets/${identifier}/dashboards`, {
+        dashboard_id: dashboardId,
+        dashboard_name: newName,
+        charts: dashboard.charts,
+        is_most_recent: false
+      })
+
+      // Update local state
+      setSavedDashboards(prev => prev.map(d =>
+        d.id === dashboardId
+          ? { ...d, name: newName, updatedAt: new Date().toISOString() }
+          : d
+      ))
+      setEditingDashboardId(null)
+      setEditingDashboardName('')
+    } catch (error) {
+      console.error('Failed to rename dashboard:', error)
+      alert('Failed to rename dashboard. Please try again.')
+    }
   }
 
   const getCurrentDashboardName = (): string => {
@@ -451,68 +492,172 @@ function DatasetExplorer() {
     }
   }, [identifier])
 
-  // Load dashboard charts from localStorage on mount (only once)
+  // Load "Most Recent" dashboard from database on mount (only once)
   useEffect(() => {
     if (!identifier || dashboardInitialized.current) return
 
-    try {
-      const key = `dashboard_${identifier}`
-      const stored = localStorage.getItem(key)
-      if (stored) {
-        setDashboardCharts(JSON.parse(stored))
+    const loadMostRecentDashboard = async () => {
+      try {
+        // Try to load from API first
+        const response = await api.get(`/datasets/${identifier}/dashboards`)
+        const dashboards = response.data.dashboards || []
+        const mostRecent = dashboards.find((d: any) => d.is_most_recent)
+
+        if (mostRecent) {
+          setDashboardCharts(mostRecent.charts)
+        } else {
+          // Migration: check localStorage for legacy data
+          const key = `dashboard_${identifier}`
+          const stored = localStorage.getItem(key)
+          if (stored) {
+            const charts = JSON.parse(stored)
+            setDashboardCharts(charts)
+            // Migrate to database
+            if (charts.length > 0) {
+              await api.post(`/datasets/${identifier}/dashboards`, {
+                dashboard_id: 'most_recent',
+                dashboard_name: 'Most Recent',
+                charts,
+                is_most_recent: true
+              })
+            }
+            // Clear localStorage after migration
+            localStorage.removeItem(key)
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load most recent dashboard:', error)
+        // Fallback to localStorage if API fails
+        try {
+          const key = `dashboard_${identifier}`
+          const stored = localStorage.getItem(key)
+          if (stored) {
+            setDashboardCharts(JSON.parse(stored))
+          }
+        } catch (e) {
+          console.error('Failed to load from localStorage:', e)
+        }
+      } finally {
+        setTimeout(() => {
+          dashboardInitialized.current = true
+        }, 50)
       }
-      // Set initialized flag after a brief delay to ensure state update completes
-      setTimeout(() => {
-        dashboardInitialized.current = true
-      }, 50)
-    } catch (error) {
-      console.error('Failed to load dashboard:', error)
-      dashboardInitialized.current = true
     }
+
+    loadMostRecentDashboard()
   }, [identifier])
 
-  // Save dashboard charts to localStorage when changed (only after initial load)
+  // Save "Most Recent" dashboard to database when changed (only after initial load)
   useEffect(() => {
     if (!dashboardInitialized.current || !identifier) return
 
-    try {
-      const key = `dashboard_${identifier}`
-      localStorage.setItem(key, JSON.stringify(dashboardCharts))
-    } catch (error) {
-      console.error('Failed to save dashboard:', error)
+    const saveMostRecentDashboard = async () => {
+      try {
+        await api.post(`/datasets/${identifier}/dashboards`, {
+          dashboard_id: 'most_recent',
+          dashboard_name: 'Most Recent',
+          charts: dashboardCharts,
+          is_most_recent: true
+        })
+      } catch (error) {
+        console.error('Failed to save most recent dashboard:', error)
+        // Fallback to localStorage if API fails
+        try {
+          const key = `dashboard_${identifier}`
+          localStorage.setItem(key, JSON.stringify(dashboardCharts))
+        } catch (e) {
+          console.error('Failed to save to localStorage:', e)
+        }
+      }
     }
-  }, [dashboardCharts])
 
-  // Load saved dashboards from localStorage on mount (only once)
+    saveMostRecentDashboard()
+  }, [dashboardCharts, identifier])
+
+  // Load saved dashboards from database on mount (only once)
   useEffect(() => {
     if (!identifier || savedDashboardsInitialized.current) return
 
-    try {
-      const key = `savedDashboards_${identifier}`
-      const stored = localStorage.getItem(key)
-      if (stored) {
-        setSavedDashboards(JSON.parse(stored))
+    const loadSavedDashboards = async () => {
+      try {
+        // Try to load from API first
+        const response = await api.get(`/datasets/${identifier}/dashboards`)
+        const dashboards = response.data.dashboards || []
+
+        // Filter out "Most Recent" (is_most_recent = true)
+        const savedOnly = dashboards
+          .filter((d: any) => !d.is_most_recent)
+          .map((d: any) => ({
+            id: d.dashboard_id,
+            name: d.dashboard_name,
+            charts: d.charts,
+            createdAt: d.created_at,
+            updatedAt: d.updated_at
+          }))
+
+        setSavedDashboards(savedOnly)
+
+        // Migration: check localStorage for legacy data
+        const key = `savedDashboards_${identifier}`
+        const stored = localStorage.getItem(key)
+        if (stored) {
+          const localDashboards = JSON.parse(stored)
+
+          // Migrate each dashboard to database
+          for (const dashboard of localDashboards) {
+            try {
+              await api.post(`/datasets/${identifier}/dashboards`, {
+                dashboard_id: dashboard.id,
+                dashboard_name: dashboard.name,
+                charts: dashboard.charts,
+                is_most_recent: false
+              })
+            } catch (err) {
+              console.error(`Failed to migrate dashboard ${dashboard.id}:`, err)
+            }
+          }
+
+          // Clear localStorage after migration
+          localStorage.removeItem(key)
+
+          // Reload dashboards after migration
+          const updatedResponse = await api.get(`/datasets/${identifier}/dashboards`)
+          const updatedDashboards = updatedResponse.data.dashboards || []
+          const updatedSavedOnly = updatedDashboards
+            .filter((d: any) => !d.is_most_recent)
+            .map((d: any) => ({
+              id: d.dashboard_id,
+              name: d.dashboard_name,
+              charts: d.charts,
+              createdAt: d.created_at,
+              updatedAt: d.updated_at
+            }))
+          setSavedDashboards(updatedSavedOnly)
+        }
+      } catch (error) {
+        console.error('Failed to load saved dashboards from database:', error)
+        // Fallback to localStorage if API fails
+        try {
+          const key = `savedDashboards_${identifier}`
+          const stored = localStorage.getItem(key)
+          if (stored) {
+            setSavedDashboards(JSON.parse(stored))
+          }
+        } catch (e) {
+          console.error('Failed to load from localStorage:', e)
+        }
+      } finally {
+        setTimeout(() => {
+          savedDashboardsInitialized.current = true
+        }, 50)
       }
-      setTimeout(() => {
-        savedDashboardsInitialized.current = true
-      }, 50)
-    } catch (error) {
-      console.error('Failed to load saved dashboards:', error)
-      savedDashboardsInitialized.current = true
     }
+
+    loadSavedDashboards()
   }, [identifier])
 
-  // Save saved dashboards to localStorage when changed
-  useEffect(() => {
-    if (!savedDashboardsInitialized.current || !identifier) return
-
-    try {
-      const key = `savedDashboards_${identifier}`
-      localStorage.setItem(key, JSON.stringify(savedDashboards))
-    } catch (error) {
-      console.error('Failed to save dashboards:', error)
-    }
-  }, [savedDashboards])
+  // Note: Saved dashboards are now persisted individually through save/update/delete functions
+  // No need for a bulk save effect since each operation updates the database directly
 
   // Restore filters from URL hash on mount
   useEffect(() => {

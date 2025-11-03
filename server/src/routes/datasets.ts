@@ -3,6 +3,7 @@ import multer from 'multer'
 import { parseCSVFile, detectSkipRows } from '../services/fileParser.js'
 import datasetService from '../services/datasetService.js'
 import aggregationService from '../services/aggregationService.js'
+import dashboardService from '../services/dashboardService.js'
 import { unlink } from 'fs/promises'
 import { fetchFileFromUrl } from '../utils/urlFetcher.js'
 import { detectForeignKeys } from '../services/foreignKeyDetector.js'
@@ -618,6 +619,68 @@ router.get('/:id/tables/:tableId/columns/:columnName/aggregation', async (req, r
   } catch (error: any) {
     console.error('Get column aggregation error:', error)
     return res.status(500).json({ error: 'Failed to get column aggregation', message: error.message })
+  }
+})
+
+// Dashboard routes
+
+// Get all dashboards for a dataset
+router.get('/:id/dashboards', async (req, res) => {
+  try {
+    const dashboards = await dashboardService.listDashboards(req.params.id)
+    return res.json({ dashboards })
+  } catch (error: any) {
+    console.error('List dashboards error:', error)
+    return res.status(500).json({ error: 'Failed to list dashboards', message: error.message })
+  }
+})
+
+// Get a specific dashboard
+router.get('/:id/dashboards/:dashboardId', async (req, res) => {
+  try {
+    const dashboard = await dashboardService.getDashboard(req.params.id, req.params.dashboardId)
+    if (!dashboard) {
+      return res.status(404).json({ error: 'Dashboard not found' })
+    }
+    return res.json({ dashboard })
+  } catch (error: any) {
+    console.error('Get dashboard error:', error)
+    return res.status(500).json({ error: 'Failed to get dashboard', message: error.message })
+  }
+})
+
+// Save/update a dashboard
+router.post('/:id/dashboards', async (req, res) => {
+  try {
+    const { dashboard_id, dashboard_name, charts, is_most_recent = false } = req.body
+
+    if (!dashboard_id || !dashboard_name || !Array.isArray(charts)) {
+      return res.status(400).json({ error: 'dashboard_id, dashboard_name, and charts array are required' })
+    }
+
+    const dashboard = await dashboardService.saveDashboard(
+      req.params.id,
+      dashboard_id,
+      dashboard_name,
+      charts,
+      is_most_recent
+    )
+
+    return res.json({ dashboard })
+  } catch (error: any) {
+    console.error('Save dashboard error:', error)
+    return res.status(500).json({ error: 'Failed to save dashboard', message: error.message })
+  }
+})
+
+// Delete a dashboard
+router.delete('/:id/dashboards/:dashboardId', async (req, res) => {
+  try {
+    await dashboardService.deleteDashboard(req.params.id, req.params.dashboardId)
+    return res.json({ success: true })
+  } catch (error: any) {
+    console.error('Delete dashboard error:', error)
+    return res.status(500).json({ error: 'Failed to delete dashboard', message: error.message })
   }
 })
 

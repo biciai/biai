@@ -4,6 +4,7 @@ import dotenv from 'dotenv'
 import apiRoutes from './routes/api.js'
 import datasetsRoutes from './routes/datasets.js'
 import databasesRoutes from './routes/databases.js'
+import dashboardService from './services/dashboardService.js'
 
 dotenv.config()
 
@@ -19,6 +20,13 @@ app.use('/api/databases', databasesRoutes)
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', message: 'BIAI Server is running' })
+})
+
+// Initialize dashboard table
+dashboardService.initializeTable().then(() => {
+  console.log('Dashboard table initialized')
+}).catch(err => {
+  console.error('Failed to initialize dashboard table:', err)
 })
 
 app.listen(PORT, () => {
