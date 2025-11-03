@@ -1185,26 +1185,46 @@ export class DatasetService {
       throw new Error('Dataset or database not found')
     }
 
-    // Verify table exists
-    const tablesResult = await clickhouseClient.query({
+    // Fetch table metadata from dataset_tables to get the actual table name
+    const tableMetadataResult = await clickhouseClient.query({
       query: `
-        SELECT name
-        FROM system.tables
-        WHERE database = {database:String}
-          AND name = {table:String}
+        SELECT table_name, clickhouse_table_name
+        FROM biai.dataset_tables
+        WHERE dataset_id = {datasetId:String}
+          AND table_id = {tableId:String}
       `,
-      query_params: { database: dataset.database_name, table: tableId },
+      query_params: { datasetId, tableId },
       format: 'JSONEachRow'
     })
 
-    const tables = await tablesResult.json<{ name: string }>()
-    if (tables.length === 0) {
-      throw new Error('Table not found')
+    const tableMetadata = await tableMetadataResult.json<{ table_name: string; clickhouse_table_name: string }>()
+    if (tableMetadata.length === 0) {
+      throw new Error('Table not found in dataset')
     }
+
+    const tableName = tableMetadata[0].table_name
 
     // Drop the table from the dataset's database
     await clickhouseClient.command({
-      query: `DROP TABLE IF EXISTS ${dataset.database_name}.${tableId}`
+      query: `DROP TABLE IF EXISTS ${dataset.database_name}.${tableName}`
+    })
+
+    // Delete table metadata from dataset_tables
+    await clickhouseClient.command({
+      query: 'DELETE FROM biai.dataset_tables WHERE dataset_id = {datasetId:String} AND table_id = {tableId:String}',
+      query_params: { datasetId, tableId }
+    })
+
+    // Delete column metadata
+    await clickhouseClient.command({
+      query: 'DELETE FROM biai.dataset_columns WHERE dataset_id = {datasetId:String} AND table_id = {tableId:String}',
+      query_params: { datasetId, tableId }
+    })
+
+    // Delete table relationships
+    await clickhouseClient.command({
+      query: 'DELETE FROM biai.table_relationships WHERE dataset_id = {datasetId:String} AND table_id = {tableId:String}',
+      query_params: { datasetId, tableId }
     })
   }
 }
