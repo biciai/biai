@@ -144,40 +144,64 @@ Key areas to verify:
 
 ---
 
-## After Phase 2 (Dashboard Tab) - Future
+## After Phase 2 (Dashboard Tab) - Completed ✓
 
 ### Dashboard Tab
-- [ ] "Dashboard" tab appears as first tab
-- [ ] Dashboard starts empty initially
-- [ ] Empty state message shows helpful text
+- [x] "Dashboard" tab appears as first tab
+- [x] Dashboard starts empty initially
+- [x] Empty state message shows helpful text
 
 ### Adding Charts to Dashboard
-- [ ] "Add to Dashboard" button appears on each chart
-- [ ] Button shows "✓" when chart is on dashboard
-- [ ] Click toggles chart on/off dashboard
-- [ ] "Add All Charts" button adds all from table
-- [ ] Charts appear on dashboard in chronological order
+- [x] "Add to Dashboard" button appears on each chart
+- [x] Button shows "✓" when chart is on dashboard
+- [x] Click toggles chart on/off dashboard
+- [x] "Add All Charts" button adds all from table
+- [x] Charts appear on dashboard in chronological order
 
 ### Dashboard Display
-- [ ] Dashboard uses same grid layout as table tabs
-- [ ] Charts show table name in title
-- [ ] Charts have color-coded borders
-- [ ] Remove (×) button appears on hover
-- [ ] Click remove button removes from dashboard
-- [ ] "Clear Dashboard" button removes all
+- [x] Dashboard uses same grid layout as table tabs
+- [x] Charts show table name in title
+- [x] Charts have color-coded borders
+- [x] Remove (×) button appears on hover
+- [x] Click remove button removes from dashboard
+- [x] "Clear Dashboard" button removes all
 
 ### Dashboard Behavior
-- [ ] Dashboard charts update with active filters (live)
-- [ ] Click on dashboard chart adds filter
-- [ ] Dashboard persists to localStorage
-- [ ] Dashboard restores on page reload
-- [ ] Dashboard count shows in tab label
+- [x] Dashboard charts update with active filters (live)
+- [x] Click on dashboard chart adds filter
+- [x] Dashboard persists to database
+- [x] Dashboard restores on page reload
+- [x] Dashboard count shows in tab label
 
 ### Dashboard + Filters
-- [ ] Filter count badge shows on dashboard tab
-- [ ] Dashboard charts show filtered data
-- [ ] Filter from dashboard chart propagates correctly
-- [ ] Removing filter updates dashboard charts
+- [x] Filter count badge shows on dashboard tab
+- [x] Dashboard charts show filtered data
+- [x] Filter from dashboard chart propagates correctly
+- [x] Removing filter updates dashboard charts
+
+### Database Persistence (New)
+- [ ] "Most Recent" dashboard auto-saves to database
+- [ ] "Most Recent" dashboard loads from database on page load
+- [ ] Save dashboard creates new entry in database
+- [ ] Saved dashboards load from database (not localStorage)
+- [ ] Rename dashboard updates database
+- [ ] Delete dashboard removes from database
+- [ ] Dashboard list shows all saved dashboards from database
+- [ ] Load dashboard retrieves from database and applies charts
+- [ ] "Most Recent" distinguished from saved dashboards (is_most_recent flag)
+
+### Database Persistence - Migration
+- [ ] Existing localStorage "Most Recent" dashboard migrates to database on first load
+- [ ] Existing localStorage saved dashboards migrate to database on first load
+- [ ] localStorage cleared after successful migration
+- [ ] Migration happens only once (no duplicates)
+- [ ] Fallback to localStorage if database unavailable
+
+### Database Persistence - Cross-Device
+- [ ] Dashboard saved on one device appears on another device
+- [ ] Changes to "Most Recent" sync across devices
+- [ ] Saved dashboard changes sync across devices
+- [ ] Deleted dashboards removed on all devices
 
 ---
 

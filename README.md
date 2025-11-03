@@ -67,6 +67,7 @@ biai/
 
 ## Features
 
+### Dataset Management
 - **Multi-table Datasets**: Create datasets with multiple related tables
 - **Metadata-Driven Uploads**: Configure datasets using `.meta` files with support for:
   - Dataset metadata (name, description, tags, source, citation, references)
@@ -77,6 +78,23 @@ biai/
 - **File Upload**: Support for CSV, TSV with configurable delimiters
 - **Data Preview**: View table data with pagination
 - **Custom Metadata**: Store domain-specific fields alongside standard metadata
+
+### Dataset Explorer
+- **Tab Navigation**: Browse data by table with tab-based interface
+- **Interactive Charts**: Pie charts, bar charts, histograms, and table views
+- **Cross-table Filtering**: Apply filters that propagate across related tables
+- **Filter Persistence**: Filters saved to URL hash for sharing and browser history
+- **Filter Presets**: Save, load, rename, and manage common filter combinations
+- **NOT Operator**: Invert filter logic with visual indicators
+
+### Dashboard Feature
+- **Customizable Dashboard**: Curate personalized views with charts from across all tables
+- **Live Updates**: Dashboard charts update dynamically with active filters
+- **Interactive Charts**: Click on dashboard charts to add filters
+- **Multiple Saved Dashboards**: Save, load, rename, and delete dashboard configurations
+- **Database Persistence**: Dashboards sync across devices and browsers
+- **Automatic Migration**: Seamlessly migrates from localStorage to database
+- **Bulk Operations**: Add all charts from a table at once, clear dashboard with one click
 
 ## Available Scripts
 
@@ -95,6 +113,12 @@ biai/
 - `POST /api/datasets/:id/tables` - Add table to dataset
 - `GET /api/datasets/:id/tables/:tableId/data` - Get table data
 - `DELETE /api/datasets/:id/tables/:tableId` - Delete table
+
+### Dashboards
+- `GET /api/datasets/:id/dashboards` - List all dashboards for a dataset
+- `GET /api/datasets/:id/dashboards/:dashboardId` - Get specific dashboard
+- `POST /api/datasets/:id/dashboards` - Save/update a dashboard
+- `DELETE /api/datasets/:id/dashboards/:dashboardId` - Delete a dashboard
 
 ### System
 - `GET /health` - Health check
@@ -147,6 +171,7 @@ The system uses ClickHouse with the following metadata tables:
 - `dataset_tables` - Table info (name, row count, schema, primary key, custom metadata)
 - `dataset_columns` - Column info (name, type, nullability)
 - `table_relationships` - Foreign key relationships between tables
+- `dataset_dashboards` - Dashboard configurations (dashboard_id, dataset_id, dashboard_name, charts, is_most_recent, timestamps)
 
 ## Next Steps
 
