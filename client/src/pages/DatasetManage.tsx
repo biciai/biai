@@ -488,12 +488,28 @@ function DatasetManage() {
     if (!editingTableId) return
 
     try {
+      // Optimistically update local state
+      setColumns(prevColumns =>
+        prevColumns.map(col =>
+          col.column_name === columnName
+            ? {
+                ...col,
+                display_name: updates.displayName !== undefined ? updates.displayName : col.display_name,
+                description: updates.description !== undefined ? updates.description : col.description,
+                is_hidden: updates.isHidden !== undefined ? updates.isHidden : col.is_hidden,
+                display_type: updates.displayType !== undefined ? updates.displayType : col.display_type
+              }
+            : col
+        )
+      )
+
+      // Save to server
       await api.patch(`/datasets/${id}/tables/${editingTableId}/columns/${columnName}`, updates)
-      // Reload columns
-      await loadColumns(editingTableId)
     } catch (error) {
       console.error('Failed to update column:', error)
       alert('Failed to update column metadata')
+      // Reload columns on error to revert optimistic update
+      await loadColumns(editingTableId)
     }
   }
 
