@@ -178,10 +178,11 @@ describe('DatasetExplorer', () => {
       })
 
       // Verify tables are present (using getAllByText since tabs now also show table names)
-      const customersElements = screen.getAllByText('Customers')
+      // Use regex to handle chart count badges like "Customers (2)"
+      const customersElements = screen.getAllByText(/Customers/)
       expect(customersElements.length).toBeGreaterThan(0)
 
-      const ordersElements = screen.getAllByText('Orders')
+      const ordersElements = screen.getAllByText(/Orders/)
       expect(ordersElements.length).toBeGreaterThan(0)
     })
   })

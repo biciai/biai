@@ -331,6 +331,45 @@ function DatasetExplorer() {
     }
   }
 
+  const addAllChartsToTable = (tableName: string) => {
+    const tableAggregations = aggregations[tableName]
+    const tableMetadata = columnMetadata[tableName]
+    if (!tableAggregations || !Array.isArray(tableAggregations)) return
+    if (!tableMetadata || !Array.isArray(tableMetadata)) return
+
+    // Get all visible aggregations for this table
+    const visibleAggregations = tableAggregations.filter(agg => {
+      const metadata = tableMetadata.find(m => m.column_name === agg.column_name)
+      return !metadata?.is_hidden
+    })
+
+    // Add all charts that aren't already on dashboard
+    const newCharts = visibleAggregations
+      .filter(agg => !isOnDashboard(tableName, agg.column_name))
+      .map(agg => ({
+        tableName,
+        columnName: agg.column_name,
+        addedAt: new Date().toISOString()
+      }))
+
+    if (newCharts.length > 0) {
+      setDashboardCharts(prev => [...prev, ...newCharts])
+    }
+  }
+
+  const getTableChartCount = (tableName: string): number => {
+    const tableAggregations = aggregations[tableName]
+    const tableMetadata = columnMetadata[tableName]
+    if (!tableAggregations || !Array.isArray(tableAggregations)) return 0
+    if (!tableMetadata || !Array.isArray(tableMetadata)) return 0
+
+    // Count visible aggregations for this table
+    return tableAggregations.filter(agg => {
+      const metadata = tableMetadata.find(m => m.column_name === agg.column_name)
+      return !metadata?.is_hidden
+    }).length
+  }
+
   // Load view preferences from localStorage on mount
   useEffect(() => {
     try {
@@ -2995,6 +3034,7 @@ const renderNumericFilterMenu = (
         {dataset.tables.map(table => {
           const tableColor = getTableColor(table.name)
           const isActive = activeTab === table.name
+          const chartCount = getTableChartCount(table.name)
 
           return (
             <button
@@ -3033,7 +3073,7 @@ const renderNumericFilterMenu = (
                 borderRadius: '2px',
                 background: isActive ? 'white' : tableColor
               }} />
-              {table.displayName || table.name}
+              {table.displayName || table.name} {chartCount > 0 && `(${chartCount})`}
             </button>
           )
         })}
@@ -3293,6 +3333,32 @@ const renderNumericFilterMenu = (
                     +{propagatedFilterCount} linked{maxPathLength > 0 ? ` (${maxPathLength}-hop)` : ''}
                   </div>
                 )}
+                {/* Add All Charts button */}
+                <button
+                  onClick={() => {
+                    addAllChartsToTable(table.name)
+                  }}
+                  style={{
+                    padding: '0.3rem 0.6rem',
+                    background: '#4CAF50',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '0.7rem',
+                    fontWeight: 600,
+                    transition: 'background 0.2s'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = '#45a049'
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = '#4CAF50'
+                  }}
+                  title="Add all charts from this table to dashboard"
+                >
+                  + Add All
+                </button>
                 <div style={{
                   background: tableColor,
                   color: 'white',
