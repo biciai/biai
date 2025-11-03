@@ -150,9 +150,14 @@ function DatasetExplorer() {
   // Tab navigation state: track which table tab is currently active
   const [activeTab, setActiveTab] = useState<string | null>(null)
 
+  // Dashboard state: track which charts are pinned to dashboard
+  // Structure: { tableName: string, columnName: string, addedAt: string }[]
+  const [dashboardCharts, setDashboardCharts] = useState<Array<{ tableName: string; columnName: string; addedAt: string }>>([])
+
   // Track if filters have been initialized from URL to prevent overwriting
   const filtersInitialized = useRef(false)
   const isUpdatingURL = useRef(false)
+  const dashboardInitialized = useRef(false)
 
   // Helper functions for URL persistence
   const serializeFilters = (filters: Filter[]): string => {
@@ -311,6 +316,21 @@ function DatasetExplorer() {
     })
   }
 
+  // Dashboard chart management
+  const isOnDashboard = (tableName: string, columnName: string): boolean => {
+    return dashboardCharts.some(chart => chart.tableName === tableName && chart.columnName === columnName)
+  }
+
+  const toggleDashboard = (tableName: string, columnName: string) => {
+    if (isOnDashboard(tableName, columnName)) {
+      // Remove from dashboard
+      setDashboardCharts(prev => prev.filter(chart => !(chart.tableName === tableName && chart.columnName === columnName)))
+    } else {
+      // Add to dashboard
+      setDashboardCharts(prev => [...prev, { tableName, columnName, addedAt: new Date().toISOString() }])
+    }
+  }
+
   // Load view preferences from localStorage on mount
   useEffect(() => {
     try {
@@ -322,6 +342,38 @@ function DatasetExplorer() {
       console.error('Failed to load view preferences:', error)
     }
   }, [identifier])
+
+  // Load dashboard charts from localStorage on mount (only once)
+  useEffect(() => {
+    if (!identifier || dashboardInitialized.current) return
+
+    try {
+      const key = `dashboard_${identifier}`
+      const stored = localStorage.getItem(key)
+      if (stored) {
+        setDashboardCharts(JSON.parse(stored))
+      }
+      // Set initialized flag after a brief delay to ensure state update completes
+      setTimeout(() => {
+        dashboardInitialized.current = true
+      }, 50)
+    } catch (error) {
+      console.error('Failed to load dashboard:', error)
+      dashboardInitialized.current = true
+    }
+  }, [identifier])
+
+  // Save dashboard charts to localStorage when changed (only after initial load)
+  useEffect(() => {
+    if (!dashboardInitialized.current || !identifier) return
+
+    try {
+      const key = `dashboard_${identifier}`
+      localStorage.setItem(key, JSON.stringify(dashboardCharts))
+    } catch (error) {
+      console.error('Failed to save dashboard:', error)
+    }
+  }, [dashboardCharts])
 
   // Restore filters from URL hash on mount
   useEffect(() => {
@@ -437,10 +489,8 @@ function DatasetExplorer() {
       setRangeSelections({})
       setActiveFilterMenu(null)
 
-      // Initialize active tab to first table
-      if (loadedDataset.tables && loadedDataset.tables.length > 0) {
-        setActiveTab(loadedDataset.tables[0].name)
-      }
+      // Initialize active tab to dashboard
+      setActiveTab('dashboard')
 
       // Determine if this dataset uses database API
       const shouldUseDatabaseAPI = isDatabaseMode || loadedDataset.database_type === 'connected'
@@ -1415,6 +1465,15 @@ const renderNumericFilterMenu = (
         border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.5rem' }}>
+          {tableColor && (
+            <div style={{
+              width: '3px',
+              height: '14px',
+              borderRadius: '1.5px',
+              background: tableColor,
+              flexShrink: 0
+            }} />
+          )}
           <h4
             style={{
               margin: 0,
@@ -1454,6 +1513,31 @@ const renderNumericFilterMenu = (
             title="Switch to chart view"
           >
             ◐
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleDashboard(tableName, field)
+            }}
+            style={{
+              border: 'none',
+              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+              color: isOnDashboard(tableName, field) ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
+          >
+            {isOnDashboard(tableName, field) ? '✓' : '+'}
           </button>
           <button
             type="button"
@@ -1621,6 +1705,15 @@ const renderNumericFilterMenu = (
         border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
+          {tableColor && (
+            <div style={{
+              width: '3px',
+              height: '14px',
+              borderRadius: '1.5px',
+              background: tableColor,
+              flexShrink: 0
+            }} />
+          )}
           <h4
             style={{
               margin: 0,
@@ -1660,6 +1753,31 @@ const renderNumericFilterMenu = (
             title="Switch to table view"
           >
             ⊞
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleDashboard(tableName, field)
+            }}
+            style={{
+              border: 'none',
+              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+              color: isOnDashboard(tableName, field) ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
+          >
+            {isOnDashboard(tableName, field) ? '✓' : '+'}
           </button>
           <button
             type="button"
@@ -1782,6 +1900,15 @@ const renderNumericFilterMenu = (
         border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
+          {tableColor && (
+            <div style={{
+              width: '3px',
+              height: '14px',
+              borderRadius: '1.5px',
+              background: tableColor,
+              flexShrink: 0
+            }} />
+          )}
           <h4
             style={{
               margin: 0,
@@ -1821,6 +1948,31 @@ const renderNumericFilterMenu = (
             title="Switch to table view"
           >
             ⊞
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleDashboard(tableName, field)
+            }}
+            style={{
+              border: 'none',
+              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+              color: isOnDashboard(tableName, field) ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
+          >
+            {isOnDashboard(tableName, field) ? '✓' : '+'}
           </button>
           <button
             type="button"
@@ -1999,6 +2151,15 @@ const renderNumericFilterMenu = (
         border: tableColor ? `2px solid ${tableColor}20` : undefined
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
+          {tableColor && (
+            <div style={{
+              width: '3px',
+              height: '14px',
+              borderRadius: '1.5px',
+              background: tableColor,
+              flexShrink: 0
+            }} />
+          )}
           <h4
             style={{
               margin: 0,
@@ -2014,6 +2175,31 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleDashboard(tableName, field)
+            }}
+            style={{
+              border: 'none',
+              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+              color: isOnDashboard(tableName, field) ? 'white' : '#333',
+              borderRadius: '50%',
+              width: '20px',
+              height: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '0.7rem',
+              cursor: 'pointer',
+              lineHeight: 1,
+              flexShrink: 0
+            }}
+            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
+          >
+            {isOnDashboard(tableName, field) ? '✓' : '+'}
+          </button>
           <button
             type="button"
             onClick={(event) => {
@@ -2766,6 +2952,46 @@ const renderNumericFilterMenu = (
         gap: '0.5rem',
         flexWrap: 'wrap'
       }}>
+        {/* Dashboard Tab */}
+        <button
+          onClick={() => setActiveTab('dashboard')}
+          style={{
+            padding: '0.75rem 1.5rem',
+            background: activeTab === 'dashboard' ? '#607D8B' : 'transparent',
+            color: activeTab === 'dashboard' ? 'white' : '#333',
+            border: `2px solid ${activeTab === 'dashboard' ? '#607D8B' : '#E0E0E0'}`,
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontSize: '0.875rem',
+            fontWeight: activeTab === 'dashboard' ? 600 : 400,
+            transition: 'all 0.2s ease',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem'
+          }}
+          onMouseEnter={(e) => {
+            if (activeTab !== 'dashboard') {
+              e.currentTarget.style.borderColor = '#607D8B'
+              e.currentTarget.style.color = '#607D8B'
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (activeTab !== 'dashboard') {
+              e.currentTarget.style.borderColor = '#E0E0E0'
+              e.currentTarget.style.color = '#333'
+            }
+          }}
+        >
+          <div style={{
+            width: '8px',
+            height: '20px',
+            borderRadius: '2px',
+            background: activeTab === 'dashboard' ? 'white' : '#607D8B'
+          }} />
+          Dashboard {dashboardCharts.length > 0 && `(${dashboardCharts.length})`}
+        </button>
+
+        {/* Table Tabs */}
         {dataset.tables.map(table => {
           const tableColor = getTableColor(table.name)
           const isActive = activeTab === table.name
@@ -2812,6 +3038,108 @@ const renderNumericFilterMenu = (
           )
         })}
       </div>
+
+      {/* Dashboard View */}
+      {activeTab === 'dashboard' && (
+        <div>
+          {dashboardCharts.length === 0 ? (
+            <div style={{
+              background: 'white',
+              padding: '3rem',
+              borderRadius: '8px',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+              textAlign: 'center',
+              color: '#666'
+            }}>
+              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📊</div>
+              <h3 style={{ margin: '0 0 0.5rem 0', color: '#333' }}>Your Dashboard is Empty</h3>
+              <p style={{ margin: 0 }}>
+                Click on the <strong>+ Add to Dashboard</strong> button on any chart in the table tabs to pin it here.
+              </p>
+            </div>
+          ) : (
+            <div>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: '1rem'
+              }}>
+                <h3 style={{ margin: 0 }}>Dashboard ({dashboardCharts.length} charts)</h3>
+                <button
+                  onClick={() => {
+                    if (window.confirm('Clear all charts from dashboard?')) {
+                      setDashboardCharts([])
+                    }
+                  }}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    background: '#f44336',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '0.875rem'
+                  }}
+                >
+                  Clear Dashboard
+                </button>
+              </div>
+
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, 175px)',
+                gridAutoRows: '175px',
+                gap: '0.5rem',
+                gridAutoFlow: 'dense'
+              }}>
+                {dashboardCharts.map(({ tableName, columnName }) => {
+                  const aggregation = getAggregation(tableName, columnName)
+                  if (!aggregation) return null
+
+                  const tableColor = getTableColor(tableName)
+                  const displayTitle = getDisplayTitle(tableName, columnName)
+                  const table = dataset.tables.find(t => t.name === tableName)
+
+                  if (aggregation.display_type === 'categorical' && aggregation.categories) {
+                    const categoryCount = aggregation.categories.length
+                    const viewPref = getViewPreference(tableName, columnName, categoryCount)
+
+                    if (viewPref === 'table') {
+                      return (
+                        <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2', gridRow: 'span 2' }}>
+                          {renderTableView(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                        </div>
+                      )
+                    }
+
+                    if (categoryCount <= 8) {
+                      return (
+                        <div key={`${tableName}_${columnName}`}>
+                          {renderPieChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                        </div>
+                      )
+                    } else {
+                      return (
+                        <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2' }}>
+                          {renderBarChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                        </div>
+                      )
+                    }
+                  } else if (aggregation.display_type === 'numeric' && aggregation.histogram) {
+                    return (
+                      <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2' }}>
+                        {renderHistogram(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                      </div>
+                    )
+                  }
+                  return null
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Chart Grid - Grouped by Table */}
       {dataset.tables
