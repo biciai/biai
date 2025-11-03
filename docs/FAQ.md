@@ -187,6 +187,46 @@ Yes. Each person has their own filters and view settings. Your filters don't aff
 
 ---
 
+## Dashboards
+
+### What is the Dashboard tab?
+The Dashboard tab is a personalized view where you can collect your favorite charts from across all tables in one place. It's always the first tab when you open a dataset.
+
+### How do I add charts to my dashboard?
+Click the **"+ Add to Dashboard"** button on any chart. The button changes to show a checkmark (✓) when the chart is added. You can also click **"Add All Charts"** to add all charts from a table at once.
+
+### Can I remove charts from the dashboard?
+Yes. Hover over any chart on the dashboard and click the **×** button. Or click **"Clear Dashboard"** to remove all charts at once.
+
+### Do dashboard charts update with filters?
+Yes! Dashboard charts are live and update automatically when you apply filters. This allows you to see your key metrics respond to different filter combinations.
+
+### Can I click on dashboard charts to filter?
+Absolutely. Dashboard charts are fully interactive. Clicking on any element (pie slice, bar, etc.) adds a filter just like on table tabs.
+
+### What are saved dashboards?
+You can save multiple dashboard configurations for different types of analysis. Click **"Save Dashboard"**, give it a name, and load it later from the **"Load Dashboard"** dropdown.
+
+### Where are dashboards stored?
+Dashboards are stored in the database and sync across all your devices. You can access your saved dashboards from any computer or browser.
+
+### What's "Most Recent"?
+"Most Recent" is your current working dashboard that's automatically saved as you add/remove charts. It's always available when you return to the dataset, even if you haven't explicitly saved it.
+
+### Can I share dashboards with others?
+Dashboards are stored per dataset and currently saved to your account. Other users can create their own dashboards on the same dataset. For sharing specific views, use URL sharing for filters.
+
+### Will my old dashboards still work?
+Yes. If you previously used dashboards stored in your browser, they're automatically migrated to the database the first time you load a dataset. This happens once and your dashboards will be available across devices afterwards.
+
+### How many charts can I add to a dashboard?
+There's no hard limit, but for best performance and usability, we recommend keeping dashboards focused with 5-15 key charts. You can always create multiple saved dashboards for different purposes.
+
+### Can I reorder charts on the dashboard?
+Currently, charts appear in the order they were added (chronological). To reorder, remove charts and add them back in your preferred order.
+
+---
+
 ## Performance and Data
 
 ### Why is the data loading slowly?

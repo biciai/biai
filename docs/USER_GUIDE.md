@@ -8,11 +8,12 @@ Welcome to the BIAI (Business Intelligence AI) User Guide! This guide will help 
 2. [Getting Started](#getting-started)
 3. [Browsing Datasets](#browsing-datasets)
 4. [Exploring Data](#exploring-data)
-5. [Understanding Visualizations](#understanding-visualizations)
-6. [Filtering Data](#filtering-data)
-7. [Working with Relationships](#working-with-relationships)
-8. [Saving and Sharing](#saving-and-sharing)
-9. [Tips and Best Practices](#tips-and-best-practices)
+5. [Working with Dashboards](#working-with-dashboards)
+6. [Understanding Visualizations](#understanding-visualizations)
+7. [Filtering Data](#filtering-data)
+8. [Working with Relationships](#working-with-relationships)
+9. [Saving and Sharing](#saving-and-sharing)
+10. [Tips and Best Practices](#tips-and-best-practices)
 
 ---
 
@@ -112,6 +113,156 @@ The row count display helps you understand the impact of your filters:
   - 234 rows match your current filters
   - 1,500 rows in the original table
   - You're viewing 15.6% of the data
+
+---
+
+## Working with Dashboards
+
+The Dashboard feature allows you to create personalized views by collecting your favorite charts from across all tables in one place.
+
+### Understanding the Dashboard Tab
+
+When you open a dataset, you'll notice the **Dashboard** tab is always the first tab:
+- **Tab order**: `[Dashboard] [Table 1] [Table 2] [Table 3]...`
+- The dashboard starts empty by default
+- Charts you add appear here for quick access
+
+### Adding Charts to Your Dashboard
+
+To build your personalized dashboard:
+
+**Add Individual Charts**
+1. Navigate to any table tab
+2. Find a chart you want to add
+3. Click the **"+ Add to Dashboard"** button on the chart
+4. The button changes to show a **checkmark (✓)** when added
+5. Click again to remove from dashboard
+
+**Add All Charts from a Table**
+1. Navigate to the table tab you're interested in
+2. Click the **"Add All Charts"** button in the table header
+3. All visible charts from that table are added at once
+
+**What Charts Can Be Added?**
+- Pie charts (categorical data with ≤8 categories)
+- Bar charts (categorical data with >8 categories)
+- Histograms (numeric data)
+- Table views (high-cardinality categorical data)
+
+### Dashboard Display
+
+Your dashboard shows all added charts in a clean, organized layout:
+
+**Visual Features**
+- **Color-coded borders**: Each chart has a border matching its source table color
+- **Table context**: Chart titles show "**Table Name** - Column Name"
+- **Same grid layout**: Uses the same 175px tile system as table tabs
+- **Chronological order**: Charts appear in the order you added them
+
+**Interactive Elements**
+- **Hover effects**: Shows remove button (×) when you hover over a chart
+- **Click to filter**: Dashboard charts are fully interactive—click to add filters
+- **Live updates**: Charts update dynamically as you apply filters
+- **Remove button**: Click the × to remove individual charts
+
+### Managing Your Dashboard
+
+**Clear Dashboard**
+- Click the **"Clear Dashboard"** button to remove all charts at once
+- Useful when starting a new analysis or resetting your view
+
+**Dashboard Count**
+- The tab label shows the number of charts: `Dashboard (5)`
+- Helps you track how many charts you've added
+
+### Saved Dashboards
+
+Create and manage multiple dashboard configurations for different analyses:
+
+**Saving a Dashboard**
+1. Add charts to your dashboard as desired
+2. Click the **"Save Dashboard"** button
+3. Enter a descriptive name (e.g., "Patient Demographics", "Q4 Analysis")
+4. Click Save
+5. Your dashboard configuration is saved to the database
+
+**Loading a Saved Dashboard**
+1. Click the **"Load Dashboard"** dropdown
+2. Select from your list of saved dashboards
+3. The dashboard instantly updates with those charts
+
+**Managing Saved Dashboards**
+1. Click the **"Manage"** button
+2. From the management dialog you can:
+   - **Rename** dashboards by clicking the edit icon
+   - **Delete** dashboards you no longer need
+   - **View** when each dashboard was created and last updated
+
+**The "Most Recent" Dashboard**
+- Your current working dashboard is automatically saved as "Most Recent"
+- This happens in the background—no action needed
+- When you return, your dashboard is restored automatically
+- This is separate from your saved dashboards
+
+### Dashboard and Filters
+
+Dashboards work seamlessly with the filtering system:
+
+**Live Filter Updates**
+- Dashboard charts update automatically when you apply filters
+- The filter count badge shows on the dashboard tab
+- Example: `Dashboard (5) [3 filters active]`
+
+**Interactive Filtering from Dashboard**
+- Click on any dashboard chart element to add a filter
+- The filter applies across all charts and tables
+- Works exactly like filtering from table tabs
+
+**Cross-Table Context**
+- Dashboard charts from different tables all respect relationships
+- When you filter one table, related dashboard charts update
+- Color-coded borders help you identify which table each chart comes from
+
+### Dashboard Persistence
+
+Your dashboards are saved automatically and sync across devices:
+
+**Automatic Saving**
+- Changes to "Most Recent" are saved to the database in real-time
+- Saved dashboards persist across browser sessions
+- Works even if you close the browser or switch devices
+
+**Cross-Device Sync**
+- Dashboards are stored in the database, not your browser
+- Open the same dataset on another computer—your dashboards are there
+- Perfect for working across multiple locations or devices
+
+**Migration from Browser Storage**
+- If you previously used dashboards, they're automatically migrated to the database
+- This happens once, transparently, the first time you load a dataset
+- Old browser-stored dashboards are removed after successful migration
+
+### Dashboard Best Practices
+
+**Organize by Purpose**
+- Create different saved dashboards for different types of analysis
+- Examples: "Overview", "Demographics Only", "Temporal Analysis"
+- Use descriptive names that explain what the dashboard shows
+
+**Start Simple**
+- Begin with 3-5 key charts that answer your main questions
+- Add more charts as you identify specific areas of interest
+- Remember: you can always add or remove charts easily
+
+**Combine with Filters**
+- Use dashboards to organize your view
+- Use filters to focus on specific data subsets
+- Together, they create powerful, reusable analysis templates
+
+**Share Your Insights**
+- Saved dashboards help standardize team analyses
+- Everyone can load the same dashboard for consistent views
+- Combine with URL-based filter sharing for complete reproducibility
 
 ---
 
@@ -369,15 +520,17 @@ BIAI automatically saves your filters in the URL, making it easy to share:
 ### Persistent State
 
 BIAI automatically saves your work:
-- **Active filters**: Saved to localStorage
+- **Active filters**: Saved to localStorage and URL
 - **View preferences**: Whether you chose chart or table view
-- **Filter presets**: Stored per dataset
+- **Filter presets**: Stored per dataset in localStorage
+- **Dashboards**: Saved to database and synced across devices
 - **URL state**: Current filters encoded in the URL
 
 This means you can:
 - Close the browser and come back later
 - Refresh the page without losing your work
 - Share URLs to preserve exact filter states
+- Access your dashboards from any device
 
 ---
 

@@ -59,6 +59,37 @@ A quick guide to common tasks and features in BIAI.
 | Export presets | Click **Export** in Manage Presets dialog |
 | Import presets | Click **Import** in Manage Presets dialog |
 
+## Dashboards
+
+### Adding Charts to Dashboard
+
+| Action | How To |
+|--------|--------|
+| Add single chart | Click **"+ Add to Dashboard"** on any chart |
+| Remove from dashboard | Click button again (shows ✓ when added) |
+| Add all charts from table | Click **"Add All Charts"** in table header |
+| View dashboard | Click the **Dashboard** tab (always first tab) |
+| Remove chart from dashboard | Hover over chart → Click **×** button |
+| Clear entire dashboard | Click **"Clear Dashboard"** button |
+
+### Saved Dashboards
+
+| Action | How To |
+|--------|--------|
+| Save current dashboard | Click **"Save Dashboard"** → Enter name → **Save** |
+| Load saved dashboard | Click **"Load Dashboard"** dropdown → Select dashboard |
+| Manage dashboards | Click **"Manage"** button |
+| Rename dashboard | In Manage dialog, click edit icon |
+| Delete dashboard | In Manage dialog, click trash icon |
+
+### Dashboard Features
+
+- **Auto-sync**: Dashboards save to database and sync across devices
+- **Live updates**: Dashboard charts update with active filters
+- **Interactive**: Click dashboard charts to add filters
+- **Color-coded**: Borders match source table colors
+- **Most Recent**: Current dashboard auto-saves as "Most Recent"
+
 ## Sharing Your Work
 
 | Method | How It Works |
