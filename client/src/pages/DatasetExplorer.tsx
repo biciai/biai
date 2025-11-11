@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import Plot from 'react-plotly.js'
 import type { PlotMouseEvent, PlotSelectionEvent } from 'plotly.js'
@@ -7,6 +7,7 @@ import api from '../services/api'
 import { findRelationshipPath } from '../utils/filterHelpers'
 // Small categorical sets render better as pie charts; beyond this use bars.
 const MAX_PIE_CATEGORIES = 8
+const ROW_COUNT_KEY = 'rows'
 
 interface Column {
   name: string
@@ -69,6 +70,7 @@ interface ColumnAggregation {
   metric_type?: 'rows' | 'parent'
   metric_parent_table?: string
   metric_parent_column?: string
+  metric_path?: PathSegment[]
 }
 
 interface Filter {
@@ -127,6 +129,24 @@ type CountBySelection = {
   targetTable: string
 }
 
+type PathSegment = {
+  from_table: string
+  via_column: string
+  to_table: string
+}
+
+type AncestorOption = {
+  targetTable: string
+  label: string
+  key: string
+  path: PathSegment[]
+}
+
+type AggregationCacheEntry = {
+  data: ColumnAggregation[]
+  filtersKey: string
+}
+
 function DatasetExplorer() {
   const { id, database } = useParams()
   const navigate = useNavigate()
@@ -146,7 +166,7 @@ function DatasetExplorer() {
   const datasetIdentifier = dataset?.id
   const [loading, setLoading] = useState(true)
   const [columnMetadata, setColumnMetadata] = useState<Record<string, ColumnMetadata[]>>({})
-  const [aggregations, setAggregations] = useState<Record<string, ColumnAggregation[]>>({})
+  const [aggregations, setAggregations] = useState<Record<string, Record<string, AggregationCacheEntry>>>({})
   const [baselineAggregations, setBaselineAggregations] = useState<Record<string, ColumnAggregation[]>>({})
   const [filters, setFilters] = useState<Filter[]>([])
   const [activeFilterMenu, setActiveFilterMenu] = useState<{ tableName: string; columnName: string } | null>(null)
@@ -171,8 +191,8 @@ function DatasetExplorer() {
   const [activeTab, setActiveTab] = useState<string | null>(null)
 
   // Dashboard state: track which charts are pinned to dashboard
-  // Structure: { tableName: string, columnName: string, addedAt: string }[]
-  const [dashboardCharts, setDashboardCharts] = useState<Array<{ tableName: string; columnName: string; addedAt: string }>>([])
+  const [dashboardCharts, setDashboardCharts] = useState<Array<{ tableName: string; columnName: string; countByTarget: string | null; addedAt: string }>>([])
+  const [ancestorOptions, setAncestorOptions] = useState<Record<string, AncestorOption[]>>({})
 
   // Saved dashboards state
   const [savedDashboards, setSavedDashboards] = useState<SavedDashboard[]>([])
@@ -230,6 +250,9 @@ function DatasetExplorer() {
       return null
     }
   }
+
+  const buildFiltersKey = (list?: Filter[]): string => JSON.stringify(list ?? [])
+  const currentFiltersKey = useMemo(() => buildFiltersKey(filters), [filters])
 
   const serializeCountBySelections = (selections: Record<string, CountBySelection>): string => {
     try {
@@ -392,23 +415,32 @@ function DatasetExplorer() {
 
   // Dashboard chart management
   const isOnDashboard = (tableName: string, columnName: string): boolean => {
-    return dashboardCharts.some(chart => chart.tableName === tableName && chart.columnName === columnName)
+    const target = countBySelections[tableName]?.targetTable ?? null
+    return dashboardCharts.some(chart =>
+      chart.tableName === tableName &&
+      chart.columnName === columnName &&
+      chart.countByTarget === target
+    )
   }
 
   const toggleDashboard = (tableName: string, columnName: string) => {
+    const target = countBySelections[tableName]?.targetTable ?? null
     if (isOnDashboard(tableName, columnName)) {
       // Remove from dashboard
-      setDashboardCharts(prev => prev.filter(chart => !(chart.tableName === tableName && chart.columnName === columnName)))
+      setDashboardCharts(prev =>
+        prev.filter(chart =>
+          !(chart.tableName === tableName && chart.columnName === columnName && chart.countByTarget === target)
+        ))
     } else {
       // Add to dashboard
-      setDashboardCharts(prev => [...prev, { tableName, columnName, addedAt: new Date().toISOString() }])
+      setDashboardCharts(prev => [...prev, { tableName, columnName, countByTarget: target, addedAt: new Date().toISOString() }])
     }
   }
 
   const addAllChartsToTable = (tableName: string) => {
-    const tableAggregations = aggregations[tableName]
+    const tableAggregations = getAggregationsForTable(tableName)
     const tableMetadata = columnMetadata[tableName]
-    if (!tableAggregations || !Array.isArray(tableAggregations)) return
+    if (!tableAggregations || tableAggregations.length === 0) return
     if (!tableMetadata || !Array.isArray(tableMetadata)) return
 
     // Get all visible aggregations for this table
@@ -418,11 +450,17 @@ function DatasetExplorer() {
     })
 
     // Add all charts that aren't already on dashboard
+    const target = countBySelections[tableName]?.targetTable ?? null
     const newCharts = visibleAggregations
-      .filter(agg => !isOnDashboard(tableName, agg.column_name))
+      .filter(agg => !dashboardCharts.some(chart =>
+        chart.tableName === tableName &&
+        chart.columnName === agg.column_name &&
+        chart.countByTarget === target
+      ))
       .map(agg => ({
         tableName,
         columnName: agg.column_name,
+        countByTarget: target,
         addedAt: new Date().toISOString()
       }))
 
@@ -432,12 +470,10 @@ function DatasetExplorer() {
   }
 
   const getTableChartCount = (tableName: string): number => {
-    const tableAggregations = aggregations[tableName]
+    const tableAggregations = baselineAggregations[tableName] || []
     const tableMetadata = columnMetadata[tableName]
-    if (!tableAggregations || !Array.isArray(tableAggregations)) return 0
     if (!tableMetadata || !Array.isArray(tableMetadata)) return 0
 
-    // Count visible aggregations for this table
     return tableAggregations.filter(agg => {
       const metadata = tableMetadata.find(m => m.column_name === agg.column_name)
       return !metadata?.is_hidden
@@ -476,7 +512,7 @@ function DatasetExplorer() {
   const loadDashboard = (dashboardId: string) => {
     const dashboard = savedDashboards.find(d => d.id === dashboardId)
     if (dashboard) {
-      setDashboardCharts(dashboard.charts)
+      setDashboardCharts(normalizeDashboardCharts(dashboard.charts))
       setActiveDashboardId(dashboardId)
     }
   }
@@ -559,14 +595,14 @@ function DatasetExplorer() {
         const mostRecent = dashboards.find((d: any) => d.is_most_recent)
 
         if (mostRecent) {
-          setDashboardCharts(mostRecent.charts)
+          setDashboardCharts(normalizeDashboardCharts(mostRecent.charts))
         } else {
           // Migration: check localStorage for legacy data
           const key = `dashboard_${identifier}`
           const stored = localStorage.getItem(key)
           if (stored) {
             const charts = JSON.parse(stored)
-            setDashboardCharts(charts)
+            setDashboardCharts(normalizeDashboardCharts(charts))
             // Migrate to database
             if (charts.length > 0) {
               await api.post(`/datasets/${identifier}/dashboards`, {
@@ -587,7 +623,7 @@ function DatasetExplorer() {
           const key = `dashboard_${identifier}`
           const stored = localStorage.getItem(key)
           if (stored) {
-            setDashboardCharts(JSON.parse(stored))
+            setDashboardCharts(normalizeDashboardCharts(JSON.parse(stored)))
           }
         } catch (e) {
           console.error('Failed to load from localStorage:', e)
@@ -797,6 +833,16 @@ function DatasetExplorer() {
   }, [id, database, countByReady])
 
   useEffect(() => {
+    if (!dataset?.tables) {
+      setAncestorOptions({})
+      return
+    }
+    const options = buildAncestorOptions(dataset.tables)
+    setAncestorOptions(options)
+    setCountBySelections(prev => normalizeCountBySelections(prev, options))
+  }, [dataset])
+
+  useEffect(() => {
     // Reload aggregations when filters change
     if (dataset && countByReady) {
       reloadAggregations()
@@ -817,16 +863,21 @@ function DatasetExplorer() {
       const currentKey = currentSelection ? `parent:${currentSelection.targetTable}` : 'rows'
 
       if (previousKey !== currentKey) {
+        const cachedEntry = aggregations[table.name]?.[currentKey]
+        if (cachedEntry && cachedEntry.filtersKey === currentFiltersKey) {
+          return
+        }
         loadTableAggregations(table.id, table.name, {
           useDbAPI: shouldUseDatabaseAPI,
           dbName: dbIdentifier,
-          datasetId: dataset.id
+          datasetId: dataset.id,
+          cacheKey: currentKey
         })
       }
     })
 
     previousCountByRef.current = countBySelections
-  }, [countBySelections, dataset, isDatabaseMode, identifier])
+  }, [countBySelections, dataset, isDatabaseMode, identifier, aggregations, currentFiltersKey])
 
   const reloadAggregations = async () => {
     if (!dataset || !countByReady) return
@@ -837,18 +888,45 @@ function DatasetExplorer() {
     // Send ALL filters to ALL tables and let the backend figure out cross-table filtering
     // The backend will detect which filters are for each table using the tableName property
     for (const table of dataset.tables) {
+      const selection = countBySelections[table.name] ?? null
+      const cacheKey = getCountByCacheKey(table.name)
       await loadTableAggregations(table.id, table.name, {
         useDbAPI: shouldUseDatabaseAPI,
         dbName: dbIdentifier,
         datasetId: dataset.id,
-        tableFilters: filters // Send all filters to every table
+        tableFilters: filters,
+        cacheKey,
+        selectionOverride: selection
       })
     }
   }
 
+  useEffect(() => {
+    if (!dataset || !countByReady) return
+    const shouldUseDatabaseAPI = isDatabaseMode || dataset.database_type === 'connected'
+    const dbIdentifier = isDatabaseMode ? identifier : dataset.database_name
+
+    dashboardCharts.forEach(chart => {
+      const table = dataset.tables.find(t => t.name === chart.tableName)
+      if (!table) return
+      const cacheKey = chart.countByTarget ? `parent:${chart.countByTarget}` : ROW_COUNT_KEY
+      const cachedEntry = aggregations[chart.tableName]?.[cacheKey]
+      if (cachedEntry && cachedEntry.filtersKey === currentFiltersKey) return
+      loadTableAggregations(table.id, table.name, {
+        useDbAPI: shouldUseDatabaseAPI,
+        dbName: dbIdentifier,
+        datasetId: dataset.id,
+        cacheKey,
+        selectionOverride: chart.countByTarget ? { mode: 'parent', targetTable: chart.countByTarget } : null
+      })
+    })
+  }, [dashboardCharts, dataset, countByReady, aggregations, isDatabaseMode, identifier, currentFiltersKey])
+
   const loadDataset = async () => {
     try {
       setLoading(true)
+      setAggregations({})
+      setBaselineAggregations({})
 
       // Use different API endpoint based on mode
       const apiPath = isDatabaseMode ? `/databases/${identifier}` : `/datasets/${identifier}`
@@ -874,7 +952,8 @@ function DatasetExplorer() {
           storeBaseline: true,
           useDbAPI: shouldUseDatabaseAPI,
           dbName: dbIdentifier,
-          datasetId: loadedDataset.id
+          datasetId: loadedDataset.id,
+          cacheKey: ROW_COUNT_KEY
         })
         await loadColumnMetadata(table.id, table.name, {
           useDbAPI: shouldUseDatabaseAPI,
@@ -892,11 +971,20 @@ function DatasetExplorer() {
   const loadTableAggregations = async (
     tableId: string,
     tableName: string,
-    options?: { storeBaseline?: boolean; useDbAPI?: boolean; dbName?: string; datasetId?: string; tableFilters?: Filter[] }
+    options?: {
+      storeBaseline?: boolean
+      useDbAPI?: boolean
+      dbName?: string
+      datasetId?: string
+      tableFilters?: Filter[]
+      cacheKey?: string
+      selectionOverride?: CountBySelection | null
+    }
   ) => {
     try {
       // Use table-specific filters if provided, otherwise fall back to global filters
       const activeFilters = options?.tableFilters !== undefined ? options.tableFilters : filters
+      const requestFiltersKey = buildFiltersKey(activeFilters)
       const params: Record<string, any> = activeFilters.length > 0 ? { filters: JSON.stringify(activeFilters) } : {}
       // Use provided values or fall back to computed values
       const shouldUseDbAPI = options?.useDbAPI !== undefined ? options.useDbAPI : usesDatabaseAPI
@@ -909,14 +997,24 @@ function DatasetExplorer() {
       if (shouldUseDbAPI && datasetParam) {
         params.datasetId = datasetParam
       }
-      const selection = countBySelections[tableName]
+      const selection = options?.selectionOverride ?? countBySelections[tableName]
+      const cacheKey = options?.cacheKey ?? getCountByCacheKey(tableName)
       if (selection?.mode === 'parent') {
         params.countBy = `parent:${selection.targetTable}`
       }
 
       const response = await api.get(apiPath, { params })
-      setAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
-      if (options?.storeBaseline) {
+      setAggregations(prev => ({
+        ...prev,
+        [tableName]: {
+          ...(prev[tableName] || {}),
+          [cacheKey]: {
+            data: response.data.aggregations,
+            filtersKey: requestFiltersKey
+          }
+        }
+      }))
+      if (options?.storeBaseline && cacheKey === ROW_COUNT_KEY) {
         setBaselineAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
       }
     } catch (error) {
@@ -953,8 +1051,8 @@ function DatasetExplorer() {
     return tableAggregations.find(agg => agg.column_name === columnName)
   }
 
-  const getAggregation = (tableName: string, columnName: string): ColumnAggregation | undefined => {
-    const tableAggregations = aggregations[tableName]
+  const getAggregation = (tableName: string, columnName: string, overrideKey?: string): ColumnAggregation | undefined => {
+    const tableAggregations = getAggregationsForTable(tableName, overrideKey)
     if (!tableAggregations) return undefined
     return tableAggregations.find(agg => agg.column_name === columnName)
   }
@@ -968,6 +1066,107 @@ function DatasetExplorer() {
   const getDisplayTitle = (tableName: string, columnName: string): string => {
     const metadata = getColumnMetadata(tableName, columnName)
     return metadata?.display_name || columnName.replace(/_/g, ' ')
+  }
+
+  const getCountByCacheKey = (tableName: string, override?: string): string => {
+    if (override) return override
+    const selection = countBySelections[tableName]
+    return selection ? `parent:${selection.targetTable}` : ROW_COUNT_KEY
+  }
+
+  const getAggregationsForTable = (tableName: string, override?: string): ColumnAggregation[] | undefined => {
+    const cacheKey = getCountByCacheKey(tableName, override)
+    const entry = aggregations[tableName]?.[cacheKey]
+    if (!entry) return undefined
+    if (entry.filtersKey !== currentFiltersKey) return undefined
+    return entry.data
+  }
+
+  const getCountByLabelFromTarget = (tableName: string, target: string | null): string => {
+    if (!target) {
+      const display = getTableDisplayNameByName(tableName) || tableName
+      return `Rows (${display})`
+    }
+    const option = ancestorOptions[tableName]?.find(opt => opt.targetTable === target)
+    if (option) return option.label
+    const targetDisplay = getTableDisplayNameByName(target) || target
+    return `Unique ${targetDisplay}`
+  }
+
+  const getCountByLabelForTable = (tableName: string): string => {
+    const selection = countBySelections[tableName]
+    return getCountByLabelFromTarget(tableName, selection?.targetTable ?? null)
+  }
+
+  const buildAncestorOptions = (tables: Table[]): Record<string, AncestorOption[]> => {
+    const tableMap = new Map(tables.map(t => [t.name, t]))
+    const options: Record<string, AncestorOption[]> = {}
+
+    tables.forEach(source => {
+      const result: AncestorOption[] = []
+      const queue: Array<{ tableName: string; path: PathSegment[] }> = [{ tableName: source.name, path: [] }]
+      const visited = new Set<string>([source.name])
+
+      while (queue.length > 0) {
+        const { tableName, path } = queue.shift()!
+        const tableMeta = tableMap.get(tableName)
+        if (!tableMeta) continue
+
+        for (const rel of tableMeta.relationships || []) {
+          const nextTable = rel.referenced_table
+          const segment: PathSegment = { from_table: tableName, via_column: rel.foreign_key, to_table: nextTable }
+          const nextPath = [...path, segment]
+
+          if (!visited.has(nextTable)) {
+            queue.push({ tableName: nextTable, path: nextPath })
+            visited.add(nextTable)
+          }
+
+          if (nextPath.length > 0) {
+            const targetMeta = tableMap.get(nextTable)
+            const labelParts = nextPath.map(seg => `${seg.from_table}.${seg.via_column}`)
+            const label = `${targetMeta?.displayName || targetMeta?.name || nextTable} via ${labelParts.join(' → ')}`
+            const key = `parent:${nextTable}`
+            result.push({ targetTable: nextTable, label, key, path: nextPath })
+          }
+        }
+      }
+
+      const unique = new Map<string, AncestorOption>()
+      result.forEach(option => {
+        if (!unique.has(option.targetTable)) {
+          unique.set(option.targetTable, option)
+        }
+      })
+      options[source.name] = Array.from(unique.values()).sort((a, b) => a.label.localeCompare(b.label))
+    })
+
+    return options
+  }
+
+  const normalizeCountBySelections = (
+    selections: Record<string, CountBySelection>,
+    options: Record<string, AncestorOption[]>
+  ): Record<string, CountBySelection> => {
+    let changed = false
+    const next: Record<string, CountBySelection> = {}
+
+    Object.entries(selections).forEach(([table, selection]) => {
+      if (!selection) return
+      const tableOptions = options[table]
+      if (!tableOptions || tableOptions.length === 0) {
+        changed = true
+        return
+      }
+      const match = tableOptions.find(opt => opt.targetTable === selection.targetTable)
+      if (!match) {
+        changed = true
+        return
+      }
+      next[table] = selection
+    })
+
+    return changed ? next : selections
   }
 
   const getTableDisplayNameByName = (tableName?: string): string | undefined => {
@@ -987,13 +1186,52 @@ function DatasetExplorer() {
     }
   }
 
+  const formatMetricPath = (aggregation?: ColumnAggregation): string | null => {
+    if (!aggregation || aggregation.metric_type !== 'parent' || !aggregation.metric_path || aggregation.metric_path.length === 0) {
+      return null
+    }
+    const target = aggregation.metric_parent_table
+    const targetLabel = target ? getTableDisplayNameByName(target) || target : ''
+    const chain = aggregation.metric_path
+      .map(segment => `${segment.from_table}.${segment.via_column}`)
+      .join(' → ')
+    return targetLabel ? `${targetLabel} via ${chain}` : chain
+  }
+
+  const MetricPathBadge = ({ aggregation }: { aggregation?: ColumnAggregation }) => {
+    const pathLabel = formatMetricPath(aggregation)
+    if (!pathLabel) return null
+    return (
+      <span
+        style={{
+          fontSize: '0.65rem',
+          color: '#424242',
+          background: '#F5F5F5',
+          borderRadius: '999px',
+          padding: '0.1rem 0.4rem',
+          display: 'inline-flex',
+          alignItems: 'center',
+          whiteSpace: 'nowrap',
+          maxWidth: '180px',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis'
+        }}
+        title={pathLabel}
+      >
+        {pathLabel}
+      </span>
+    )
+  }
+
   const metricsMatch = (a?: ColumnAggregation, b?: ColumnAggregation) => {
     if (!a || !b) return false
     const typeA = a.metric_type || 'rows'
     const typeB = b.metric_type || 'rows'
     if (typeA !== typeB) return false
     if (typeA === 'parent') {
-      return a.metric_parent_table === b.metric_parent_table
+      const pathA = JSON.stringify(a.metric_path || [])
+      const pathB = JSON.stringify(b.metric_path || [])
+      return a.metric_parent_table === b.metric_parent_table && pathA === pathB
     }
     return true
   }
@@ -1031,6 +1269,15 @@ const getFilterColumn = (filter: Filter): string | undefined => {
 }
 
 const getFilterTableName = (filter: Filter): string | undefined => (filter as any).tableName
+
+  const normalizeDashboardCharts = (charts: Array<{ tableName: string; columnName: string; countByTarget?: string | null; addedAt: string }>) => {
+    return charts.map(chart => ({
+      tableName: chart.tableName,
+      columnName: chart.columnName,
+      countByTarget: chart.countByTarget ?? null,
+      addedAt: chart.addedAt || new Date().toISOString()
+    }))
+  }
 
   // Helper: Get all effective filters (direct + propagated) for all tables
   const getAllEffectiveFilters = (): Record<string, { direct: Filter[]; propagated: Filter[] }> => {
@@ -1866,39 +2113,30 @@ const renderNumericFilterMenu = (
     return tableIndex >= 0 ? colors[tableIndex % colors.length] : '#9E9E9E'
   }
 
-  const getParentOptions = (table: Table) => {
-    return (table.relationships || []).map(rel => {
-      const targetDisplay = getTableDisplayNameByName(rel.referenced_table) || rel.referenced_table
-      return {
-        targetTable: rel.referenced_table,
-        value: `parent:${rel.referenced_table}`,
-        label: `${targetDisplay} via ${rel.foreign_key}`
-      }
-    })
-  }
-
   const handleCountByChange = (tableName: string, value: string) => {
-    setCountBySelections(prev => {
-      const next = { ...prev }
-      if (value === 'rows') {
+    if (value === ROW_COUNT_KEY) {
+      setCountBySelections(prev => {
+        if (!prev[tableName]) return prev
+        const next = { ...prev }
         delete next[tableName]
-      } else if (value.startsWith('parent:')) {
-        const targetTable = value.slice('parent:'.length)
-        if (targetTable) {
-          next[tableName] = { mode: 'parent', targetTable }
-        }
-      }
-      return next
-    })
+        return next
+      })
+      return
+    }
+
+    const targetTable = value.startsWith('parent:') ? value.slice('parent:'.length) : value
+    if (!targetTable) return
+
+    setCountBySelections(prev => ({
+      ...prev,
+      [tableName]: { mode: 'parent', targetTable }
+    }))
   }
 
-  const getCountByValueForTable = (tableName: string) => {
-    const selection = countBySelections[tableName]
-    return selection ? `parent:${selection.targetTable}` : 'rows'
-  }
+  const getCountByValueForTable = (tableName: string) => getCountByCacheKey(tableName)
 
-  const renderTableView = (title: string, tableName: string, field: string, tableColor?: string) => {
-    const aggregation = getAggregation(tableName, field)
+  const renderTableView = (title: string, tableName: string, field: string, tableColor?: string, aggregationOverride?: ColumnAggregation) => {
+    const aggregation = aggregationOverride ?? getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
     const metricLabels = getMetricLabels(aggregation)
 
@@ -1974,6 +2212,7 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
+          <MetricPathBadge aggregation={aggregation} />
           <button
             type="button"
             onClick={(event) => {
@@ -2148,8 +2387,8 @@ const renderNumericFilterMenu = (
     )
   }
 
-  const renderPieChart = (title: string, tableName: string, field: string, tableColor?: string) => {
-    const aggregation = getAggregation(tableName, field)
+  const renderPieChart = (title: string, tableName: string, field: string, tableColor?: string, aggregationOverride?: ColumnAggregation) => {
+    const aggregation = aggregationOverride ?? getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
 
     const metricLabels = getMetricLabels(aggregation)
@@ -2219,6 +2458,7 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
+          <MetricPathBadge aggregation={aggregation} />
           <button
             type="button"
             onClick={(event) => {
@@ -2354,8 +2594,8 @@ const renderNumericFilterMenu = (
     )
   }
 
-  const renderBarChart = (title: string, tableName: string, field: string, tableColor?: string) => {
-    const aggregation = getAggregation(tableName, field)
+  const renderBarChart = (title: string, tableName: string, field: string, tableColor?: string, aggregationOverride?: ColumnAggregation) => {
+    const aggregation = aggregationOverride ?? getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
 
     const metricLabels = getMetricLabels(aggregation)
@@ -2423,6 +2663,7 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
+          <MetricPathBadge aggregation={aggregation} />
           <button
             type="button"
             onClick={(event) => {
@@ -2572,8 +2813,8 @@ const renderNumericFilterMenu = (
     )
   }
 
-  const renderHistogram = (title: string, tableName: string, field: string, tableColor?: string) => {
-    const aggregation = getAggregation(tableName, field)
+  const renderHistogram = (title: string, tableName: string, field: string, tableColor?: string, aggregationOverride?: ColumnAggregation) => {
+    const aggregation = aggregationOverride ?? getAggregation(tableName, field)
     if (!aggregation?.numeric_stats) return null
 
     const metricLabels = getMetricLabels(aggregation)
@@ -2695,6 +2936,7 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
+          <MetricPathBadge aggregation={aggregation} />
           <button
             type="button"
             onClick={(event) => {
@@ -4016,12 +4258,14 @@ const renderNumericFilterMenu = (
                 gap: '0.5rem',
                 gridAutoFlow: 'dense'
               }}>
-                {dashboardCharts.map(({ tableName, columnName }) => {
-                  const aggregation = getAggregation(tableName, columnName)
+                {dashboardCharts.map(({ tableName, columnName, countByTarget }) => {
+                  const overrideKey = countByTarget ? `parent:${countByTarget}` : ROW_COUNT_KEY
+                  const aggregation = getAggregation(tableName, columnName, overrideKey)
                   if (!aggregation) return null
 
                   const tableColor = getTableColor(tableName)
                   const displayTitle = getDisplayTitle(tableName, columnName)
+                  const countLabel = getCountByLabelFromTarget(tableName, countByTarget ?? null)
                   const table = dataset.tables.find(t => t.name === tableName)
 
                   if (aggregation.display_type === 'categorical' && aggregation.categories) {
@@ -4032,7 +4276,8 @@ const renderNumericFilterMenu = (
                     if (viewPref === 'table') {
                       return (
                         <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2', gridRow: 'span 2' }}>
-                          {renderTableView(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                          <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
+                          {renderTableView(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                         </div>
                       )
                     }
@@ -4040,20 +4285,23 @@ const renderNumericFilterMenu = (
                     if (allowPie) {
                       return (
                         <div key={`${tableName}_${columnName}`}>
-                          {renderPieChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                          <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
+                          {renderPieChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                         </div>
                       )
                     }
 
                     return (
                       <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2' }}>
-                        {renderBarChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                        <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
+                        {renderBarChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                       </div>
                     )
                   } else if (aggregation.display_type === 'numeric' && aggregation.histogram) {
                     return (
                       <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2' }}>
-                        {renderHistogram(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                        <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
+                        {renderHistogram(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                       </div>
                     )
                   }
@@ -4069,7 +4317,7 @@ const renderNumericFilterMenu = (
       {dataset.tables
         .filter(table => table.name === activeTab)
         .map(table => {
-        const tableAggregations = aggregations[table.name]
+        const tableAggregations = getAggregationsForTable(table.name)
         if (!tableAggregations) return null
 
         // Sort aggregations by display priority (if available from metadata)
@@ -4126,7 +4374,7 @@ const renderNumericFilterMenu = (
         }
 
         const metricLabels = getMetricLabels(primaryAggregation)
-        const parentOptions = getParentOptions(table)
+        const parentOptions = ancestorOptions[table.name] || []
         const countByValue = getCountByValueForTable(table.name)
 
         return (
@@ -4210,7 +4458,7 @@ const renderNumericFilterMenu = (
                       >
                         <option value="rows">Rows ({table.displayName || table.name})</option>
                         {parentOptions.map(option => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
+                          <option key={option.key} value={option.key}>{option.label}</option>
                         ))}
                       </select>
                     </div>

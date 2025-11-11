@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { BrowserRouter } from 'react-router-dom'
 import DatasetExplorer from '../DatasetExplorer'
 import api from '../../services/api'
@@ -52,7 +52,14 @@ describe('DatasetExplorer', () => {
           { name: 'name', type: 'string', nullable: false },
           { name: 'age', type: 'integer', nullable: true },
         ],
-        relationships: [],
+        relationships: [
+          {
+            foreign_key: 'region_id',
+            referenced_table: 'regions',
+            referenced_column: 'id',
+            type: 'many-to-one',
+          },
+        ],
       },
       {
         id: 'table2',
@@ -73,10 +80,21 @@ describe('DatasetExplorer', () => {
           },
         ],
       },
+      {
+        id: 'table3',
+        name: 'regions',
+        displayName: 'Regions',
+        rowCount: 50,
+        columns: [
+          { name: 'id', type: 'integer', nullable: false },
+          { name: 'name', type: 'string', nullable: false },
+        ],
+        relationships: [],
+      },
     ],
   }
 
-  const mockAggregations = [
+  const baseAggregations = [
     {
       column_name: 'age',
       display_type: 'numeric',
@@ -101,6 +119,36 @@ describe('DatasetExplorer', () => {
       ],
     },
   ]
+
+  type TestPathSegment = {
+    from_table: string
+    via_column: string
+    to_table: string
+  }
+
+  const customerPath: TestPathSegment[] = [
+    { from_table: 'orders', via_column: 'customer_id', to_table: 'customers' }
+  ]
+
+  const regionPath: TestPathSegment[] = [
+    { from_table: 'orders', via_column: 'customer_id', to_table: 'customers' },
+    { from_table: 'customers', via_column: 'region_id', to_table: 'regions' }
+  ]
+
+  const buildAggregations = (
+    metricType: 'rows' | 'parent',
+    parentTable?: string,
+    path?: TestPathSegment[]
+  ) => {
+    const parentColumn = path && path.length > 0 ? path[path.length - 1].via_column : undefined
+    return baseAggregations.map(agg => ({
+      ...agg,
+      metric_type: metricType,
+      metric_parent_table: metricType === 'parent' ? parentTable : undefined,
+      metric_parent_column: metricType === 'parent' ? parentColumn : undefined,
+      metric_path: metricType === 'parent' ? path : undefined
+    }))
+  }
 
   const mockColumnMetadata = [
     {
@@ -152,12 +200,19 @@ describe('DatasetExplorer', () => {
     mockNavigate.mockClear()
 
     // Setup default API responses
-    vi.mocked(api.get).mockImplementation((url: string) => {
+    vi.mocked(api.get).mockImplementation((url: string, config?: { params?: Record<string, any> }) => {
       if (url === '/datasets/test-dataset-id') {
         return Promise.resolve({ data: { dataset: mockDataset } })
       }
       if (url.includes('/aggregations')) {
-        return Promise.resolve({ data: { aggregations: mockAggregations } })
+        const countByParam = config?.params?.countBy as string | undefined
+        if (countByParam === 'parent:regions') {
+          return Promise.resolve({ data: { aggregations: buildAggregations('parent', 'regions', regionPath) } })
+        }
+        if (countByParam === 'parent:customers') {
+          return Promise.resolve({ data: { aggregations: buildAggregations('parent', 'customers', customerPath) } })
+        }
+        return Promise.resolve({ data: { aggregations: buildAggregations('rows') } })
       }
       if (url.includes('/columns')) {
         return Promise.resolve({ data: { columns: mockColumnMetadata } })
@@ -185,6 +240,36 @@ describe('DatasetExplorer', () => {
       return Promise.reject(new Error(`Unknown endpoint: ${url}`))
     })
   })
+
+  const renderExplorer = () => {
+    render(
+      <BrowserRouter>
+        <DatasetExplorer />
+      </BrowserRouter>
+    )
+  }
+
+  const activateOrdersTab = async (): Promise<HTMLSelectElement> => {
+    await waitFor(() => {
+      expect(screen.getByText('Test Dataset')).toBeInTheDocument()
+    })
+    const ordersTab = screen.getByRole('button', { name: /Orders/i })
+    fireEvent.click(ordersTab)
+    let targetSelect: HTMLSelectElement | undefined
+    await waitFor(() => {
+      const comboboxes = screen.getAllByRole('combobox') as HTMLSelectElement[]
+      targetSelect = comboboxes.find(select =>
+        Array.from(select.options).some(option => option.textContent === 'Rows (Orders)')
+      )
+      expect(targetSelect).toBeDefined()
+    })
+    return targetSelect!
+  }
+
+  const getOrderAggregationCallCount = () =>
+    vi.mocked(api.get).mock.calls.filter(([url]) =>
+      typeof url === 'string' && url.includes('/tables/table2/aggregations')
+    ).length
 
   describe('Smoke Test', () => {
     test('renders without crashing with mock dataset', async () => {
@@ -351,11 +436,7 @@ describe('DatasetExplorer', () => {
 
   describe('View Preferences', () => {
     test('toggles between chart and table view and persists to localStorage', async () => {
-      render(
-        <BrowserRouter>
-          <DatasetExplorer />
-        </BrowserRouter>
-      )
+      renderExplorer()
 
       await waitFor(() => {
         expect(screen.getByText('Test Dataset')).toBeInTheDocument()
@@ -367,6 +448,87 @@ describe('DatasetExplorer', () => {
 
       // In actual implementation, would test toggle button click
       // For now, verify initial state
+    })
+  })
+
+  describe('Count By controls', () => {
+    test('shows multi-hop parent options and renders ancestor badges', async () => {
+      renderExplorer()
+
+      const countSelect = await activateOrdersTab()
+
+      const optionLabels = Array.from(countSelect.querySelectorAll('option')).map(option => option.textContent)
+      expect(optionLabels).toEqual(expect.arrayContaining([
+        'Customers via orders.customer_id',
+        'Regions via orders.customer_id → customers.region_id'
+      ]))
+
+      fireEvent.change(countSelect, { target: { value: 'parent:regions' } })
+
+      await waitFor(() => {
+        expect(countSelect.value).toBe('parent:regions')
+      })
+
+      const badgeTitle = 'Regions via orders.customer_id → customers.region_id'
+      await waitFor(() => {
+        const badges = screen.getAllByTitle(badgeTitle)
+        expect(badges.length).toBeGreaterThan(0)
+      })
+    })
+
+    test('reuses cached aggregations when toggling count targets', async () => {
+      renderExplorer()
+
+      const countSelect = await activateOrdersTab()
+      const initialCalls = getOrderAggregationCallCount()
+
+      fireEvent.change(countSelect, { target: { value: 'parent:customers' } })
+
+      await waitFor(() => {
+        expect(countSelect.value).toBe('parent:customers')
+      })
+
+      await waitFor(() => {
+        expect(getOrderAggregationCallCount()).toBe(initialCalls + 1)
+      })
+
+      fireEvent.change(countSelect, { target: { value: 'rows' } })
+      await waitFor(() => {
+        expect(countSelect.value).toBe('rows')
+      })
+      expect(getOrderAggregationCallCount()).toBe(initialCalls + 1)
+
+      fireEvent.change(countSelect, { target: { value: 'parent:customers' } })
+      await waitFor(() => {
+        expect(countSelect.value).toBe('parent:customers')
+      })
+      expect(getOrderAggregationCallCount()).toBe(initialCalls + 1)
+    })
+  })
+
+  describe('Dashboard integration', () => {
+    test('pins charts with the selected count-by target', async () => {
+      renderExplorer()
+
+      const countSelect = await activateOrdersTab()
+      fireEvent.change(countSelect, { target: { value: 'parent:regions' } })
+
+      await waitFor(() => {
+        expect(countSelect.value).toBe('parent:regions')
+      })
+
+      await waitFor(() => {
+        expect(screen.getAllByTitle('Add to dashboard').length).toBeGreaterThan(0)
+      })
+      const addButton = screen.getAllByTitle('Add to dashboard')[0]
+      fireEvent.click(addButton)
+
+      const dashboardTab = screen.getByRole('button', { name: /Dashboard/i })
+      fireEvent.click(dashboardTab)
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Regions via orders.customer_id → customers.region_id').length).toBeGreaterThan(0)
+      })
     })
   })
 })
