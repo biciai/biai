@@ -35,7 +35,8 @@ describe('AggregationService helpers', () => {
       'status',
       20,
       50,
-      ''
+      '',
+      { type: 'rows' }
     )
 
     expect(mockQuery).toHaveBeenCalledTimes(1)

@@ -2,6 +2,7 @@ import express from 'express'
 import clickhouseClient, { createClickHouseClient } from '../config/clickhouse.js'
 import datasetService from '../services/datasetService.js'
 import aggregationService, { Filter } from '../services/aggregationService.js'
+import { parseCountByQuery } from '../utils/countBy.js'
 
 const router = express.Router()
 
@@ -322,9 +323,19 @@ router.get('/:database/tables/:table/aggregations', async (req, res) => {
       }
     }
 
+    const rawCountBy = typeof req.query.countBy === 'string' ? req.query.countBy : undefined
+    const { config: countByConfig, error: countByError } = parseCountByQuery(rawCountBy)
+    if (countByError) {
+      return res.status(400).json({ error: countByError })
+    }
+
+    if (!datasetId && countByConfig) {
+      return res.status(400).json({ error: 'countBy requires datasetId parameter' })
+    }
+
     if (datasetId) {
       try {
-        const aggregations = await aggregationService.getTableAggregations(datasetId, table, filters)
+        const aggregations = await aggregationService.getTableAggregations(datasetId, table, filters, countByConfig)
         return res.json({ aggregations })
       } catch (error: any) {
         console.error('Get database aggregations error:', error)

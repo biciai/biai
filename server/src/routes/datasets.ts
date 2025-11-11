@@ -3,6 +3,7 @@ import multer from 'multer'
 import { parseCSVFile, detectSkipRows } from '../services/fileParser.js'
 import datasetService from '../services/datasetService.js'
 import aggregationService from '../services/aggregationService.js'
+import { parseCountByQuery } from '../utils/countBy.js'
 import dashboardService from '../services/dashboardService.js'
 import { unlink } from 'fs/promises'
 import { fetchFileFromUrl } from '../utils/urlFetcher.js'
@@ -582,10 +583,17 @@ router.get('/:id/tables/:tableId/aggregations', async (req, res) => {
       }
     }
 
+    const rawCountBy = typeof req.query.countBy === 'string' ? req.query.countBy : undefined
+    const { config: countByConfig, error: countByError } = parseCountByQuery(rawCountBy)
+    if (countByError) {
+      return res.status(400).json({ error: countByError })
+    }
+
     const aggregations = await aggregationService.getTableAggregations(
       req.params.id,
       req.params.tableId,
-      filters
+      filters,
+      countByConfig
     )
 
     return res.json({
@@ -606,11 +614,21 @@ router.get('/:id/tables/:tableId/columns/:columnName/aggregation', async (req, r
       return res.status(400).json({ error: 'displayType query parameter is required' })
     }
 
+    const rawCountBy = typeof req.query.countBy === 'string' ? req.query.countBy : undefined
+    const { config: countByConfig, error: countByError } = parseCountByQuery(rawCountBy)
+    if (countByError) {
+      return res.status(400).json({ error: countByError })
+    }
+
     const aggregation = await aggregationService.getColumnAggregation(
       req.params.id,
       req.params.tableId,
       req.params.columnName,
-      displayType as string
+      displayType as string,
+      [],
+      undefined,
+      undefined,
+      countByConfig
     )
 
     return res.json({
