@@ -1,13 +1,17 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react'
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import Plot from 'react-plotly.js'
 import type { PlotMouseEvent, PlotSelectionEvent } from 'plotly.js'
 import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
+import type { MetricPathSegment } from '../types'
 import { findRelationshipPath } from '../utils/filterHelpers'
 // Small categorical sets render better as pie charts; beyond this use bars.
 const MAX_PIE_CATEGORIES = 8
 const ROW_COUNT_KEY = 'rows'
+const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
+const CACHE_MAX_ENTRIES_PER_TABLE = 5
+const MAX_ANCESTOR_DEPTH = 4
 
 interface Column {
   name: string
@@ -70,7 +74,7 @@ interface ColumnAggregation {
   metric_type?: 'rows' | 'parent'
   metric_parent_table?: string
   metric_parent_column?: string
-  metric_path?: PathSegment[]
+  metric_path?: MetricPathSegment[]
 }
 
 interface Filter {
@@ -129,22 +133,17 @@ type CountBySelection = {
   targetTable: string
 }
 
-type PathSegment = {
-  from_table: string
-  via_column: string
-  to_table: string
-}
-
 type AncestorOption = {
   targetTable: string
   label: string
   key: string
-  path: PathSegment[]
+  path: MetricPathSegment[]
 }
 
 type AggregationCacheEntry = {
   data: ColumnAggregation[]
   filtersKey: string
+  timestamp: number
 }
 
 function DatasetExplorer() {
@@ -193,6 +192,11 @@ function DatasetExplorer() {
   // Dashboard state: track which charts are pinned to dashboard
   const [dashboardCharts, setDashboardCharts] = useState<Array<{ tableName: string; columnName: string; countByTarget: string | null; addedAt: string }>>([])
   const [ancestorOptions, setAncestorOptions] = useState<Record<string, AncestorOption[]>>({})
+  const [visibleDashboardKeys, setVisibleDashboardKeys] = useState<Record<string, boolean>>({})
+  const dashboardObserverRef = useRef<IntersectionObserver | null>(null)
+  const dashboardCardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const dashboardElementKeyMap = useRef<Map<Element, string>>(new Map())
+  const intersectionObserverAvailable = typeof window !== 'undefined' && 'IntersectionObserver' in window
 
   // Saved dashboards state
   const [savedDashboards, setSavedDashboards] = useState<SavedDashboard[]>([])
@@ -479,6 +483,32 @@ function DatasetExplorer() {
       return !metadata?.is_hidden
     }).length
   }
+
+  const getDashboardChartKey = (chart: { tableName: string; columnName: string; countByTarget: string | null }) =>
+    `${chart.tableName}:${chart.columnName}:${chart.countByTarget ?? 'rows'}`
+
+  const registerDashboardCard = useCallback(
+    (key: string) => (node: HTMLDivElement | null) => {
+      const observer = dashboardObserverRef.current
+      const prevNode = dashboardCardRefs.current[key]
+      if (prevNode) {
+        if (observer) {
+          observer.unobserve(prevNode)
+        }
+        dashboardElementKeyMap.current.delete(prevNode)
+      }
+      if (!node) {
+        dashboardCardRefs.current[key] = null
+        return
+      }
+      dashboardCardRefs.current[key] = node
+      if (observer) {
+        dashboardElementKeyMap.current.set(node, key)
+        observer.observe(node)
+      }
+    },
+    []
+  )
 
   // Saved dashboard management
   const saveDashboard = async (name: string) => {
@@ -833,13 +863,78 @@ function DatasetExplorer() {
   }, [id, database, countByReady])
 
   useEffect(() => {
+    if (!intersectionObserverAvailable) return
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        const key = dashboardElementKeyMap.current.get(entry.target)
+        if (!key || !entry.isIntersecting) return
+        setVisibleDashboardKeys(prev => {
+          if (prev[key]) return prev
+          return { ...prev, [key]: true }
+        })
+        observer.unobserve(entry.target)
+        dashboardElementKeyMap.current.delete(entry.target)
+      })
+    }, { threshold: 0.1 })
+    dashboardObserverRef.current = observer
+    Object.entries(dashboardCardRefs.current).forEach(([key, node]) => {
+      if (node) {
+        dashboardElementKeyMap.current.set(node, key)
+        observer.observe(node)
+      }
+    })
+    return () => observer.disconnect()
+  }, [intersectionObserverAvailable])
+
+  useEffect(() => {
+    if (intersectionObserverAvailable) return
+    setVisibleDashboardKeys(prev => {
+      let changed = false
+      const next = { ...prev }
+      dashboardCharts.forEach(chart => {
+        const key = getDashboardChartKey(chart)
+        if (!next[key]) {
+          next[key] = true
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+  }, [dashboardCharts, intersectionObserverAvailable])
+
+  useEffect(() => {
+    setVisibleDashboardKeys(prev => {
+      const allowed = new Set(dashboardCharts.map(chart => getDashboardChartKey(chart)))
+      let changed = false
+      const next: Record<string, boolean> = {}
+      Object.entries(prev).forEach(([key, value]) => {
+        if (allowed.has(key)) {
+          next[key] = value
+        } else {
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+  }, [dashboardCharts])
+
+  useEffect(() => {
     if (!dataset?.tables) {
       setAncestorOptions({})
       return
     }
-    const options = buildAncestorOptions(dataset.tables)
-    setAncestorOptions(options)
-    setCountBySelections(prev => normalizeCountBySelections(prev, options))
+    let cancelled = false
+    const tablesSnapshot = dataset.tables
+    Promise.resolve().then(() => {
+      if (cancelled) return
+      const options = buildAncestorOptions(tablesSnapshot)
+      if (cancelled) return
+      setAncestorOptions(options)
+      setCountBySelections(prev => normalizeCountBySelections(prev, options))
+    })
+    return () => {
+      cancelled = true
+    }
   }, [dataset])
 
   useEffect(() => {
@@ -864,7 +959,7 @@ function DatasetExplorer() {
 
       if (previousKey !== currentKey) {
         const cachedEntry = aggregations[table.name]?.[currentKey]
-        if (cachedEntry && cachedEntry.filtersKey === currentFiltersKey) {
+        if (isCacheEntryFresh(cachedEntry, currentFiltersKey)) {
           return
         }
         loadTableAggregations(table.id, table.name, {
@@ -907,11 +1002,13 @@ function DatasetExplorer() {
     const dbIdentifier = isDatabaseMode ? identifier : dataset.database_name
 
     dashboardCharts.forEach(chart => {
+      const key = getDashboardChartKey(chart)
+      if (!visibleDashboardKeys[key]) return
       const table = dataset.tables.find(t => t.name === chart.tableName)
       if (!table) return
       const cacheKey = chart.countByTarget ? `parent:${chart.countByTarget}` : ROW_COUNT_KEY
       const cachedEntry = aggregations[chart.tableName]?.[cacheKey]
-      if (cachedEntry && cachedEntry.filtersKey === currentFiltersKey) return
+      if (isCacheEntryFresh(cachedEntry, currentFiltersKey)) return
       loadTableAggregations(table.id, table.name, {
         useDbAPI: shouldUseDatabaseAPI,
         dbName: dbIdentifier,
@@ -920,7 +1017,7 @@ function DatasetExplorer() {
         selectionOverride: chart.countByTarget ? { mode: 'parent', targetTable: chart.countByTarget } : null
       })
     })
-  }, [dashboardCharts, dataset, countByReady, aggregations, isDatabaseMode, identifier, currentFiltersKey])
+  }, [dashboardCharts, dataset, countByReady, aggregations, isDatabaseMode, identifier, currentFiltersKey, visibleDashboardKeys])
 
   const loadDataset = async () => {
     try {
@@ -1004,16 +1101,36 @@ function DatasetExplorer() {
       }
 
       const response = await api.get(apiPath, { params })
-      setAggregations(prev => ({
-        ...prev,
-        [tableName]: {
-          ...(prev[tableName] || {}),
-          [cacheKey]: {
-            data: response.data.aggregations,
-            filtersKey: requestFiltersKey
+      setAggregations(prev => {
+        const previousTableCache = prev[tableName] || {}
+        const nextEntry: AggregationCacheEntry = {
+          data: response.data.aggregations,
+          filtersKey: requestFiltersKey,
+          timestamp: Date.now()
+        }
+        const nextTableCache: Record<string, AggregationCacheEntry> = {
+          ...previousTableCache,
+          [cacheKey]: nextEntry
+        }
+
+        const tableKeys = Object.keys(nextTableCache)
+        if (tableKeys.length > CACHE_MAX_ENTRIES_PER_TABLE) {
+          const sortedByAge = tableKeys
+            .slice()
+            .sort((a, b) => nextTableCache[a].timestamp - nextTableCache[b].timestamp)
+          while (sortedByAge.length > CACHE_MAX_ENTRIES_PER_TABLE) {
+            const oldestKey = sortedByAge.shift()
+            if (oldestKey) {
+              delete nextTableCache[oldestKey]
+            }
           }
         }
-      }))
+
+        return {
+          ...prev,
+          [tableName]: nextTableCache
+        }
+      })
       if (options?.storeBaseline && cacheKey === ROW_COUNT_KEY) {
         setBaselineAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
       }
@@ -1074,12 +1191,17 @@ function DatasetExplorer() {
     return selection ? `parent:${selection.targetTable}` : ROW_COUNT_KEY
   }
 
+  const isCacheEntryFresh = (entry?: AggregationCacheEntry, filtersKey?: string) => {
+    if (!entry) return false
+    if (filtersKey && entry.filtersKey !== filtersKey) return false
+    return Date.now() - entry.timestamp < CACHE_TTL_MS
+  }
+
   const getAggregationsForTable = (tableName: string, override?: string): ColumnAggregation[] | undefined => {
     const cacheKey = getCountByCacheKey(tableName, override)
     const entry = aggregations[tableName]?.[cacheKey]
-    if (!entry) return undefined
-    if (entry.filtersKey !== currentFiltersKey) return undefined
-    return entry.data
+    if (!isCacheEntryFresh(entry, currentFiltersKey)) return undefined
+    return entry?.data
   }
 
   const getCountByLabelFromTarget = (tableName: string, target: string | null): string => {
@@ -1104,7 +1226,7 @@ function DatasetExplorer() {
 
     tables.forEach(source => {
       const result: AncestorOption[] = []
-      const queue: Array<{ tableName: string; path: PathSegment[] }> = [{ tableName: source.name, path: [] }]
+      const queue: Array<{ tableName: string; path: MetricPathSegment[] }> = [{ tableName: source.name, path: [] }]
       const visited = new Set<string>([source.name])
 
       while (queue.length > 0) {
@@ -1114,8 +1236,12 @@ function DatasetExplorer() {
 
         for (const rel of tableMeta.relationships || []) {
           const nextTable = rel.referenced_table
-          const segment: PathSegment = { from_table: tableName, via_column: rel.foreign_key, to_table: nextTable }
+          const segment: MetricPathSegment = { from_table: tableName, via_column: rel.foreign_key, to_table: nextTable }
           const nextPath = [...path, segment]
+
+          if (nextPath.length > MAX_ANCESTOR_DEPTH) {
+            continue
+          }
 
           if (!visited.has(nextTable)) {
             queue.push({ tableName: nextTable, path: nextPath })
@@ -1209,12 +1335,10 @@ function DatasetExplorer() {
           background: '#F5F5F5',
           borderRadius: '999px',
           padding: '0.1rem 0.4rem',
-          display: 'inline-flex',
-          alignItems: 'center',
-          whiteSpace: 'nowrap',
-          maxWidth: '180px',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis'
+          display: 'inline-block',
+          whiteSpace: 'normal',
+          maxWidth: '280px',
+          lineHeight: 1.3
         }}
         title={pathLabel}
       >
@@ -4258,15 +4382,44 @@ const renderNumericFilterMenu = (
                 gap: '0.5rem',
                 gridAutoFlow: 'dense'
               }}>
-                {dashboardCharts.map(({ tableName, columnName, countByTarget }) => {
+                {dashboardCharts.map(chart => {
+                  const { tableName, columnName, countByTarget } = chart
                   const overrideKey = countByTarget ? `parent:${countByTarget}` : ROW_COUNT_KEY
+                  const cardKey = getDashboardChartKey(chart)
+                  const cardRef = registerDashboardCard(cardKey)
                   const aggregation = getAggregation(tableName, columnName, overrideKey)
-                  if (!aggregation) return null
-
                   const tableColor = getTableColor(tableName)
                   const displayTitle = getDisplayTitle(tableName, columnName)
                   const countLabel = getCountByLabelFromTarget(tableName, countByTarget ?? null)
                   const table = dataset.tables.find(t => t.name === tableName)
+
+                  if (!aggregation) {
+                    return (
+                      <div
+                        key={cardKey}
+                        ref={cardRef}
+                        data-dashboard-key={cardKey}
+                        style={{
+                          gridColumn: 'span 2',
+                          minHeight: '175px',
+                          background: 'white',
+                          borderRadius: '8px',
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+                          padding: '0.75rem',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                          border: tableColor ? `2px solid ${tableColor}15` : undefined
+                        }}
+                      >
+                        <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.5rem' }}>{countLabel}</div>
+                        <div style={{ fontSize: '0.8rem', color: '#999', textAlign: 'center' }}>
+                          Loading {displayTitle}…
+                        </div>
+                      </div>
+                    )
+                  }
 
                   if (aggregation.display_type === 'categorical' && aggregation.categories) {
                     const categoryCount = aggregation.categories.length
@@ -4275,7 +4428,12 @@ const renderNumericFilterMenu = (
 
                     if (viewPref === 'table') {
                       return (
-                        <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2', gridRow: 'span 2' }}>
+                        <div
+                          key={cardKey}
+                          ref={cardRef}
+                          data-dashboard-key={cardKey}
+                          style={{ gridColumn: 'span 2', gridRow: 'span 2' }}
+                        >
                           <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
                           {renderTableView(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                         </div>
@@ -4284,7 +4442,7 @@ const renderNumericFilterMenu = (
 
                     if (allowPie) {
                       return (
-                        <div key={`${tableName}_${columnName}`}>
+                        <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey}>
                           <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
                           {renderPieChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                         </div>
@@ -4292,14 +4450,14 @@ const renderNumericFilterMenu = (
                     }
 
                     return (
-                      <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2' }}>
+                      <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
                         <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
                         {renderBarChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                       </div>
                     )
                   } else if (aggregation.display_type === 'numeric' && aggregation.histogram) {
                     return (
-                      <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2' }}>
+                      <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
                         <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
                         {renderHistogram(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                       </div>

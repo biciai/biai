@@ -783,4 +783,93 @@ describe('AggregationService - countBy metrics', () => {
     expect(context.parentColumn).toBe('hospital_id')
     expect(context.pathSegments).toHaveLength(3)
   })
+
+  test('getTableAggregations returns multi-hop parent metrics end-to-end', async () => {
+    const getTableColumnsSpy = vi.spyOn(aggregationService as any, 'getTableColumns')
+      .mockResolvedValue(new Set(['status']))
+
+    const datasetTables = [
+      { table_id: 'table-mutations', table_name: 'mutations', clickhouse_table_name: 'biai.mutations_raw' },
+      { table_id: 'table-samples', table_name: 'samples', clickhouse_table_name: 'biai.samples_raw' },
+      { table_id: 'table-patients', table_name: 'patients', clickhouse_table_name: 'biai.patients_raw' },
+      { table_id: 'table-hospitals', table_name: 'hospitals', clickhouse_table_name: 'biai.hospitals_raw' }
+    ]
+
+    const relationships = [
+      {
+        table_id: 'table-mutations',
+        foreign_key: 'sample_id',
+        referenced_table: 'samples',
+        referenced_column: 'sample_id',
+        relationship_type: 'many-to-one'
+      },
+      {
+        table_id: 'table-samples',
+        foreign_key: 'patient_id',
+        referenced_table: 'patients',
+        referenced_column: 'patient_id',
+        relationship_type: 'many-to-one'
+      },
+      {
+        table_id: 'table-patients',
+        foreign_key: 'hospital_id',
+        referenced_table: 'hospitals',
+        referenced_column: 'hospital_id',
+        relationship_type: 'many-to-one'
+      }
+    ]
+
+    mockQuery
+      // loadDatasetTablesMetadata - tables
+      .mockResolvedValueOnce({
+        json: async () => datasetTables
+      } as any)
+      // loadDatasetTablesMetadata - relationships
+      .mockResolvedValueOnce({
+        json: async () => relationships
+      } as any)
+      // dataset_columns
+      .mockResolvedValueOnce({
+        json: async () => [
+          { column_name: 'status', display_type: 'categorical', is_hidden: false }
+        ]
+      } as any)
+      // dataset_tables lookup in getColumnAggregation
+      .mockResolvedValueOnce({
+        json: async () => [{ table_name: 'mutations', clickhouse_table_name: 'biai.mutations_raw', row_count: 100 }]
+      } as any)
+      // count query
+      .mockResolvedValueOnce({
+        json: async () => [{ filtered_count: 80 }]
+      } as any)
+      // basic stats
+      .mockResolvedValueOnce({
+        json: async () => [{ null_count: 5, unique_count: 10 }]
+      } as any)
+      // categorical aggregation
+      .mockResolvedValueOnce({
+        json: async () => [{ value: 'A', display_value: 'A', count: 80, percentage: 100 }]
+      } as any)
+
+    const aggregations = await aggregationService.getTableAggregations(
+      'dataset-1',
+      'table-mutations',
+      [],
+      { mode: 'parent', target_table: 'hospitals' }
+    )
+
+    expect(aggregations).toHaveLength(1)
+    const [aggregation] = aggregations
+    expect(aggregation.metric_type).toBe('parent')
+    expect(aggregation.metric_parent_table).toBe('hospitals')
+    expect(aggregation.metric_path).toEqual([
+      { from_table: 'mutations', via_column: 'sample_id', to_table: 'samples' },
+      { from_table: 'samples', via_column: 'patient_id', to_table: 'patients' },
+      { from_table: 'patients', via_column: 'hospital_id', to_table: 'hospitals' }
+    ])
+    expect(aggregation.total_rows).toBe(80)
+    expect(mockQuery).toHaveBeenCalledTimes(7)
+
+    getTableColumnsSpy.mockRestore()
+  })
 })
