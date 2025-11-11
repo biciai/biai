@@ -54,7 +54,7 @@ describe('AggregationService helpers', () => {
       value: ['(Empty)', '(N/A)', 5]
     })
 
-    expect(condition).toBe("(status IN ('N/A', 5) OR status = '' OR isNull(status))")
+    expect(condition).toBe("(base_table.status IN ('N/A', 5) OR base_table.status = '' OR isNull(base_table.status))")
   })
 
   test('buildFilterCondition handles nulls in IN filter', () => {
@@ -64,7 +64,7 @@ describe('AggregationService helpers', () => {
       value: [null, 'value']
     })
 
-    expect(condition).toBe("(notes IN ('value') OR isNull(notes))")
+    expect(condition).toBe("(base_table.notes IN ('value') OR isNull(base_table.notes))")
   })
 
   test('buildFilterCondition handles equality with (Empty)', () => {
@@ -74,7 +74,7 @@ describe('AggregationService helpers', () => {
       value: '(Empty)'
     })
 
-    expect(condition).toBe("(age_group = '' OR isNull(age_group))")
+    expect(condition).toBe("(base_table.age_group = '' OR isNull(base_table.age_group))")
   })
 
   test('buildFilterCondition handles equality with N/A literal', () => {
@@ -84,7 +84,7 @@ describe('AggregationService helpers', () => {
       value: '(N/A)'
     })
 
-    expect(condition).toBe("age_group = 'N/A'")
+    expect(condition).toBe("base_table.age_group = 'N/A'")
   })
 })
 
@@ -161,7 +161,7 @@ describe('AggregationService - Cross-Table Filtering', () => {
       )
 
       expect(subquery).toBe(
-        "patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE radiation_therapy = 'Yes')"
+        "base_table.patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE radiation_therapy = 'Yes')"
       )
     })
 
@@ -180,7 +180,7 @@ describe('AggregationService - Cross-Table Filtering', () => {
       )
 
       expect(subquery).toBe(
-        "patient_id IN (SELECT patient_id FROM biai.samples_abc123 WHERE sample_type = 'Tumor')"
+        "base_table.patient_id IN (SELECT patient_id FROM biai.samples_abc123 WHERE sample_type = 'Tumor')"
       )
     })
 
@@ -262,7 +262,7 @@ describe('AggregationService - Cross-Table Filtering', () => {
       )
 
       expect(subquery).toBe(
-        "patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE radiation_therapy IN ('Yes', 'No'))"
+        "base_table.patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE radiation_therapy IN ('Yes', 'No'))"
       )
     })
 
@@ -281,7 +281,7 @@ describe('AggregationService - Cross-Table Filtering', () => {
       )
 
       expect(subquery).toBe(
-        'patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE age BETWEEN 30 AND 50)'
+        'base_table.patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE age BETWEEN 30 AND 50)'
       )
     })
 
@@ -424,9 +424,9 @@ describe('AggregationService - Cross-Table Filtering', () => {
         mockTablesMetadata
       )
 
-      expect(whereClause).toContain("sample_type = 'Tumor'")
+      expect(whereClause).toContain("base_table.sample_type = 'Tumor'")
       expect(whereClause).toContain(
-        "patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE radiation_therapy = 'Yes')"
+        "base_table.patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE radiation_therapy = 'Yes')"
       )
       expect(whereClause).toContain('AND')
     })
@@ -449,7 +449,7 @@ describe('AggregationService - Cross-Table Filtering', () => {
       )
 
       expect(whereClause).toBe(
-        "AND (patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE radiation_therapy = 'Yes'))"
+        "AND (base_table.patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE radiation_therapy = 'Yes'))"
       )
     })
 
@@ -470,7 +470,7 @@ describe('AggregationService - Cross-Table Filtering', () => {
         mockTablesMetadata
       )
 
-      expect(whereClause).toBe("AND (sample_type = 'Tumor')")
+      expect(whereClause).toBe("AND (base_table.sample_type = 'Tumor')")
     })
 
     test('filters out non-existent columns from local filters', () => {
@@ -497,7 +497,7 @@ describe('AggregationService - Cross-Table Filtering', () => {
       )
 
       // Should only include sample_type, not non_existent_column
-      expect(whereClause).toBe("AND (sample_type = 'Tumor')")
+      expect(whereClause).toBe("AND (base_table.sample_type = 'Tumor')")
       expect(whereClause).not.toContain('non_existent_column')
     })
 
@@ -561,10 +561,10 @@ describe('AggregationService - Cross-Table Filtering', () => {
       )
 
       expect(whereClause).toContain(
-        "patient_id IN (SELECT patient_id FROM biai.samples_abc123 WHERE sample_type = 'Tumor')"
+        "base_table.patient_id IN (SELECT patient_id FROM biai.samples_abc123 WHERE sample_type = 'Tumor')"
       )
       expect(whereClause).toContain(
-        "patient_id IN (SELECT patient_id FROM biai.treatments_abc123 WHERE treatment_type = 'Chemotherapy')"
+        "base_table.patient_id IN (SELECT patient_id FROM biai.treatments_abc123 WHERE treatment_type = 'Chemotherapy')"
       )
     })
   })
@@ -595,8 +595,8 @@ describe('AggregationService - Cross-Table Filtering', () => {
         mockTablesMetadata
       )
 
-      expect(whereClause).toContain("sample_type = 'Tumor'")
-      expect(whereClause).toContain("sample_type = 'Normal'")
+      expect(whereClause).toContain("base_table.sample_type = 'Tumor'")
+      expect(whereClause).toContain("base_table.sample_type = 'Normal'")
       expect(whereClause).toContain('OR')
     })
 
@@ -624,9 +624,9 @@ describe('AggregationService - Cross-Table Filtering', () => {
         mockTablesMetadata
       )
 
-      expect(whereClause).toContain("sample_type = 'Tumor'")
+      expect(whereClause).toContain("base_table.sample_type = 'Tumor'")
       expect(whereClause).toContain(
-        "patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE radiation_therapy = 'Yes')"
+        "base_table.patient_id IN (SELECT patient_id FROM biai.patients_abc123 WHERE radiation_therapy = 'Yes')"
       )
     })
   })
@@ -667,7 +667,12 @@ describe('AggregationService - countBy metrics', () => {
     expect(context).toEqual({
       type: 'parent',
       parentTable: 'patients',
-      parentColumn: 'patient_id'
+      parentColumn: 'patient_id',
+      joins: [],
+      ancestorExpression: 'base_table.patient_id',
+      pathSegments: [
+        { from_table: 'samples', via_column: 'patient_id', to_table: 'patients' }
+      ]
     })
   })
 
@@ -719,7 +724,151 @@ describe('AggregationService - countBy metrics', () => {
     expect(result.metric_parent_table).toBe('patients')
     expect(result.total_rows).toBe(3)
     expect(result.categories).toEqual([{ value: 'A', display_value: 'A', count: 2, percentage: 100 }])
+    expect(result.metric_path).toEqual([{ from_table: 'samples', via_column: 'patient_id', to_table: 'patients' }])
     expect(mockQuery).toHaveBeenCalledTimes(4)
+
+    getTableColumnsSpy.mockRestore()
+  })
+
+  test('resolveMetricContext builds joins for multi-hop ancestor', () => {
+    const extendedMetadata = [
+      {
+        table_name: 'mutations',
+        clickhouse_table_name: 'biai.mutations_raw',
+        relationships: [
+          { foreign_key: 'sample_id', referenced_table: 'samples', referenced_column: 'sample_id', type: 'many-to-one' }
+        ]
+      },
+      {
+        table_name: 'samples',
+        clickhouse_table_name: 'biai.samples_raw',
+        relationships: [
+          { foreign_key: 'patient_id', referenced_table: 'patients', referenced_column: 'patient_id', type: 'many-to-one' }
+        ]
+      },
+      {
+        table_name: 'patients',
+        clickhouse_table_name: 'biai.patients_raw',
+        relationships: [
+          { foreign_key: 'hospital_id', referenced_table: 'hospitals', referenced_column: 'hospital_id', type: 'many-to-one' }
+        ]
+      },
+      {
+        table_name: 'hospitals',
+        clickhouse_table_name: 'biai.hospitals_raw',
+        relationships: []
+      }
+    ]
+
+    const context = callPrivate('resolveMetricContext')(
+      'mutations',
+      { mode: 'parent', target_table: 'hospitals' },
+      extendedMetadata
+    )
+
+    expect(context.joins).toEqual([
+      {
+        alias: 'ancestor_0',
+        table: 'biai.samples_raw',
+        on: 'base_table.sample_id = ancestor_0.sample_id'
+      },
+      {
+        alias: 'ancestor_1',
+        table: 'biai.patients_raw',
+        on: 'ancestor_0.patient_id = ancestor_1.patient_id'
+      }
+    ])
+    expect(context.ancestorExpression).toBe('ancestor_1.hospital_id')
+    expect(context.parentTable).toBe('hospitals')
+    expect(context.parentColumn).toBe('hospital_id')
+    expect(context.pathSegments).toHaveLength(3)
+  })
+
+  test('getTableAggregations returns multi-hop parent metrics end-to-end', async () => {
+    const getTableColumnsSpy = vi.spyOn(aggregationService as any, 'getTableColumns')
+      .mockResolvedValue(new Set(['status']))
+
+    const datasetTables = [
+      { table_id: 'table-mutations', table_name: 'mutations', clickhouse_table_name: 'biai.mutations_raw' },
+      { table_id: 'table-samples', table_name: 'samples', clickhouse_table_name: 'biai.samples_raw' },
+      { table_id: 'table-patients', table_name: 'patients', clickhouse_table_name: 'biai.patients_raw' },
+      { table_id: 'table-hospitals', table_name: 'hospitals', clickhouse_table_name: 'biai.hospitals_raw' }
+    ]
+
+    const relationships = [
+      {
+        table_id: 'table-mutations',
+        foreign_key: 'sample_id',
+        referenced_table: 'samples',
+        referenced_column: 'sample_id',
+        relationship_type: 'many-to-one'
+      },
+      {
+        table_id: 'table-samples',
+        foreign_key: 'patient_id',
+        referenced_table: 'patients',
+        referenced_column: 'patient_id',
+        relationship_type: 'many-to-one'
+      },
+      {
+        table_id: 'table-patients',
+        foreign_key: 'hospital_id',
+        referenced_table: 'hospitals',
+        referenced_column: 'hospital_id',
+        relationship_type: 'many-to-one'
+      }
+    ]
+
+    mockQuery
+      // loadDatasetTablesMetadata - tables
+      .mockResolvedValueOnce({
+        json: async () => datasetTables
+      } as any)
+      // loadDatasetTablesMetadata - relationships
+      .mockResolvedValueOnce({
+        json: async () => relationships
+      } as any)
+      // dataset_columns
+      .mockResolvedValueOnce({
+        json: async () => [
+          { column_name: 'status', display_type: 'categorical', is_hidden: false }
+        ]
+      } as any)
+      // dataset_tables lookup in getColumnAggregation
+      .mockResolvedValueOnce({
+        json: async () => [{ table_name: 'mutations', clickhouse_table_name: 'biai.mutations_raw', row_count: 100 }]
+      } as any)
+      // count query
+      .mockResolvedValueOnce({
+        json: async () => [{ filtered_count: 80 }]
+      } as any)
+      // basic stats
+      .mockResolvedValueOnce({
+        json: async () => [{ null_count: 5, unique_count: 10 }]
+      } as any)
+      // categorical aggregation
+      .mockResolvedValueOnce({
+        json: async () => [{ value: 'A', display_value: 'A', count: 80, percentage: 100 }]
+      } as any)
+
+    const aggregations = await aggregationService.getTableAggregations(
+      'dataset-1',
+      'table-mutations',
+      [],
+      { mode: 'parent', target_table: 'hospitals' }
+    )
+
+    expect(aggregations).toHaveLength(1)
+    const [aggregation] = aggregations
+    expect(aggregation.metric_type).toBe('parent')
+    expect(aggregation.metric_parent_table).toBe('hospitals')
+    expect(aggregation.metric_path).toEqual([
+      { from_table: 'mutations', via_column: 'sample_id', to_table: 'samples' },
+      { from_table: 'samples', via_column: 'patient_id', to_table: 'patients' },
+      { from_table: 'patients', via_column: 'hospital_id', to_table: 'hospitals' }
+    ])
+    expect(aggregation.total_rows).toBe(80)
+    expect(mockQuery).toHaveBeenCalledTimes(7)
 
     getTableColumnsSpy.mockRestore()
   })

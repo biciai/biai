@@ -1,5 +1,7 @@
 import clickhouseClient from '../config/clickhouse.js'
 
+const BASE_TABLE_ALIAS = 'base_table'
+
 export interface CategoryCount {
   value: string
   display_value: string
@@ -41,6 +43,7 @@ export interface ColumnAggregation {
   metric_type?: MetricType
   metric_parent_table?: string
   metric_parent_column?: string
+  metric_path?: MetricPathSegment[]
 }
 
 export interface Filter {
@@ -83,10 +86,25 @@ export interface CountByConfig {
   target_table?: string
 }
 
+interface MetricJoin {
+  alias: string
+  table: string
+  on: string
+}
+
+export interface MetricPathSegment {
+  from_table: string
+  via_column: string
+  to_table: string
+}
+
 interface MetricContext {
   type: MetricType
   parentTable?: string
   parentColumn?: string
+  joins?: MetricJoin[]
+  ancestorExpression?: string
+  pathSegments?: MetricPathSegment[]
 }
 
 const badRequest = (message: string): Error => {
@@ -96,6 +114,16 @@ const badRequest = (message: string): Error => {
 }
 
 class AggregationService {
+  private columnRef(column: string, alias: string = BASE_TABLE_ALIAS): string {
+    return `${alias}.${column}`
+  }
+
+  private buildFromClause(qualifiedTableName: string, metricContext: MetricContext): string {
+    const joins = metricContext.joins?.map(join => `ANY LEFT JOIN ${join.table} AS ${join.alias} ON ${join.on}`).join('\n') ?? ''
+    const base = `${qualifiedTableName} AS ${BASE_TABLE_ALIAS}`
+    return joins ? `${base}\n${joins}` : base
+  }
+
   /**
    * Find a relationship path between two tables (supports multi-hop transitive relationships).
    *
@@ -242,7 +270,7 @@ class AggregationService {
     }
 
     // Build the filter condition for the target table
-    const filterCondition = this.buildFilterCondition(filter)
+    const filterCondition = this.buildFilterCondition(filter, false)
     if (!filterCondition) return null
 
     // Build nested IN subqueries for ClickHouse (no JOINs, better performance)
@@ -286,7 +314,7 @@ class AggregationService {
     // Final wrap: current_table.column IN (subquery)
     const firstStep = path[0]
     const finalColumn = firstStep.direction === 'forward' ? firstStep.fk : firstStep.refCol
-    subquery = `${finalColumn} IN (${subquery})`
+    subquery = `${this.columnRef(finalColumn)} IN (${subquery})`
 
     return subquery
   }
@@ -453,11 +481,11 @@ class AggregationService {
   /**
    * Recursively build filter condition from filter tree
    */
-  private buildFilterCondition(filter: Filter): string {
+  private buildFilterCondition(filter: Filter, useBaseAlias: boolean = true): string {
     // Handle logical operators
     if (filter.and && Array.isArray(filter.and)) {
       const conditions = filter.and
-        .map(f => this.buildFilterCondition(f))
+        .map(f => this.buildFilterCondition(f, useBaseAlias))
         .filter(c => c !== '')
       if (conditions.length === 0) return ''
       if (conditions.length === 1) return conditions[0]
@@ -466,7 +494,7 @@ class AggregationService {
 
     if (filter.or && Array.isArray(filter.or)) {
       const conditions = filter.or
-        .map(f => this.buildFilterCondition(f))
+        .map(f => this.buildFilterCondition(f, useBaseAlias))
         .filter(c => c !== '')
       if (conditions.length === 0) return ''
       if (conditions.length === 1) return conditions[0]
@@ -474,7 +502,7 @@ class AggregationService {
     }
 
     if (filter.not) {
-      const condition = this.buildFilterCondition(filter.not)
+      const condition = this.buildFilterCondition(filter.not, useBaseAlias)
       if (!condition) return ''
       return `NOT (${condition})`
     }
@@ -484,7 +512,7 @@ class AggregationService {
       return ''
     }
 
-    const col = filter.column
+    const col = useBaseAlias ? this.columnRef(filter.column) : filter.column
 
     switch (filter.operator) {
       case 'eq':
@@ -636,6 +664,7 @@ class AggregationService {
     const whereClause = this.buildWhereClause(filters, validColumns, effectiveTableName, tableMetadata)
 
     const metricContext = this.resolveMetricContext(effectiveTableName, countBy, tableMetadata)
+    const fromClause = this.buildFromClause(qualifiedTableName, metricContext)
     const metricAggregation = this.getMetricAggregationExpression(metricContext)
 
     // Get filtered count for the selected metric
@@ -645,7 +674,7 @@ class AggregationService {
     if (needsMetricCountQuery) {
       const countQuery = `
         SELECT ${metricAggregation} AS filtered_count
-        FROM ${qualifiedTableName}
+        FROM ${fromClause}
         WHERE 1=1 ${whereClause}
       `
       const countResult = await clickhouseClient.query({
@@ -659,12 +688,12 @@ class AggregationService {
 
     // Get basic stats (null count, unique count)
     // Use uniq() instead of uniqExact() for memory efficiency on high-cardinality columns
-    const nullCountExpression = this.getMetricAggregationExpression(metricContext, `isNull(${columnName})`)
+    const nullCountExpression = this.getMetricAggregationExpression(metricContext, `isNull(${this.columnRef(columnName)})`)
     const basicStatsQuery = `
       SELECT
         ${nullCountExpression} AS null_count,
-        uniq(${columnName}) AS unique_count
-      FROM ${qualifiedTableName}
+        uniq(${this.columnRef(columnName)}) AS unique_count
+      FROM ${fromClause}
       WHERE 1=1 ${whereClause}
     `
 
@@ -684,7 +713,8 @@ class AggregationService {
       unique_count,
       metric_type: metricContext.type,
       metric_parent_table: metricContext.parentTable,
-      metric_parent_column: metricContext.parentColumn
+      metric_parent_column: metricContext.parentColumn,
+      metric_path: metricContext.pathSegments
     }
 
     // Get aggregation based on display type
@@ -701,7 +731,8 @@ class AggregationService {
       aggregation.numeric_stats = await this.getNumericStats(
         qualifiedTableName,
         columnName,
-        whereClause
+        whereClause,
+        metricContext
       )
       aggregation.histogram = await this.getHistogram(
         qualifiedTableName,
@@ -728,21 +759,23 @@ class AggregationService {
     metricContext: MetricContext
   ): Promise<CategoryCount[]> {
     const metricAggregation = this.getMetricAggregationExpression(metricContext)
+    const columnExpr = this.columnRef(columnName)
+    const fromClause = this.buildFromClause(qualifiedTableName, metricContext)
     const query = `
       SELECT
         multiIf(
-          isNull(${columnName}) OR lengthUTF8(trimBoth(toString(${columnName}))) = 0, '',
-          lowerUTF8(trimBoth(toString(${columnName}))) = 'n/a', 'N/A',
-          trimBoth(toString(${columnName}))
+          isNull(${columnExpr}) OR lengthUTF8(trimBoth(toString(${columnExpr}))) = 0, '',
+          lowerUTF8(trimBoth(toString(${columnExpr}))) = 'n/a', 'N/A',
+          trimBoth(toString(${columnExpr}))
         ) AS value,
         multiIf(
-          isNull(${columnName}) OR lengthUTF8(trimBoth(toString(${columnName}))) = 0, '(Empty)',
-          lowerUTF8(trimBoth(toString(${columnName}))) = 'n/a', '(N/A)',
-          trimBoth(toString(${columnName}))
+          isNull(${columnExpr}) OR lengthUTF8(trimBoth(toString(${columnExpr}))) = 0, '(Empty)',
+          lowerUTF8(trimBoth(toString(${columnExpr}))) = 'n/a', '(N/A)',
+          trimBoth(toString(${columnExpr}))
         ) AS display_value,
         ${metricAggregation} AS count,
         if(${totalRows} = 0, 0, ${metricAggregation} * 100.0 / ${totalRows}) AS percentage
-      FROM ${qualifiedTableName}
+      FROM ${fromClause}
       WHERE 1=1
         ${whereClause}
       GROUP BY value, display_value
@@ -764,19 +797,22 @@ class AggregationService {
   private async getNumericStats(
     qualifiedTableName: string,
     columnName: string,
-    whereClause: string = ''
+    whereClause: string = '',
+    metricContext: MetricContext
   ): Promise<NumericStats> {
+    const columnExpr = this.columnRef(columnName)
+    const fromClause = this.buildFromClause(qualifiedTableName, metricContext)
     const query = `
       SELECT
-        min(${columnName}) AS min,
-        max(${columnName}) AS max,
-        avg(${columnName}) AS mean,
-        median(${columnName}) AS median,
-        stddevPop(${columnName}) AS stddev,
-        quantile(0.25)(${columnName}) AS q25,
-        quantile(0.75)(${columnName}) AS q75
-      FROM ${qualifiedTableName}
-      WHERE ${columnName} IS NOT NULL
+        min(${columnExpr}) AS min,
+        max(${columnExpr}) AS max,
+        avg(${columnExpr}) AS mean,
+        median(${columnExpr}) AS median,
+        stddevPop(${columnExpr}) AS stddev,
+        quantile(0.25)(${columnExpr}) AS q25,
+        quantile(0.75)(${columnExpr}) AS q75
+      FROM ${fromClause}
+      WHERE ${columnExpr} IS NOT NULL
         ${whereClause}
     `
 
@@ -801,12 +837,14 @@ class AggregationService {
     totalMetricCount: number
   ): Promise<HistogramBin[]> {
     // First get min and max to calculate bin width
+    const columnExpr = this.columnRef(columnName)
+    const fromClause = this.buildFromClause(qualifiedTableName, metricContext)
     const minMaxQuery = `
       SELECT
-        min(${columnName}) AS min_val,
-        max(${columnName}) AS max_val
-      FROM ${qualifiedTableName}
-      WHERE ${columnName} IS NOT NULL
+        min(${columnExpr}) AS min_val,
+        max(${columnExpr}) AS max_val
+      FROM ${fromClause}
+      WHERE ${columnExpr} IS NOT NULL
         ${whereClause}
     `
 
@@ -841,12 +879,12 @@ class AggregationService {
     const metricAggregation = this.getMetricAggregationExpression(metricContext)
     const histogramQuery = `
       SELECT
-        floor((${columnName} - ${min_val}) / ${binWidth}) AS bin_index,
-        ${min_val} + floor((${columnName} - ${min_val}) / ${binWidth}) * ${binWidth} AS bin_start,
-        ${min_val} + (floor((${columnName} - ${min_val}) / ${binWidth}) + 1) * ${binWidth} AS bin_end,
+        floor((${columnExpr} - ${min_val}) / ${binWidth}) AS bin_index,
+        ${min_val} + floor((${columnExpr} - ${min_val}) / ${binWidth}) * ${binWidth} AS bin_start,
+        ${min_val} + (floor((${columnExpr} - ${min_val}) / ${binWidth}) + 1) * ${binWidth} AS bin_end,
         ${metricAggregation} AS count
-      FROM ${qualifiedTableName}
-      WHERE ${columnName} IS NOT NULL
+      FROM ${fromClause}
+      WHERE ${columnExpr} IS NOT NULL
         ${whereClause}
       GROUP BY bin_index, bin_start, bin_end
       ORDER BY bin_index
@@ -948,39 +986,88 @@ class AggregationService {
       throw badRequest('countBy target_table is required')
     }
 
-    const currentTableMeta = allTablesMetadata.find(t => t.table_name === currentTableName)
-    if (!currentTableMeta) {
-      throw badRequest(`Table metadata not found for ${currentTableName}`)
+    return this.buildParentMetricContext(currentTableName, countBy.target_table, allTablesMetadata)
+  }
+
+  private buildParentMetricContext(
+    currentTableName: string,
+    targetTable: string,
+    allTablesMetadata: TableMetadata[]
+  ): MetricContext {
+    const path = this.findRelationshipPath(currentTableName, targetTable, allTablesMetadata)
+    if (!path || path.length === 0) {
+      throw badRequest(`No relationship from ${currentTableName} to ${targetTable}`)
     }
 
-    const relationship = currentTableMeta.relationships?.find(
-      rel => rel.referenced_table === countBy.target_table
-    )
-    if (!relationship) {
-      throw badRequest(`No relationship from ${currentTableName} to ${countBy.target_table}`)
+    if (path.some(step => step.direction !== 'forward')) {
+      throw badRequest('countBy supports only parent (forward) relationships')
     }
 
-    if (!relationship.foreign_key) {
-      throw badRequest(`Relationship from ${currentTableName} to ${countBy.target_table} is missing foreign key`)
+    const tableMap = new Map(allTablesMetadata.map(t => [t.table_name, t]))
+    const joins: MetricJoin[] = []
+    const pathSegments: MetricPathSegment[] = []
+    const aliasByTable = new Map<string, string>([[currentTableName, BASE_TABLE_ALIAS]])
+
+    path.forEach((step, index) => {
+      pathSegments.push({
+        from_table: step.from,
+        via_column: step.fk,
+        to_table: step.to
+      })
+
+      const fromAlias = aliasByTable.get(step.from)
+      if (!fromAlias) {
+        throw badRequest(`Unable to resolve relationship path for ${step.from}`)
+      }
+
+      const nextStep = path[index + 1]
+      if (nextStep) {
+        const nextMeta = tableMap.get(step.to)
+        if (!nextMeta) {
+          throw badRequest(`Table metadata not found for ${step.to}`)
+        }
+        const joinAlias = `ancestor_${index}`
+        joins.push({
+          alias: joinAlias,
+          table: this.qualifyTableName(nextMeta.clickhouse_table_name),
+          on: `${fromAlias}.${step.fk} = ${joinAlias}.${step.refCol}`
+        })
+        aliasByTable.set(step.to, joinAlias)
+      }
+    })
+
+    const lastStep = path[path.length - 1]
+    const ancestorAlias = aliasByTable.get(lastStep.from)
+    if (!ancestorAlias) {
+      throw badRequest(`Unable to resolve ancestor alias for ${lastStep.from}`)
     }
+    const ancestorExpression = this.columnRef(lastStep.fk, ancestorAlias)
 
     return {
       type: 'parent',
-      parentTable: relationship.referenced_table,
-      parentColumn: relationship.foreign_key
+      parentTable: targetTable,
+      parentColumn: lastStep.fk,
+      joins,
+      ancestorExpression,
+      pathSegments
     }
   }
 
   private getMetricAggregationExpression(metricContext: MetricContext, condition?: string): string {
-    if (condition) {
-      if (metricContext.type === 'parent') {
-        return `uniqIf(${metricContext.parentColumn}, ${condition})`
+    if (metricContext.type === 'parent') {
+      const ancestorExpr = metricContext.ancestorExpression
+        ?? (metricContext.parentColumn ? this.columnRef(metricContext.parentColumn) : null)
+      if (!ancestorExpr) {
+        throw new Error('Parent metric missing ancestor expression')
       }
-      return `countIf(${condition})`
+      if (condition) {
+        return `uniqIf(${ancestorExpr}, ${condition})`
+      }
+      return `uniq(${ancestorExpr})`
     }
 
-    if (metricContext.type === 'parent') {
-      return `uniq(${metricContext.parentColumn})`
+    if (condition) {
+      return `countIf(${condition})`
     }
     return 'count()'
   }
