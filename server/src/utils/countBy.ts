@@ -1,5 +1,15 @@
 import type { CountByConfig } from '../services/aggregationService.js'
 
+/**
+ * Parse the `countBy` query parameter into a configuration object.
+ *
+ * Supported formats:
+ *   - undefined, '', or 'rows' → default row counting
+ *   - 'parent:<table_name>' → count distinct values of the referenced table
+ *
+ * @param raw Raw query string value (e.g. "parent:patients")
+ * @returns Parsed configuration or an error string when invalid
+ */
 export function parseCountByQuery(raw?: string): { config?: CountByConfig; error?: string } {
   if (!raw) {
     return { config: undefined }

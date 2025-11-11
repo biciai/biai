@@ -73,6 +73,11 @@ export interface TableMetadata {
 
 export type MetricType = 'rows' | 'parent'
 
+/**
+ * Configuration describing how a table should aggregate counts.
+ * - `rows` (default) counts raw rows
+ * - `parent` counts distinct values from an upstream table
+ */
 export interface CountByConfig {
   mode: MetricType
   target_table?: string
@@ -82,6 +87,12 @@ interface MetricContext {
   type: MetricType
   parentTable?: string
   parentColumn?: string
+}
+
+const badRequest = (message: string): Error => {
+  const error: any = new Error(message)
+  error.status = 400
+  return error
 }
 
 class AggregationService {
@@ -930,27 +941,27 @@ class AggregationService {
     }
 
     if (!allTablesMetadata) {
-      throw new Error('Count-by parent requires table metadata')
+      throw badRequest('countBy requires table metadata')
     }
 
     if (!countBy.target_table) {
-      throw new Error('countBy.target_table is required for parent mode')
+      throw badRequest('countBy target_table is required')
     }
 
     const currentTableMeta = allTablesMetadata.find(t => t.table_name === currentTableName)
     if (!currentTableMeta) {
-      throw new Error(`Table metadata not found for ${currentTableName}`)
+      throw badRequest(`Table metadata not found for ${currentTableName}`)
     }
 
     const relationship = currentTableMeta.relationships?.find(
       rel => rel.referenced_table === countBy.target_table
     )
     if (!relationship) {
-      throw new Error(`No relationship from ${currentTableName} to ${countBy.target_table}`)
+      throw badRequest(`No relationship from ${currentTableName} to ${countBy.target_table}`)
     }
 
     if (!relationship.foreign_key) {
-      throw new Error(`Relationship from ${currentTableName} to ${countBy.target_table} is missing foreign key`)
+      throw badRequest(`Relationship from ${currentTableName} to ${countBy.target_table} is missing foreign key`)
     }
 
     return {
@@ -963,13 +974,13 @@ class AggregationService {
   private getMetricAggregationExpression(metricContext: MetricContext, condition?: string): string {
     if (condition) {
       if (metricContext.type === 'parent') {
-        return `uniqExactIf(${metricContext.parentColumn}, ${condition})`
+        return `uniqIf(${metricContext.parentColumn}, ${condition})`
       }
       return `countIf(${condition})`
     }
 
     if (metricContext.type === 'parent') {
-      return `uniqExact(${metricContext.parentColumn})`
+      return `uniq(${metricContext.parentColumn})`
     }
     return 'count()'
   }

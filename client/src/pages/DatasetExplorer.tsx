@@ -5,6 +5,8 @@ import type { PlotMouseEvent, PlotSelectionEvent } from 'plotly.js'
 import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
 import { findRelationshipPath } from '../utils/filterHelpers'
+// Small categorical sets render better as pie charts; beyond this use bars.
+const MAX_PIE_CATEGORIES = 8
 
 interface Column {
   name: string
@@ -1192,6 +1194,7 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
       })
     }
 
+    // Parent counting can double-book entities across wedges, so prefer bars
     if (aggregation.metric_type === 'parent') {
       return null
     }
@@ -2638,6 +2641,8 @@ const renderNumericFilterMenu = (
     })
     const totalMetricCount = aggregation.total_rows ?? rawHistogram.reduce((sum, bin) => sum + bin.count, 0)
     const sumY = yValues.reduce((sum, val) => sum + val, 0)
+    // Rebinning can inflate totals when filtered bins overlap multiple baseline buckets.
+    // Scale the rebinned values down to the metric total so percentages stay ≤ 100%.
     const scalingFactor = sumY > 0 && totalMetricCount > 0 ? totalMetricCount / sumY : 1
     const adjustedYValues = scalingFactor < 1
       ? yValues.map(val => val * scalingFactor)
@@ -4022,7 +4027,7 @@ const renderNumericFilterMenu = (
                   if (aggregation.display_type === 'categorical' && aggregation.categories) {
                     const categoryCount = aggregation.categories.length
                     const viewPref = getViewPreference(tableName, columnName, categoryCount)
-                    const allowPie = categoryCount <= 8 && aggregation.metric_type !== 'parent'
+                    const allowPie = categoryCount <= MAX_PIE_CATEGORIES && aggregation.metric_type !== 'parent'
 
                     if (viewPref === 'table') {
                       return (
@@ -4187,8 +4192,8 @@ const renderNumericFilterMenu = (
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem', minWidth: parentOptions.length > 0 ? '210px' : 'auto' }}>
-                  {parentOptions.length > 0 && (
+                {parentOptions.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem', minWidth: '210px' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%' }}>
                       <label style={{ fontSize: '0.7rem', color: '#555', fontWeight: 600 }}>Count by</label>
                       <select
@@ -4209,11 +4214,15 @@ const renderNumericFilterMenu = (
                         ))}
                       </select>
                     </div>
-                  )}
+                    <div style={{ fontSize: '0.7rem', color: '#555' }}>
+                      Counting <strong>{metricLabels.long}</strong>: {tableRowCount.toLocaleString()}
+                    </div>
+                  </div>
+                ) : (
                   <div style={{ fontSize: '0.7rem', color: '#555' }}>
                     Counting <strong>{metricLabels.long}</strong>: {tableRowCount.toLocaleString()}
                   </div>
-                </div>
+                )}
                 {/* Filter badges */}
                 {directFilterCount > 0 && (
                   <div
@@ -4299,7 +4308,7 @@ const renderNumericFilterMenu = (
                 if (agg.display_type === 'categorical' && agg.categories) {
                   const categoryCount = agg.categories.length
                   const viewPref = getViewPreference(table.name, agg.column_name, categoryCount)
-                  const allowPie = categoryCount <= 8 && agg.metric_type !== 'parent'
+                  const allowPie = categoryCount <= MAX_PIE_CATEGORIES && agg.metric_type !== 'parent'
 
                   if (viewPref === 'table') {
                     return (

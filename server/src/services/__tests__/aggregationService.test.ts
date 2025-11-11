@@ -631,3 +631,96 @@ describe('AggregationService - Cross-Table Filtering', () => {
     })
   })
 })
+
+describe('AggregationService - countBy metrics', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  const metadata: any = [
+    {
+      table_name: 'samples',
+      clickhouse_table_name: 'biai.samples_raw',
+      relationships: [
+        {
+          foreign_key: 'patient_id',
+          referenced_table: 'patients',
+          referenced_column: 'patient_id',
+          type: 'many-to-one'
+        }
+      ]
+    },
+    {
+      table_name: 'patients',
+      clickhouse_table_name: 'biai.patients_raw',
+      relationships: []
+    }
+  ]
+
+  test('resolveMetricContext returns parent configuration', () => {
+    const context = callPrivate('resolveMetricContext')(
+      'samples',
+      { mode: 'parent', target_table: 'patients' },
+      metadata
+    )
+
+    expect(context).toEqual({
+      type: 'parent',
+      parentTable: 'patients',
+      parentColumn: 'patient_id'
+    })
+  })
+
+  test('resolveMetricContext throws descriptive 400 error when relationship missing', () => {
+    expect.assertions(2)
+
+    try {
+      callPrivate('resolveMetricContext')(
+        'samples',
+        { mode: 'parent', target_table: 'unknown' },
+        metadata
+      )
+    } catch (error: any) {
+      expect(error.status).toBe(400)
+      expect(error.message).toContain('No relationship')
+    }
+  })
+
+  test('getColumnAggregation returns parent metric metadata', async () => {
+    const getTableColumnsSpy = vi.spyOn(aggregationService as any, 'getTableColumns')
+      .mockResolvedValue(new Set(['status']))
+
+    mockQuery
+      .mockResolvedValueOnce({
+        json: async () => [{ table_name: 'samples', clickhouse_table_name: 'biai.samples_raw', row_count: 10 }]
+      } as any)
+      .mockResolvedValueOnce({
+        json: async () => [{ filtered_count: 3 }]
+      } as any)
+      .mockResolvedValueOnce({
+        json: async () => [{ null_count: 1, unique_count: 2 }]
+      } as any)
+      .mockResolvedValueOnce({
+        json: async () => [{ value: 'A', display_value: 'A', count: 2, percentage: 100 }]
+      } as any)
+
+    const result = await aggregationService.getColumnAggregation(
+      'dataset-1',
+      'table-1',
+      'status',
+      'categorical',
+      [],
+      'samples',
+      metadata,
+      { mode: 'parent', target_table: 'patients' }
+    )
+
+    expect(result.metric_type).toBe('parent')
+    expect(result.metric_parent_table).toBe('patients')
+    expect(result.total_rows).toBe(3)
+    expect(result.categories).toEqual([{ value: 'A', display_value: 'A', count: 2, percentage: 100 }])
+    expect(mockQuery).toHaveBeenCalledTimes(4)
+
+    getTableColumnsSpy.mockRestore()
+  })
+})

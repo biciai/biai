@@ -338,8 +338,12 @@ router.get('/:database/tables/:table/aggregations', async (req, res) => {
         const aggregations = await aggregationService.getTableAggregations(datasetId, table, filters, countByConfig)
         return res.json({ aggregations })
       } catch (error: any) {
+        const status = error?.status || 500
         console.error('Get database aggregations error:', error)
-        return res.status(500).json({ error: 'Failed to get table aggregations', message: error.message })
+        return res.status(status).json({
+          error: status === 400 ? 'Invalid countBy parameter' : 'Failed to get table aggregations',
+          message: error.message
+        })
       }
     }
 

@@ -600,8 +600,12 @@ router.get('/:id/tables/:tableId/aggregations', async (req, res) => {
       aggregations
     })
   } catch (error: any) {
+    const status = error?.status || 500
     console.error('Get table aggregations error:', error)
-    return res.status(500).json({ error: 'Failed to get table aggregations', message: error.message })
+    return res.status(status).json({
+      error: status === 400 ? 'Invalid countBy parameter' : 'Failed to get table aggregations',
+      message: error.message
+    })
   }
 })
 
@@ -635,8 +639,12 @@ router.get('/:id/tables/:tableId/columns/:columnName/aggregation', async (req, r
       aggregation
     })
   } catch (error: any) {
+    const status = error?.status || 500
     console.error('Get column aggregation error:', error)
-    return res.status(500).json({ error: 'Failed to get column aggregation', message: error.message })
+    return res.status(status).json({
+      error: status === 400 ? 'Invalid countBy parameter' : 'Failed to get column aggregation',
+      message: error.message
+    })
   }
 })
 
