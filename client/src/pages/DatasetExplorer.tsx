@@ -5,6 +5,8 @@ import type { PlotMouseEvent, PlotSelectionEvent } from 'plotly.js'
 import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
 import { findRelationshipPath } from '../utils/filterHelpers'
+// Small categorical sets render better as pie charts; beyond this use bars.
+const MAX_PIE_CATEGORIES = 8
 
 interface Column {
   name: string
@@ -64,6 +66,9 @@ interface ColumnAggregation {
   categories?: CategoryCount[]
   numeric_stats?: NumericStats
   histogram?: HistogramBin[]
+  metric_type?: 'rows' | 'parent'
+  metric_parent_table?: string
+  metric_parent_column?: string
 }
 
 interface Filter {
@@ -117,6 +122,11 @@ interface Dataset {
   tables: Table[]
 }
 
+type CountBySelection = {
+  mode: 'parent'
+  targetTable: string
+}
+
 function DatasetExplorer() {
   const { id, database } = useParams()
   const navigate = useNavigate()
@@ -142,6 +152,8 @@ function DatasetExplorer() {
   const [activeFilterMenu, setActiveFilterMenu] = useState<{ tableName: string; columnName: string } | null>(null)
   const [customRangeInputs, setCustomRangeInputs] = useState<Record<string, { min: string; max: string }>>({})
   const [rangeSelections, setRangeSelections] = useState<Record<string, Array<{ start: number; end: number }>>>({})
+  const [countBySelections, setCountBySelections] = useState<Record<string, CountBySelection>>({})
+  const [countByReady, setCountByReady] = useState(false)
 
   // Filter preset state
   const [presets, setPresets] = useState<FilterPreset[]>([])
@@ -177,6 +189,8 @@ function DatasetExplorer() {
   const isUpdatingURL = useRef(false)
   const dashboardInitialized = useRef(false)
   const savedDashboardsInitialized = useRef(false)
+  const countByInitialized = useRef(false)
+  const previousCountByRef = useRef<Record<string, CountBySelection>>({})
 
   // Helper functions for URL persistence
   const serializeFilters = (filters: Filter[]): string => {
@@ -213,6 +227,47 @@ function DatasetExplorer() {
       return stored ? JSON.parse(stored) : null
     } catch (error) {
       console.error('Failed to load filters from localStorage:', error)
+      return null
+    }
+  }
+
+  const serializeCountBySelections = (selections: Record<string, CountBySelection>): string => {
+    try {
+      return btoa(encodeURIComponent(JSON.stringify(selections)))
+    } catch (error) {
+      console.error('Failed to serialize countBy selections:', error)
+      return ''
+    }
+  }
+
+  const deserializeCountBySelections = (encoded: string): Record<string, CountBySelection> | null => {
+    try {
+      const json = decodeURIComponent(atob(encoded))
+      return JSON.parse(json)
+    } catch (error) {
+      console.error('Failed to deserialize countBy selections:', error)
+      return null
+    }
+  }
+
+  const saveCountByToLocalStorage = (selections: Record<string, CountBySelection>) => {
+    try {
+      if (Object.keys(selections).length === 0) {
+        localStorage.removeItem(`countBy_${identifier}`)
+      } else {
+        localStorage.setItem(`countBy_${identifier}`, JSON.stringify(selections))
+      }
+    } catch (error) {
+      console.error('Failed to persist countBy selections:', error)
+    }
+  }
+
+  const loadCountByFromLocalStorage = (): Record<string, CountBySelection> | null => {
+    try {
+      const stored = localStorage.getItem(`countBy_${identifier}`)
+      return stored ? JSON.parse(stored) : null
+    } catch (error) {
+      console.error('Failed to load countBy selections from localStorage:', error)
       return null
     }
   }
@@ -688,40 +743,47 @@ function DatasetExplorer() {
 
   // Update URL hash when filters change
   useEffect(() => {
-    if (!filtersInitialized.current || isUpdatingURL.current) return
+    if (!filtersInitialized.current || !countByInitialized.current || isUpdatingURL.current) return
 
-    let newHash = ''
+    const hashParts: string[] = []
 
     if (filters.length === 0) {
-      // Remove filters from hash
-      newHash = ''
-      // Clear localStorage
       try {
         localStorage.removeItem(`filters_${identifier}`)
       } catch (error) {
-        console.error('Failed to clear localStorage:', error)
+        console.error('Failed to clear filters from localStorage:', error)
       }
     } else {
-      // Encode and add filters to hash
-      const encoded = serializeFilters(filters)
-      newHash = `#filters=${encoded}`
-
-      // Save to localStorage as backup
+      const encodedFilters = serializeFilters(filters)
+      hashParts.push(`filters=${encodedFilters}`)
       saveFiltersToLocalStorage(filters)
     }
 
+    if (Object.keys(countBySelections).length === 0) {
+      try {
+        localStorage.removeItem(`countBy_${identifier}`)
+      } catch (error) {
+        console.error('Failed to clear countBy selections:', error)
+      }
+    } else {
+      const encodedCountBy = serializeCountBySelections(countBySelections)
+      if (encodedCountBy) {
+        hashParts.push(`countBy=${encodedCountBy}`)
+      }
+      saveCountByToLocalStorage(countBySelections)
+    }
+
+    const newHash = hashParts.length > 0 ? `#${hashParts.join('&')}` : ''
     const newURL = `${location.pathname}${location.search}${newHash}`
 
-    // Only update if hash actually changed
     if (newHash !== location.hash) {
       isUpdatingURL.current = true
       navigate(newURL, { replace: true })
-      // Reset flag after navigation
       setTimeout(() => {
         isUpdatingURL.current = false
       }, 0)
     }
-  }, [filters, location.pathname, location.search, location.hash, navigate, identifier])
+  }, [filters, countBySelections, location.pathname, location.search, location.hash, navigate, identifier])
 
   // Load presets from localStorage on mount
   useEffect(() => {
@@ -730,18 +792,44 @@ function DatasetExplorer() {
   }, [identifier])
 
   useEffect(() => {
+    if (!countByReady) return
     loadDataset()
-  }, [id, database])
+  }, [id, database, countByReady])
 
   useEffect(() => {
     // Reload aggregations when filters change
-    if (dataset) {
+    if (dataset && countByReady) {
       reloadAggregations()
     }
-  }, [filters])
+  }, [filters, dataset, countByReady])
+
+  useEffect(() => {
+    if (!dataset || !countByInitialized.current || !countByReady) return
+
+    const shouldUseDatabaseAPI = isDatabaseMode || dataset.database_type === 'connected'
+    const dbIdentifier = isDatabaseMode ? identifier : dataset.database_name
+
+    dataset.tables.forEach(table => {
+      const previousKey = previousCountByRef.current[table.name]
+        ? `parent:${previousCountByRef.current[table.name].targetTable}`
+        : 'rows'
+      const currentSelection = countBySelections[table.name]
+      const currentKey = currentSelection ? `parent:${currentSelection.targetTable}` : 'rows'
+
+      if (previousKey !== currentKey) {
+        loadTableAggregations(table.id, table.name, {
+          useDbAPI: shouldUseDatabaseAPI,
+          dbName: dbIdentifier,
+          datasetId: dataset.id
+        })
+      }
+    })
+
+    previousCountByRef.current = countBySelections
+  }, [countBySelections, dataset, isDatabaseMode, identifier])
 
   const reloadAggregations = async () => {
-    if (!dataset) return
+    if (!dataset || !countByReady) return
     // Determine if we should use database API based on current dataset
     const shouldUseDatabaseAPI = isDatabaseMode || dataset.database_type === 'connected'
     const dbIdentifier = isDatabaseMode ? identifier : dataset.database_name
@@ -821,6 +909,10 @@ function DatasetExplorer() {
       if (shouldUseDbAPI && datasetParam) {
         params.datasetId = datasetParam
       }
+      const selection = countBySelections[tableName]
+      if (selection?.mode === 'parent') {
+        params.countBy = `parent:${selection.targetTable}`
+      }
 
       const response = await api.get(apiPath, { params })
       setAggregations(prev => ({ ...prev, [tableName]: response.data.aggregations }))
@@ -876,6 +968,34 @@ function DatasetExplorer() {
   const getDisplayTitle = (tableName: string, columnName: string): string => {
     const metadata = getColumnMetadata(tableName, columnName)
     return metadata?.display_name || columnName.replace(/_/g, ' ')
+  }
+
+  const getTableDisplayNameByName = (tableName?: string): string | undefined => {
+    if (!tableName || !dataset?.tables) return tableName
+    const match = dataset.tables.find(t => t.name === tableName)
+    return match?.displayName || tableName
+  }
+
+  const getMetricLabels = (aggregation?: ColumnAggregation) => {
+    if (!aggregation || aggregation.metric_type !== 'parent' || !aggregation.metric_parent_table) {
+      return { short: 'rows', long: 'Rows' }
+    }
+    const parentName = getTableDisplayNameByName(aggregation.metric_parent_table) || aggregation.metric_parent_table
+    return {
+      short: `unique ${parentName.toLowerCase()}`,
+      long: `Unique ${parentName}`
+    }
+  }
+
+  const metricsMatch = (a?: ColumnAggregation, b?: ColumnAggregation) => {
+    if (!a || !b) return false
+    const typeA = a.metric_type || 'rows'
+    const typeB = b.metric_type || 'rows'
+    if (typeA !== typeB) return false
+    if (typeA === 'parent') {
+      return a.metric_parent_table === b.metric_parent_table
+    }
+    return true
   }
 
   const normalizeFilterValue = (value: string | number | null | undefined): string => {
@@ -1040,6 +1160,9 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
     const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === columnName
     if (!menuOpen || !categories || categories.length === 0) return null
 
+    const aggregation = getAggregation(tableName, columnName)
+    const metricLabels = getMetricLabels(aggregation)
+
     const columnHasFilter = hasColumnFilter(columnName)
 
     // Check if the current filter for this column has NOT wrapper
@@ -1069,6 +1192,11 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
         }
         return updated
       })
+    }
+
+    // Parent counting can double-book entities across wedges, so prefer bars
+    if (aggregation.metric_type === 'parent') {
+      return null
     }
 
     return (
@@ -1150,7 +1278,7 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
                 cursor: 'pointer',
                 textAlign: 'left'
               }}
-              title={`${label} (${category.count} rows)`}
+              title={`${label} (${category.count} ${metricLabels.short})`}
             >
               {label}
             </button>
@@ -1186,6 +1314,39 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
       return { ...prev, [key]: { min: nextMin, max: nextMax } }
     })
   }, [activeFilterMenu, baselineAggregations, rangeSelections])
+
+  useEffect(() => {
+    countByInitialized.current = false
+    setCountBySelections({})
+    setCountByReady(false)
+  }, [identifier])
+
+  useEffect(() => {
+    if (countByInitialized.current) return
+
+    const hash = location.hash
+    const match = hash.match(/countBy=([^&]+)/)
+    const encodedCountBy = match ? match[1] : null
+
+    if (encodedCountBy) {
+      const restored = deserializeCountBySelections(encodedCountBy)
+      if (restored) {
+        setCountBySelections(restored)
+        countByInitialized.current = true
+        setCountByReady(true)
+        return
+      }
+    }
+
+    const local = loadCountByFromLocalStorage()
+    if (local) {
+      setCountBySelections(local)
+    } else {
+      setCountBySelections({})
+    }
+    countByInitialized.current = true
+    setCountByReady(true)
+  }, [identifier, location.hash])
 
   const handleCustomRangeChange = (
     key: string,
@@ -1267,8 +1428,8 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
     const max = stats.max
     if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return histogram
 
-    const totalCount = histogram.reduce((sum, bin) => sum + bin.count, 0)
-    if (!Number.isFinite(totalCount) || totalCount === 0) return histogram
+    const originalTotal = histogram.reduce((sum, bin) => sum + bin.count, 0)
+    if (!Number.isFinite(originalTotal) || originalTotal === 0) return histogram
 
     const range = max - min
     const desiredBins = Math.min(Math.max(histogram.length, 1), 60)
@@ -1308,8 +1469,10 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
       buckets[index].count += bin.count
     })
 
+    const rebinnedTotal = buckets.reduce((sum, bucket) => sum + bucket.count, 0)
+    const denominator = rebinnedTotal > 0 ? rebinnedTotal : originalTotal
     buckets.forEach(bucket => {
-      bucket.percentage = bucket.count / totalCount * 100
+      bucket.percentage = denominator > 0 ? (bucket.count / denominator) * 100 : 0
     })
 
     const filtered = buckets.filter(bucket => bucket.count > 0)
@@ -1326,6 +1489,8 @@ const renderNumericFilterMenu = (
     if (!menuOpen) return null
 
     const bins = histogram ?? []
+    const aggregation = getAggregation(tableName, columnName)
+    const metricLabels = getMetricLabels(aggregation)
     const key = `${tableName}.${columnName}`
     const range = customRangeInputs[key] || { min: stats && stats.min !== null ? String(stats.min) : '', max: stats && stats.max !== null ? String(stats.max) : '' }
     const columnHasFilter = hasColumnFilter(columnName)
@@ -1408,8 +1573,9 @@ const renderNumericFilterMenu = (
           </>
         )}
         {(() => {
-          const baselineAgg = getBaselineAggregation(tableName, columnName)
-          const nullCount = baselineAgg?.null_count ?? 0
+          const aggregation = getAggregation(tableName, columnName)
+          const metricLabels = getMetricLabels(aggregation)
+          const nullCount = aggregation?.null_count ?? 0
           if (nullCount === 0) return null
 
           const nullActive = isValueFiltered(columnName, '')
@@ -1429,9 +1595,9 @@ const renderNumericFilterMenu = (
                   cursor: 'pointer',
                   textAlign: 'left'
                 }}
-                title={`Null values (${nullCount} rows)`}
+                title={`Null values (${nullCount} ${metricLabels.short})`}
               >
-                (Null) — {nullCount} rows
+                (Null) — {nullCount} {metricLabels.short}
               </button>
             </>
           )
@@ -1492,7 +1658,7 @@ const renderNumericFilterMenu = (
                     fontSize: '0.7rem',
                     cursor: 'pointer'
                   }}
-                  title={`${label} (${bin.count} rows)`}
+                  title={`${label} (${bin.count} ${metricLabels.short})`}
                 >
                   {label}
                 </button>
@@ -1700,9 +1866,41 @@ const renderNumericFilterMenu = (
     return tableIndex >= 0 ? colors[tableIndex % colors.length] : '#9E9E9E'
   }
 
+  const getParentOptions = (table: Table) => {
+    return (table.relationships || []).map(rel => {
+      const targetDisplay = getTableDisplayNameByName(rel.referenced_table) || rel.referenced_table
+      return {
+        targetTable: rel.referenced_table,
+        value: `parent:${rel.referenced_table}`,
+        label: `${targetDisplay} via ${rel.foreign_key}`
+      }
+    })
+  }
+
+  const handleCountByChange = (tableName: string, value: string) => {
+    setCountBySelections(prev => {
+      const next = { ...prev }
+      if (value === 'rows') {
+        delete next[tableName]
+      } else if (value.startsWith('parent:')) {
+        const targetTable = value.slice('parent:'.length)
+        if (targetTable) {
+          next[tableName] = { mode: 'parent', targetTable }
+        }
+      }
+      return next
+    })
+  }
+
+  const getCountByValueForTable = (tableName: string) => {
+    const selection = countBySelections[tableName]
+    return selection ? `parent:${selection.targetTable}` : 'rows'
+  }
+
   const renderTableView = (title: string, tableName: string, field: string, tableColor?: string) => {
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
+    const metricLabels = getMetricLabels(aggregation)
 
     const metadata = getColumnMetadata(tableName, field)
     const tooltipText = [
@@ -1712,12 +1910,15 @@ const renderNumericFilterMenu = (
     ].filter(Boolean).join('\n')
 
     const baselineAggregation = getBaselineAggregation(tableName, field)
-    const categoriesForMenu = baselineAggregation?.categories || aggregation.categories
+    const categoriesForMenu =
+      metricsMatch(baselineAggregation, aggregation) && baselineAggregation?.categories?.length
+        ? baselineAggregation.categories
+        : aggregation.categories
     const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
     const columnActive = hasColumnFilter(field)
 
     // Prepare table data
-    const totalRows = aggregation.categories.reduce((sum, cat) => sum + cat.count, 0)
+    const totalRows = aggregation.total_rows ?? aggregation.categories.reduce((sum, cat) => sum + cat.count, 0)
 
     const tableData = aggregation.categories.map(cat => ({
       category: cat.display_value ?? (cat.value === '' ? '(Empty)' : String(cat.value)),
@@ -1951,6 +2152,7 @@ const renderNumericFilterMenu = (
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
 
+    const metricLabels = getMetricLabels(aggregation)
     const labels = aggregation.categories.map(c => c.display_value ?? (c.value === '' ? '(Empty)' : String(c.value)))
     const values = aggregation.categories.map(c => c.count)
     const filterValues = aggregation.categories.map(c => normalizeFilterValue(c.value))
@@ -1964,14 +2166,18 @@ const renderNumericFilterMenu = (
     ].filter(Boolean).join('\n')
 
     const baselineAggregation = getBaselineAggregation(tableName, field)
-    const baselineCategories = baselineAggregation?.categories
-
-    const categoriesForMenu = baselineCategories && baselineCategories.length > 0
-      ? baselineCategories
-      : aggregation.categories
+    const categoriesForMenu =
+      metricsMatch(baselineAggregation, aggregation) && baselineAggregation?.categories?.length
+        ? baselineAggregation.categories
+        : aggregation.categories
 
     const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
     const columnActive = hasColumnFilter(field)
+
+    const totalCount = aggregation.total_rows ?? values.reduce((sum, val) => sum + val, 0)
+    const percentTexts = values.map(val =>
+      totalCount > 0 ? `${((val / totalCount) * 100).toFixed(1)}%` : '0%'
+    )
 
     return (
       <div style={{
@@ -2098,7 +2304,8 @@ const renderNumericFilterMenu = (
             type: 'pie',
             labels,
             values,
-            textinfo: 'label+percent',
+            textinfo: 'label+text',
+            text: percentTexts,
             textposition: 'inside',
             insidetextorientation: 'radial',
             marker: {
@@ -2115,7 +2322,7 @@ const renderNumericFilterMenu = (
               }
             },
             textfont: { size: 9 },
-            hovertemplate: '%{label}<br>Count: %{value}<br>%{percent}<extra></extra>'
+            hovertemplate: `%{label}<br>Count (${metricLabels.short}): %{value}<br>Percent of total: %{text}<extra></extra>`
           }]}
           layout={{
             height: 135,
@@ -2151,6 +2358,7 @@ const renderNumericFilterMenu = (
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
 
+    const metricLabels = getMetricLabels(aggregation)
     const labels = aggregation.categories.map(c => c.display_value ?? (c.value === '' ? '(Empty)' : String(c.value)))
     const values = aggregation.categories.map(c => c.count)
     const filterValues = aggregation.categories.map(c => normalizeFilterValue(c.value))
@@ -2164,9 +2372,16 @@ const renderNumericFilterMenu = (
     ].filter(Boolean).join('\n')
 
     const baselineAggregation = getBaselineAggregation(tableName, field)
-    const categoriesForMenu = baselineAggregation?.categories || aggregation.categories
+    const categoriesForMenu =
+      metricsMatch(baselineAggregation, aggregation) && baselineAggregation?.categories?.length
+        ? baselineAggregation.categories
+        : aggregation.categories
     const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
     const columnActive = hasColumnFilter(field)
+    const totalCount = aggregation.total_rows ?? values.reduce((sum, val) => sum + val, 0)
+    const percentTexts = values.map(val =>
+      totalCount > 0 ? `${((val / totalCount) * 100).toFixed(1)}%` : '0%'
+    )
 
     return (
       <div style={{
@@ -2306,13 +2521,15 @@ const renderNumericFilterMenu = (
                 )
               }
             },
-            hovertemplate: '%{x}<br>Count: %{y}<extra></extra>'
+            hovertemplate: `%{x}<br>Count (${metricLabels.short}): %{y}<br>Percent of total: %{text}<extra></extra>`,
+            text: percentTexts,
+            textposition: 'auto'
           }]}
           layout={{
             height: 135,
             margin: { t: 5, b: 40, l: 30, r: 5 },
             xaxis: { tickangle: -45, automargin: true, tickfont: { size: 9 } },
-            yaxis: { title: 'Count', automargin: true, tickfont: { size: 9 }, titlefont: { size: 10 } },
+            yaxis: { title: metricLabels.long, automargin: true, tickfont: { size: 9 }, titlefont: { size: 10 } },
             paper_bgcolor: 'transparent',
             plot_bgcolor: 'transparent',
             dragmode: 'select',
@@ -2359,6 +2576,7 @@ const renderNumericFilterMenu = (
     const aggregation = getAggregation(tableName, field)
     if (!aggregation?.numeric_stats) return null
 
+    const metricLabels = getMetricLabels(aggregation)
     const rawHistogram = aggregation.histogram ?? []
     if (rawHistogram.length === 0) return null
 
@@ -2379,8 +2597,13 @@ const renderNumericFilterMenu = (
     ].filter(Boolean).join('\n')
 
     const baselineAggregation = getBaselineAggregation(tableName, field)
-    const menuHistogram = baselineAggregation?.histogram ?? rawHistogram
-    const menuStats = baselineAggregation?.numeric_stats || aggregation.numeric_stats
+    const histogramMatches = metricsMatch(baselineAggregation, aggregation)
+    const menuHistogram = histogramMatches && baselineAggregation?.histogram?.length
+      ? baselineAggregation.histogram
+      : rawHistogram
+    const menuStats = histogramMatches && baselineAggregation?.numeric_stats
+      ? baselineAggregation.numeric_stats
+      : aggregation.numeric_stats
     const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
     const columnActive = hasColumnFilter(field)
 
@@ -2414,10 +2637,23 @@ const renderNumericFilterMenu = (
         }
       })
 
-      return Math.round(totalCount)
+      return totalCount
     })
+    const totalMetricCount = aggregation.total_rows ?? rawHistogram.reduce((sum, bin) => sum + bin.count, 0)
+    const sumY = yValues.reduce((sum, val) => sum + val, 0)
+    // Rebinning can inflate totals when filtered bins overlap multiple baseline buckets.
+    // Scale the rebinned values down to the metric total so percentages stay ≤ 100%.
+    const scalingFactor = sumY > 0 && totalMetricCount > 0 ? totalMetricCount / sumY : 1
+    const adjustedYValues = scalingFactor < 1
+      ? yValues.map(val => val * scalingFactor)
+      : yValues
+    const roundedYValues = adjustedYValues.map(val => Math.max(0, val))
 
     const binWidth = binsForPlot[0] ? binsForPlot[0].bin_end - binsForPlot[0].bin_start : 1
+    const totalCount = totalMetricCount > 0 ? totalMetricCount : roundedYValues.reduce((sum, val) => sum + val, 0)
+    const percentTexts = roundedYValues.map(val =>
+      totalCount > 0 ? `${((val / totalCount) * 100).toFixed(1)}%` : '0%'
+    )
 
     return (
       <div style={{
@@ -2533,14 +2769,15 @@ const renderNumericFilterMenu = (
                 )
               }
             },
-            hovertemplate: 'Range: [%{customdata[0]:.2f}, %{customdata[1]:.2f}]<br>Count: %{y}<extra></extra>',
-            customdata: binsForPlot.map(bin => [bin.bin_start, bin.bin_end])
+            hovertemplate: `Range: [%{customdata[0]:.2f}, %{customdata[1]:.2f}]<br>Count (${metricLabels.short}): %{y}<br>Percent of total: %{text}<extra></extra>`,
+            customdata: binsForPlot.map(bin => [bin.bin_start, bin.bin_end]),
+            text: percentTexts
           }]}
           layout={{
             height: 135,
             margin: { t: 5, b: 30, l: 30, r: 5 },
             xaxis: { title: field, automargin: true, tickfont: { size: 9 }, titlefont: { size: 10 } },
-            yaxis: { title: 'Count', automargin: true, tickfont: { size: 9 }, titlefont: { size: 10 } },
+            yaxis: { title: metricLabels.long, automargin: true, tickfont: { size: 9 }, titlefont: { size: 10 } },
             paper_bgcolor: 'transparent',
             plot_bgcolor: 'transparent',
             bargap: 0.1,
@@ -3790,6 +4027,7 @@ const renderNumericFilterMenu = (
                   if (aggregation.display_type === 'categorical' && aggregation.categories) {
                     const categoryCount = aggregation.categories.length
                     const viewPref = getViewPreference(tableName, columnName, categoryCount)
+                    const allowPie = categoryCount <= MAX_PIE_CATEGORIES && aggregation.metric_type !== 'parent'
 
                     if (viewPref === 'table') {
                       return (
@@ -3799,19 +4037,19 @@ const renderNumericFilterMenu = (
                       )
                     }
 
-                    if (categoryCount <= 8) {
+                    if (allowPie) {
                       return (
                         <div key={`${tableName}_${columnName}`}>
                           {renderPieChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
                         </div>
                       )
-                    } else {
-                      return (
-                        <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2' }}>
-                          {renderBarChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
-                        </div>
-                      )
                     }
+
+                    return (
+                      <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2' }}>
+                        {renderBarChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor)}
+                      </div>
+                    )
                   } else if (aggregation.display_type === 'numeric' && aggregation.histogram) {
                     return (
                       <div key={`${tableName}_${columnName}`} style={{ gridColumn: 'span 2' }}>
@@ -3852,13 +4090,16 @@ const renderNumericFilterMenu = (
         if (visibleAggregations.length === 0) return null
 
         const tableColor = getTableColor(table.name)
-        const tableRowCount = visibleAggregations[0]?.total_rows || table.rowCount || 0
+        const primaryAggregation = visibleAggregations[0]
+        const tableRowCount = primaryAggregation?.total_rows ?? table.rowCount ?? 0
 
         // Get baseline (unfiltered) row count for this table
         const baselineTableAggs = baselineAggregations[table.name] || []
-        const baselineRowCount = baselineTableAggs.length > 0
-          ? baselineTableAggs[0]?.total_rows || tableRowCount
-          : tableRowCount
+        const baselineSample = baselineTableAggs.length > 0 ? baselineTableAggs[0] : undefined
+        const baselineMatches = metricsMatch(baselineSample, primaryAggregation)
+        const baselineRowCount = baselineMatches
+          ? baselineSample?.total_rows ?? tableRowCount
+          : null
 
         // Get filter counts for this table
         const effectiveFilters = getAllEffectiveFilters()
@@ -3883,6 +4124,10 @@ const renderNumericFilterMenu = (
             }
           }
         }
+
+        const metricLabels = getMetricLabels(primaryAggregation)
+        const parentOptions = getParentOptions(table)
+        const countByValue = getCountByValueForTable(table.name)
 
         return (
           <div key={table.name} style={{ marginBottom: '2.5rem' }}>
@@ -3920,7 +4165,7 @@ const renderNumericFilterMenu = (
                     color: '#666',
                     marginTop: '0.2rem'
                   }}>
-                    {hasTableFilters ? (
+                    {hasTableFilters && baselineRowCount !== null ? (
                       <>
                         <span style={{ color: '#E65100', fontWeight: 600 }}>
                           {tableRowCount.toLocaleString()}
@@ -3938,15 +4183,46 @@ const renderNumericFilterMenu = (
                         }}>
                           {baselineRowCount > 0 ? ((tableRowCount / baselineRowCount) * 100).toFixed(1) : '0'}%
                         </span>
-                        <span> rows · {visibleAggregations.length} columns</span>
+                        <span> {metricLabels.short} · {visibleAggregations.length} columns</span>
                       </>
                     ) : (
-                      <>{tableRowCount.toLocaleString()} rows · {visibleAggregations.length} columns</>
+                      <>{tableRowCount.toLocaleString()} {metricLabels.short} · {visibleAggregations.length} columns</>
                     )}
                   </div>
                 </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {parentOptions.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem', minWidth: '210px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%' }}>
+                      <label style={{ fontSize: '0.7rem', color: '#555', fontWeight: 600 }}>Count by</label>
+                      <select
+                        value={countByValue}
+                        onChange={(event) => handleCountByChange(table.name, event.target.value)}
+                        style={{
+                          padding: '0.3rem 0.5rem',
+                          borderRadius: '4px',
+                          border: '1px solid #ccc',
+                          fontSize: '0.75rem',
+                          background: 'white',
+                          color: '#333'
+                        }}
+                      >
+                        <option value="rows">Rows ({table.displayName || table.name})</option>
+                        {parentOptions.map(option => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={{ fontSize: '0.7rem', color: '#555' }}>
+                      Counting <strong>{metricLabels.long}</strong>: {tableRowCount.toLocaleString()}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '0.7rem', color: '#555' }}>
+                    Counting <strong>{metricLabels.long}</strong>: {tableRowCount.toLocaleString()}
+                  </div>
+                )}
                 {/* Filter badges */}
                 {directFilterCount > 0 && (
                   <div
@@ -4032,8 +4308,8 @@ const renderNumericFilterMenu = (
                 if (agg.display_type === 'categorical' && agg.categories) {
                   const categoryCount = agg.categories.length
                   const viewPref = getViewPreference(table.name, agg.column_name, categoryCount)
+                  const allowPie = categoryCount <= MAX_PIE_CATEGORIES && agg.metric_type !== 'parent'
 
-                  // Show table if user chose table or if >8 categories by default
                   if (viewPref === 'table') {
                     return (
                       <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2', gridRow: 'span 2' }}>
@@ -4042,20 +4318,19 @@ const renderNumericFilterMenu = (
                     )
                   }
 
-                  // Otherwise show chart (pie for ≤8, bar for >8)
-                  if (categoryCount <= 8) {
+                  if (allowPie) {
                     return (
                       <div key={`${table.name}_${agg.column_name}`}>
                         {renderPieChart(displayTitle, table.name, agg.column_name, tableColor)}
                       </div>
                     )
-                  } else {
-                    return (
-                      <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2' }}>
-                        {renderBarChart(displayTitle, table.name, agg.column_name, tableColor)}
-                      </div>
-                    )
                   }
+
+                  return (
+                    <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2' }}>
+                      {renderBarChart(displayTitle, table.name, agg.column_name, tableColor)}
+                    </div>
+                  )
                 } else if (agg.display_type === 'numeric' && agg.histogram) {
                   return (
                     <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2' }}>

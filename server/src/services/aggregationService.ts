@@ -37,6 +37,10 @@ export interface ColumnAggregation {
   // For numeric columns
   numeric_stats?: NumericStats
   histogram?: HistogramBin[]
+
+  metric_type?: MetricType
+  metric_parent_table?: string
+  metric_parent_column?: string
 }
 
 export interface Filter {
@@ -65,6 +69,30 @@ export interface TableMetadata {
   table_name: string
   clickhouse_table_name: string
   relationships?: TableRelationship[]
+}
+
+export type MetricType = 'rows' | 'parent'
+
+/**
+ * Configuration describing how a table should aggregate counts.
+ * - `rows` (default) counts raw rows
+ * - `parent` counts distinct values from an upstream table
+ */
+export interface CountByConfig {
+  mode: MetricType
+  target_table?: string
+}
+
+interface MetricContext {
+  type: MetricType
+  parentTable?: string
+  parentColumn?: string
+}
+
+const badRequest = (message: string): Error => {
+  const error: any = new Error(message)
+  error.status = 400
+  return error
 }
 
 class AggregationService {
@@ -568,12 +596,13 @@ class AggregationService {
     displayType: string,
     filters: Filter[] | Filter = [],
     currentTableName?: string,
-    allTablesMetadata?: TableMetadata[]
+    allTablesMetadata?: TableMetadata[],
+    countBy?: CountByConfig
   ): Promise<ColumnAggregation> {
     // Get the ClickHouse table name
     const tableResult = await clickhouseClient.query({
       query: `
-        SELECT clickhouse_table_name, row_count
+        SELECT table_name, clickhouse_table_name, row_count
         FROM biai.dataset_tables
         WHERE dataset_id = {datasetId:String}
           AND table_id = {tableId:String}
@@ -583,7 +612,7 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const tables = await tableResult.json<{ clickhouse_table_name: string; row_count: number }>()
+    const tables = await tableResult.json<{ table_name: string; clickhouse_table_name: string; row_count: number }>()
     if (tables.length === 0) {
       throw new Error('Table not found')
     }
@@ -591,17 +620,31 @@ class AggregationService {
     const clickhouseTableName = tables[0].clickhouse_table_name
     const qualifiedTableName = this.qualifyTableName(clickhouseTableName)
     const totalRows = tables[0].row_count
+    let effectiveTableName = currentTableName || tables[0].table_name
+    let tableMetadata = allTablesMetadata
+
+    if (countBy && countBy.mode === 'parent' && (!effectiveTableName || !tableMetadata)) {
+      const { metadata, idToNameMap } = await this.loadDatasetTablesMetadata(datasetId)
+      tableMetadata = metadata
+      if (!effectiveTableName) {
+        effectiveTableName = idToNameMap.get(tableId) || tables[0].table_name
+      }
+    }
 
     // Get valid columns for this table
     const validColumns = await this.getTableColumns(clickhouseTableName)
-    const whereClause = this.buildWhereClause(filters, validColumns, currentTableName, allTablesMetadata)
+    const whereClause = this.buildWhereClause(filters, validColumns, effectiveTableName, tableMetadata)
 
-    // Get filtered row count if filters are applied
+    const metricContext = this.resolveMetricContext(effectiveTableName, countBy, tableMetadata)
+    const metricAggregation = this.getMetricAggregationExpression(metricContext)
+
+    // Get filtered count for the selected metric
     let filteredTotalRows = totalRows
     const hasFilters = Array.isArray(filters) ? filters.length > 0 : (filters && Object.keys(filters).length > 0)
-    if (hasFilters && whereClause) {
+    const needsMetricCountQuery = metricContext.type === 'parent' || (hasFilters && whereClause)
+    if (needsMetricCountQuery) {
       const countQuery = `
-        SELECT count() AS filtered_count
+        SELECT ${metricAggregation} AS filtered_count
         FROM ${qualifiedTableName}
         WHERE 1=1 ${whereClause}
       `
@@ -610,14 +653,16 @@ class AggregationService {
         format: 'JSONEachRow'
       })
       const countData = await countResult.json<{ filtered_count: number }>()
-      filteredTotalRows = countData[0].filtered_count
+      const [countRow] = countData
+      filteredTotalRows = countRow?.filtered_count ?? 0
     }
 
     // Get basic stats (null count, unique count)
     // Use uniq() instead of uniqExact() for memory efficiency on high-cardinality columns
+    const nullCountExpression = this.getMetricAggregationExpression(metricContext, `isNull(${columnName})`)
     const basicStatsQuery = `
       SELECT
-        countIf(isNull(${columnName})) AS null_count,
+        ${nullCountExpression} AS null_count,
         uniq(${columnName}) AS unique_count
       FROM ${qualifiedTableName}
       WHERE 1=1 ${whereClause}
@@ -636,7 +681,10 @@ class AggregationService {
       display_type: displayType,
       total_rows: filteredTotalRows,
       null_count,
-      unique_count
+      unique_count,
+      metric_type: metricContext.type,
+      metric_parent_table: metricContext.parentTable,
+      metric_parent_column: metricContext.parentColumn
     }
 
     // Get aggregation based on display type
@@ -646,7 +694,8 @@ class AggregationService {
         columnName,
         filteredTotalRows,
         50,
-        whereClause
+        whereClause,
+        metricContext
       )
     } else if (displayType === 'numeric') {
       aggregation.numeric_stats = await this.getNumericStats(
@@ -658,7 +707,9 @@ class AggregationService {
         qualifiedTableName,
         columnName,
         20,
-        whereClause
+        whereClause,
+        metricContext,
+        filteredTotalRows
       )
     }
 
@@ -673,8 +724,10 @@ class AggregationService {
     columnName: string,
     totalRows: number,
     limit: number = 50,
-    whereClause: string = ''
+    whereClause: string = '',
+    metricContext: MetricContext
   ): Promise<CategoryCount[]> {
+    const metricAggregation = this.getMetricAggregationExpression(metricContext)
     const query = `
       SELECT
         multiIf(
@@ -687,8 +740,8 @@ class AggregationService {
           lowerUTF8(trimBoth(toString(${columnName}))) = 'n/a', '(N/A)',
           trimBoth(toString(${columnName}))
         ) AS display_value,
-        count() AS count,
-        if(${totalRows} = 0, 0, count() * 100.0 / ${totalRows}) AS percentage
+        ${metricAggregation} AS count,
+        if(${totalRows} = 0, 0, ${metricAggregation} * 100.0 / ${totalRows}) AS percentage
       FROM ${qualifiedTableName}
       WHERE 1=1
         ${whereClause}
@@ -743,14 +796,15 @@ class AggregationService {
     qualifiedTableName: string,
     columnName: string,
     bins: number = 20,
-    whereClause: string = ''
+    whereClause: string = '',
+    metricContext: MetricContext,
+    totalMetricCount: number
   ): Promise<HistogramBin[]> {
     // First get min and max to calculate bin width
     const minMaxQuery = `
       SELECT
         min(${columnName}) AS min_val,
-        max(${columnName}) AS max_val,
-        count() AS total_count
+        max(${columnName}) AS max_val
       FROM ${qualifiedTableName}
       WHERE ${columnName} IS NOT NULL
         ${whereClause}
@@ -761,12 +815,12 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const minMaxData = await minMaxResult.json<{ min_val: number | null; max_val: number | null; total_count: number }>()
+    const minMaxData = await minMaxResult.json<{ min_val: number | null; max_val: number | null }>()
     if (minMaxData.length === 0) {
       return []
     }
 
-    const { min_val, max_val, total_count } = minMaxData[0]
+    const { min_val, max_val } = minMaxData[0]
     if (min_val === null || max_val === null) {
       return []
     }
@@ -776,7 +830,7 @@ class AggregationService {
       return [{
         bin_start: min_val,
         bin_end: min_val,
-        count: total_count,
+        count: totalMetricCount,
         percentage: 100
       }]
     }
@@ -784,13 +838,13 @@ class AggregationService {
     const binWidth = (max_val - min_val) / bins
 
     // Use ClickHouse's histogram function or manual binning
+    const metricAggregation = this.getMetricAggregationExpression(metricContext)
     const histogramQuery = `
       SELECT
         floor((${columnName} - ${min_val}) / ${binWidth}) AS bin_index,
         ${min_val} + floor((${columnName} - ${min_val}) / ${binWidth}) * ${binWidth} AS bin_start,
         ${min_val} + (floor((${columnName} - ${min_val}) / ${binWidth}) + 1) * ${binWidth} AS bin_end,
-        count() AS count,
-        count() * 100.0 / ${total_count} AS percentage
+        ${metricAggregation} AS count
       FROM ${qualifiedTableName}
       WHERE ${columnName} IS NOT NULL
         ${whereClause}
@@ -803,17 +857,132 @@ class AggregationService {
       format: 'JSONEachRow'
     })
 
-    const histogram = await result.json<{ bin_start: number; bin_end: number; count: number; percentage: number }>()
+    const histogram = await result.json<{ bin_start: number; bin_end: number; count: number }>()
     return histogram.map(bin => ({
       bin_start: bin.bin_start,
       bin_end: bin.bin_end,
       count: bin.count,
-      percentage: bin.percentage
+      percentage: totalMetricCount > 0 ? (bin.count / totalMetricCount) * 100 : 0
     }))
   }
 
   private qualifyTableName(tableName: string): string {
     return tableName.includes('.') ? tableName : `biai.${tableName}`
+  }
+
+  private async loadDatasetTablesMetadata(datasetId: string): Promise<{
+    metadata: TableMetadata[]
+    idToNameMap: Map<string, string>
+  }> {
+    const tablesResult = await clickhouseClient.query({
+      query: `
+        SELECT table_id, table_name, clickhouse_table_name
+        FROM biai.dataset_tables
+        WHERE dataset_id = {datasetId:String}
+      `,
+      query_params: { datasetId },
+      format: 'JSONEachRow'
+    })
+
+    const tablesData = await tablesResult.json<{ table_id: string; table_name: string; clickhouse_table_name: string }>()
+
+    const relationshipsResult = await clickhouseClient.query({
+      query: `
+        SELECT
+          table_id,
+          foreign_key,
+          referenced_table,
+          referenced_column,
+          relationship_type
+        FROM biai.table_relationships
+        WHERE dataset_id = {datasetId:String}
+      `,
+      query_params: { datasetId },
+      format: 'JSONEachRow'
+    })
+
+    const relationshipsData = await relationshipsResult.json<{
+      table_id: string
+      foreign_key: string
+      referenced_table: string
+      referenced_column: string
+      relationship_type: string
+    }>()
+
+    const idToNameMap = new Map(tablesData.map(t => [t.table_id, t.table_name]))
+
+    const metadata: TableMetadata[] = tablesData.map(table => {
+      const tableRelationships = relationshipsData
+        .filter(rel => rel.table_id === table.table_id)
+        .map(rel => ({
+          foreign_key: rel.foreign_key,
+          referenced_table: rel.referenced_table,
+          referenced_column: rel.referenced_column,
+          type: rel.relationship_type
+        }))
+
+      return {
+        table_name: table.table_name,
+        clickhouse_table_name: table.clickhouse_table_name,
+        relationships: tableRelationships
+      }
+    })
+
+    return { metadata, idToNameMap }
+  }
+
+  private resolveMetricContext(
+    currentTableName: string | undefined,
+    countBy: CountByConfig | undefined,
+    allTablesMetadata: TableMetadata[] | undefined
+  ): MetricContext {
+    if (!countBy || countBy.mode === 'rows' || !currentTableName) {
+      return { type: 'rows' }
+    }
+
+    if (!allTablesMetadata) {
+      throw badRequest('countBy requires table metadata')
+    }
+
+    if (!countBy.target_table) {
+      throw badRequest('countBy target_table is required')
+    }
+
+    const currentTableMeta = allTablesMetadata.find(t => t.table_name === currentTableName)
+    if (!currentTableMeta) {
+      throw badRequest(`Table metadata not found for ${currentTableName}`)
+    }
+
+    const relationship = currentTableMeta.relationships?.find(
+      rel => rel.referenced_table === countBy.target_table
+    )
+    if (!relationship) {
+      throw badRequest(`No relationship from ${currentTableName} to ${countBy.target_table}`)
+    }
+
+    if (!relationship.foreign_key) {
+      throw badRequest(`Relationship from ${currentTableName} to ${countBy.target_table} is missing foreign key`)
+    }
+
+    return {
+      type: 'parent',
+      parentTable: relationship.referenced_table,
+      parentColumn: relationship.foreign_key
+    }
+  }
+
+  private getMetricAggregationExpression(metricContext: MetricContext, condition?: string): string {
+    if (condition) {
+      if (metricContext.type === 'parent') {
+        return `uniqIf(${metricContext.parentColumn}, ${condition})`
+      }
+      return `countIf(${condition})`
+    }
+
+    if (metricContext.type === 'parent') {
+      return `uniq(${metricContext.parentColumn})`
+    }
+    return 'count()'
   }
 
   private parseTableIdentifier(tableName: string): { database: string; table: string } {
@@ -839,84 +1008,14 @@ class AggregationService {
   async getTableAggregations(
     datasetId: string,
     tableId: string,
-    filters: Filter[] | Filter = []
+    filters: Filter[] | Filter = [],
+    countBy?: CountByConfig
   ): Promise<ColumnAggregation[]> {
-    // Get all tables metadata for cross-table filtering support
-    const tablesResult = await clickhouseClient.query({
-      query: `
-        SELECT
-          table_name,
-          clickhouse_table_name
-        FROM biai.dataset_tables
-        WHERE dataset_id = {datasetId:String}
-      `,
-      query_params: { datasetId },
-      format: 'JSONEachRow'
-    })
-
-    const tablesData = await tablesResult.json<{ table_name: string; clickhouse_table_name: string }>()
-
-    // Get relationships for all tables
-    const relationshipsResult = await clickhouseClient.query({
-      query: `
-        SELECT
-          table_id,
-          foreign_key,
-          referenced_table,
-          referenced_column,
-          relationship_type
-        FROM biai.table_relationships
-        WHERE dataset_id = {datasetId:String}
-      `,
-      query_params: { datasetId },
-      format: 'JSONEachRow'
-    })
-
-    const relationshipsData = await relationshipsResult.json<{
-      table_id: string
-      foreign_key: string
-      referenced_table: string
-      referenced_column: string
-      relationship_type: string
-    }>()
-
-    // Map table_id to table_name
-    const tableIdToNameResult = await clickhouseClient.query({
-      query: `
-        SELECT table_id, table_name
-        FROM biai.dataset_tables
-        WHERE dataset_id = {datasetId:String}
-      `,
-      query_params: { datasetId },
-      format: 'JSONEachRow'
-    })
-    const tableIdToName = await tableIdToNameResult.json<{ table_id: string; table_name: string }>()
-    const idToNameMap = new Map(tableIdToName.map(t => [t.table_id, t.table_name]))
-
-    // Build table metadata with relationships
-    const allTablesMetadata: TableMetadata[] = tablesData.map(table => {
-      const tableRelationships = relationshipsData
-        .filter(rel => {
-          const relTableName = idToNameMap.get(rel.table_id)
-          return relTableName === table.table_name
-        })
-        .map(rel => ({
-          foreign_key: rel.foreign_key,
-          referenced_table: rel.referenced_table,
-          referenced_column: rel.referenced_column,
-          type: rel.relationship_type
-        }))
-
-      return {
-        table_name: table.table_name,
-        clickhouse_table_name: table.clickhouse_table_name,
-        relationships: tableRelationships
-      }
-    })
-
-    // Get current table name
-    const currentTableIdName = tableIdToName.find(t => t.table_id === tableId)
-    const currentTableName = currentTableIdName?.table_name
+    const { metadata: allTablesMetadata, idToNameMap } = await this.loadDatasetTablesMetadata(datasetId)
+    const currentTableName = idToNameMap.get(tableId)
+    if (!currentTableName) {
+      throw new Error('Table metadata not found')
+    }
 
     // Get column metadata
     const columnsResult = await clickhouseClient.query({
@@ -947,7 +1046,8 @@ class AggregationService {
           col.display_type,
           filters,
           currentTableName,
-          allTablesMetadata
+          allTablesMetadata,
+          countBy
         )
       )
     )
