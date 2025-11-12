@@ -90,6 +90,7 @@ interface FilterPreset {
   id: string
   name: string
   filters: Filter[]
+  countBySelections: Record<string, CountBySelection>
   createdAt: string
 }
 
@@ -311,7 +312,12 @@ function DatasetExplorer() {
   const loadPresetsFromLocalStorage = (): FilterPreset[] => {
     try {
       const stored = localStorage.getItem(`presets_${identifier}`)
-      return stored ? JSON.parse(stored) : []
+      if (!stored) return []
+      const parsed: FilterPreset[] = JSON.parse(stored)
+      return parsed.map(preset => ({
+        ...preset,
+        countBySelections: preset.countBySelections || {}
+      }))
     } catch (error) {
       console.error('Failed to load presets from localStorage:', error)
       return []
@@ -325,6 +331,7 @@ function DatasetExplorer() {
       id: Date.now().toString(),
       name: presetNameInput.trim(),
       filters: JSON.parse(JSON.stringify(filters)), // Deep clone
+      countBySelections: JSON.parse(JSON.stringify(countBySelections)),
       createdAt: new Date().toISOString()
     }
 
@@ -337,6 +344,7 @@ function DatasetExplorer() {
 
   const applyPreset = (preset: FilterPreset) => {
     setFilters(JSON.parse(JSON.stringify(preset.filters))) // Deep clone
+    setCountBySelections(JSON.parse(JSON.stringify(preset.countBySelections || {})))
     setShowPresetsDropdown(false)
   }
 
@@ -376,7 +384,11 @@ function DatasetExplorer() {
       try {
         const imported = JSON.parse(e.target?.result as string) as FilterPreset[]
         if (Array.isArray(imported)) {
-          const updated = [...presets, ...imported]
+          const normalized = imported.map(preset => ({
+            ...preset,
+            countBySelections: preset.countBySelections || {}
+          }))
+          const updated = [...presets, ...normalized]
           setPresets(updated)
           savePresetsToLocalStorage(updated)
         }

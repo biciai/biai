@@ -330,6 +330,18 @@ describe('AggregationService - Cross-Table Filtering', () => {
     })
   })
 
+  test('buildWhereClause uses alias resolver for ancestor filters', () => {
+    const result = callPrivate('buildWhereClause')(
+      [{ column: 'radiation_therapy', operator: 'eq', value: 'Yes', tableName: 'patients' }],
+      undefined,
+      'samples',
+      mockTablesMetadata,
+      (tableName?: string) => (tableName === 'patients' ? 'ancestor_patients' : undefined)
+    )
+
+    expect(result).toBe("AND (ancestor_patients.radiation_therapy = 'Yes')")
+  })
+
   describe('findRelationshipPath', () => {
     test('finds direct relationship path', () => {
       const path = callPrivate('findRelationshipPath')(
@@ -668,11 +680,22 @@ describe('AggregationService - countBy metrics', () => {
       type: 'parent',
       parentTable: 'patients',
       parentColumn: 'patient_id',
-      joins: [],
-      ancestorExpression: 'base_table.patient_id',
+      joins: [
+        {
+          alias: 'ancestor_0',
+          table: 'biai.patients_raw',
+          on: 'base_table.patient_id = ancestor_0.patient_id'
+        }
+      ],
+      ancestorExpression: 'ancestor_0.patient_id',
       pathSegments: [
-        { from_table: 'samples', via_column: 'patient_id', to_table: 'patients' }
-      ]
+        { from_table: 'samples', via_column: 'patient_id', to_table: 'patients', referenced_column: 'patient_id' }
+      ],
+      aliasByTable: expect.objectContaining({
+        samples: 'base_table',
+        patients: 'ancestor_0'
+      }),
+      parentAlias: 'ancestor_0'
     })
   })
 
@@ -724,7 +747,9 @@ describe('AggregationService - countBy metrics', () => {
     expect(result.metric_parent_table).toBe('patients')
     expect(result.total_rows).toBe(3)
     expect(result.categories).toEqual([{ value: 'A', display_value: 'A', count: 2, percentage: 100 }])
-    expect(result.metric_path).toEqual([{ from_table: 'samples', via_column: 'patient_id', to_table: 'patients' }])
+    expect(result.metric_path).toEqual([
+      { from_table: 'samples', via_column: 'patient_id', to_table: 'patients', referenced_column: 'patient_id' }
+    ])
     expect(mockQuery).toHaveBeenCalledTimes(4)
 
     getTableColumnsSpy.mockRestore()
@@ -776,12 +801,28 @@ describe('AggregationService - countBy metrics', () => {
         alias: 'ancestor_1',
         table: 'biai.patients_raw',
         on: 'ancestor_0.patient_id = ancestor_1.patient_id'
+      },
+      {
+        alias: 'ancestor_2',
+        table: 'biai.hospitals_raw',
+        on: 'ancestor_1.hospital_id = ancestor_2.hospital_id'
       }
     ])
-    expect(context.ancestorExpression).toBe('ancestor_1.hospital_id')
+    expect(context.ancestorExpression).toBe('ancestor_2.hospital_id')
     expect(context.parentTable).toBe('hospitals')
     expect(context.parentColumn).toBe('hospital_id')
-    expect(context.pathSegments).toHaveLength(3)
+    expect(context.pathSegments).toEqual([
+      { from_table: 'mutations', via_column: 'sample_id', to_table: 'samples', referenced_column: 'sample_id' },
+      { from_table: 'samples', via_column: 'patient_id', to_table: 'patients', referenced_column: 'patient_id' },
+      { from_table: 'patients', via_column: 'hospital_id', to_table: 'hospitals', referenced_column: 'hospital_id' }
+    ])
+    expect(context.aliasByTable).toEqual({
+      mutations: 'base_table',
+      samples: 'ancestor_0',
+      patients: 'ancestor_1',
+      hospitals: 'ancestor_2'
+    })
+    expect(context.parentAlias).toBe('ancestor_2')
   })
 
   test('getTableAggregations returns multi-hop parent metrics end-to-end', async () => {
@@ -863,9 +904,9 @@ describe('AggregationService - countBy metrics', () => {
     expect(aggregation.metric_type).toBe('parent')
     expect(aggregation.metric_parent_table).toBe('hospitals')
     expect(aggregation.metric_path).toEqual([
-      { from_table: 'mutations', via_column: 'sample_id', to_table: 'samples' },
-      { from_table: 'samples', via_column: 'patient_id', to_table: 'patients' },
-      { from_table: 'patients', via_column: 'hospital_id', to_table: 'hospitals' }
+      { from_table: 'mutations', via_column: 'sample_id', to_table: 'samples', referenced_column: 'sample_id' },
+      { from_table: 'samples', via_column: 'patient_id', to_table: 'patients', referenced_column: 'patient_id' },
+      { from_table: 'patients', via_column: 'hospital_id', to_table: 'hospitals', referenced_column: 'hospital_id' }
     ])
     expect(aggregation.total_rows).toBe(80)
     expect(mockQuery).toHaveBeenCalledTimes(7)
