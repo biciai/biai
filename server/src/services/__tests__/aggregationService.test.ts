@@ -342,6 +342,18 @@ describe('AggregationService - Cross-Table Filtering', () => {
     expect(result).toBe("AND (ancestor_patients.radiation_therapy = 'Yes')")
   })
 
+  test('buildWhereClause handles NOT filters via alias resolver', () => {
+    const result = callPrivate('buildWhereClause')(
+      [{ not: { column: 'radiation_therapy', operator: 'eq', value: 'Yes', tableName: 'patients' } } as Filter],
+      undefined,
+      'samples',
+      mockTablesMetadata,
+      (tableName?: string) => (tableName === 'patients' ? 'ancestor_patients' : undefined)
+    )
+
+    expect(result).toBe("AND (NOT (ancestor_patients.radiation_therapy = 'Yes'))")
+  })
+
   describe('findRelationshipPath', () => {
     test('finds direct relationship path', () => {
       const path = callPrivate('findRelationshipPath')(

@@ -440,10 +440,11 @@ class AggregationService {
 
     // Separate local filters from cross-table filters
     for (const filter of filterArray) {
-      const aliasOverride = tableAliasResolver?.(filter.tableName)
-      const isCrossTable = !aliasOverride && filter.tableName && currentTableName && allTablesMetadata && filter.tableName !== currentTableName
+      const targetTable = this.getFilterTableName(filter)
+      const aliasOverride = targetTable ? tableAliasResolver?.(targetTable) : undefined
+      const isCrossTable = !aliasOverride && targetTable && currentTableName && allTablesMetadata && targetTable !== currentTableName
 
-      if (aliasOverride && filter.tableName && aliasOverride !== BASE_TABLE_ALIAS) {
+      if (aliasOverride && targetTable && aliasOverride !== BASE_TABLE_ALIAS) {
         aliasFilters.push({ filter, alias: aliasOverride })
       } else if (isCrossTable) {
         // This is a cross-table filter - build subquery
@@ -628,6 +629,16 @@ class AggregationService {
       default:
         return ''
     }
+  }
+
+  private getFilterTableName(filter: Filter): string | undefined {
+    if ((filter as any).tableName) {
+      return (filter as any).tableName
+    }
+    if (filter.not) {
+      return this.getFilterTableName(filter.not)
+    }
+    return undefined
   }
 
   /**
@@ -1063,6 +1074,8 @@ class AggregationService {
     if (!parentAlias) {
       throw badRequest(`Unable to resolve alias for ancestor ${targetTable}`)
     }
+    // Use the parent table's primary key when counting distinct parents
+    // (referenced_column = parent PK, via_column = child FK)
     const ancestorExpression = this.columnRef(lastStep.refCol, parentAlias)
 
     return {
