@@ -96,6 +96,7 @@ export interface MetricPathSegment {
   from_table: string
   via_column: string
   to_table: string
+  referenced_column?: string
 }
 
 interface MetricContext {
@@ -105,6 +106,8 @@ interface MetricContext {
   joins?: MetricJoin[]
   ancestorExpression?: string
   pathSegments?: MetricPathSegment[]
+  aliasByTable?: Record<string, string>
+  parentAlias?: string
 }
 
 const badRequest = (message: string): Error => {
@@ -270,7 +273,7 @@ class AggregationService {
     }
 
     // Build the filter condition for the target table
-    const filterCondition = this.buildFilterCondition(filter, false)
+    const filterCondition = this.buildFilterCondition(filter, null)
     if (!filterCondition) return null
 
     // Build nested IN subqueries for ClickHouse (no JOINs, better performance)
@@ -423,7 +426,8 @@ class AggregationService {
     filters: Filter[] | Filter,
     validColumns?: Set<string>,
     currentTableName?: string,
-    allTablesMetadata?: TableMetadata[]
+    allTablesMetadata?: TableMetadata[],
+    tableAliasResolver?: (tableName?: string) => string | undefined
   ): string {
     if (!filters) {
       return ''
@@ -432,12 +436,17 @@ class AggregationService {
     const filterArray = Array.isArray(filters) ? filters : [filters]
     const localFilters: Filter[] = []
     const crossTableConditions: string[] = []
+    const aliasFilters: Array<{ filter: Filter; alias: string }> = []
 
     // Separate local filters from cross-table filters
     for (const filter of filterArray) {
-      const isCrossTable = filter.tableName && currentTableName && allTablesMetadata && filter.tableName !== currentTableName
+      const targetTable = this.getFilterTableName(filter)
+      const aliasOverride = targetTable ? tableAliasResolver?.(targetTable) : undefined
+      const isCrossTable = !aliasOverride && targetTable && currentTableName && allTablesMetadata && targetTable !== currentTableName
 
-      if (isCrossTable) {
+      if (aliasOverride && targetTable && aliasOverride !== BASE_TABLE_ALIAS) {
+        aliasFilters.push({ filter, alias: aliasOverride })
+      } else if (isCrossTable) {
         // This is a cross-table filter - build subquery
         const subquery = this.buildCrossTableSubquery(
           currentTableName,
@@ -469,9 +478,14 @@ class AggregationService {
       localCondition = this.buildFilterCondition(filterTree)
     }
 
+    const aliasConditions = aliasFilters
+      .map(({ filter, alias }) => this.buildFilterCondition(filter, alias))
+      .filter(condition => condition !== '')
+
     // Combine local and cross-table conditions
     const allConditions = []
     if (localCondition) allConditions.push(localCondition)
+    allConditions.push(...aliasConditions)
     allConditions.push(...crossTableConditions)
 
     if (allConditions.length === 0) return ''
@@ -481,11 +495,11 @@ class AggregationService {
   /**
    * Recursively build filter condition from filter tree
    */
-  private buildFilterCondition(filter: Filter, useBaseAlias: boolean = true): string {
+  private buildFilterCondition(filter: Filter, alias?: string | null): string {
     // Handle logical operators
     if (filter.and && Array.isArray(filter.and)) {
       const conditions = filter.and
-        .map(f => this.buildFilterCondition(f, useBaseAlias))
+        .map(f => this.buildFilterCondition(f, alias))
         .filter(c => c !== '')
       if (conditions.length === 0) return ''
       if (conditions.length === 1) return conditions[0]
@@ -494,7 +508,7 @@ class AggregationService {
 
     if (filter.or && Array.isArray(filter.or)) {
       const conditions = filter.or
-        .map(f => this.buildFilterCondition(f, useBaseAlias))
+        .map(f => this.buildFilterCondition(f, alias))
         .filter(c => c !== '')
       if (conditions.length === 0) return ''
       if (conditions.length === 1) return conditions[0]
@@ -502,7 +516,7 @@ class AggregationService {
     }
 
     if (filter.not) {
-      const condition = this.buildFilterCondition(filter.not, useBaseAlias)
+      const condition = this.buildFilterCondition(filter.not, alias)
       if (!condition) return ''
       return `NOT (${condition})`
     }
@@ -512,7 +526,10 @@ class AggregationService {
       return ''
     }
 
-    const col = useBaseAlias ? this.columnRef(filter.column) : filter.column
+    const col =
+      alias === null
+        ? filter.column
+        : this.columnRef(filter.column, alias ?? BASE_TABLE_ALIAS)
 
     switch (filter.operator) {
       case 'eq':
@@ -614,6 +631,16 @@ class AggregationService {
     }
   }
 
+  private getFilterTableName(filter: Filter): string | undefined {
+    if ((filter as any).tableName) {
+      return (filter as any).tableName
+    }
+    if (filter.not) {
+      return this.getFilterTableName(filter.not)
+    }
+    return undefined
+  }
+
   /**
    * Get aggregated data for a column based on its display type
    */
@@ -659,11 +686,18 @@ class AggregationService {
       }
     }
 
+    const metricContext = this.resolveMetricContext(effectiveTableName, countBy, tableMetadata)
+
     // Get valid columns for this table
     const validColumns = await this.getTableColumns(clickhouseTableName)
-    const whereClause = this.buildWhereClause(filters, validColumns, effectiveTableName, tableMetadata)
+    const aliasResolver = metricContext.aliasByTable
+      ? (tableName?: string) => {
+          if (!tableName) return undefined
+          return metricContext.aliasByTable?.[tableName]
+        }
+      : undefined
+    const whereClause = this.buildWhereClause(filters, validColumns, effectiveTableName, tableMetadata, aliasResolver)
 
-    const metricContext = this.resolveMetricContext(effectiveTableName, countBy, tableMetadata)
     const fromClause = this.buildFromClause(qualifiedTableName, metricContext)
     const metricAggregation = this.getMetricAggregationExpression(metricContext)
 
@@ -1012,7 +1046,8 @@ class AggregationService {
       pathSegments.push({
         from_table: step.from,
         via_column: step.fk,
-        to_table: step.to
+        to_table: step.to,
+        referenced_column: step.refCol
       })
 
       const fromAlias = aliasByTable.get(step.from)
@@ -1020,36 +1055,38 @@ class AggregationService {
         throw badRequest(`Unable to resolve relationship path for ${step.from}`)
       }
 
-      const nextStep = path[index + 1]
-      if (nextStep) {
-        const nextMeta = tableMap.get(step.to)
-        if (!nextMeta) {
-          throw badRequest(`Table metadata not found for ${step.to}`)
-        }
-        const joinAlias = `ancestor_${index}`
-        joins.push({
-          alias: joinAlias,
-          table: this.qualifyTableName(nextMeta.clickhouse_table_name),
-          on: `${fromAlias}.${step.fk} = ${joinAlias}.${step.refCol}`
-        })
-        aliasByTable.set(step.to, joinAlias)
+      const toMeta = tableMap.get(step.to)
+      if (!toMeta) {
+        throw badRequest(`Table metadata not found for ${step.to}`)
       }
+
+      const joinAlias = `ancestor_${index}`
+      joins.push({
+        alias: joinAlias,
+        table: this.qualifyTableName(toMeta.clickhouse_table_name),
+        on: `${fromAlias}.${step.fk} = ${joinAlias}.${step.refCol}`
+      })
+      aliasByTable.set(step.to, joinAlias)
     })
 
     const lastStep = path[path.length - 1]
-    const ancestorAlias = aliasByTable.get(lastStep.from)
-    if (!ancestorAlias) {
-      throw badRequest(`Unable to resolve ancestor alias for ${lastStep.from}`)
+    const parentAlias = aliasByTable.get(targetTable)
+    if (!parentAlias) {
+      throw badRequest(`Unable to resolve alias for ancestor ${targetTable}`)
     }
-    const ancestorExpression = this.columnRef(lastStep.fk, ancestorAlias)
+    // Use the parent table's primary key when counting distinct parents
+    // (referenced_column = parent PK, via_column = child FK)
+    const ancestorExpression = this.columnRef(lastStep.refCol, parentAlias)
 
     return {
       type: 'parent',
       parentTable: targetTable,
-      parentColumn: lastStep.fk,
+      parentColumn: lastStep.refCol,
       joins,
       ancestorExpression,
-      pathSegments
+      pathSegments,
+      aliasByTable: Object.fromEntries(aliasByTable.entries()),
+      parentAlias
     }
   }
 

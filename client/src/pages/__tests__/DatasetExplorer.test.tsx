@@ -432,6 +432,34 @@ describe('DatasetExplorer', () => {
       // In actual implementation, would test delete button click
       // For now, verify presets are loaded
     })
+
+    test('applying a preset restores count-by selections', async () => {
+      const presetWithAncestor = {
+        id: 'preset-countBy',
+        name: 'Parent Count',
+        filters: [{ column: 'amount', operator: 'gte' as const, value: 100, tableName: 'orders' }],
+        countBySelections: {
+          orders: { mode: 'parent' as const, targetTable: 'customers' }
+        },
+        createdAt: new Date().toISOString()
+      }
+      localStorage.setItem('presets_test-dataset-id', JSON.stringify([presetWithAncestor]))
+
+      renderExplorer()
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Dataset')).toBeInTheDocument()
+      })
+
+      const loadButton = screen.getByText('Load Filter')
+      fireEvent.click(loadButton)
+
+      const presetOption = await screen.findByText('Parent Count')
+      fireEvent.click(presetOption)
+
+      const countSelect = await activateOrdersTab()
+      expect(countSelect.value).toBe('parent:customers')
+    })
   })
 
   describe('View Preferences', () => {
