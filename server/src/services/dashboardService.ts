@@ -52,11 +52,17 @@ export class DashboardService {
 
     const dashboards = await result.json<any>()
 
+    // Older dashboard payloads (pre-MVP3) may not include countByTarget; default to null when absent
     return dashboards.map((d: any) => ({
       dashboard_id: d.dashboard_id,
       dataset_id: d.dataset_id,
       dashboard_name: d.dashboard_name,
-      charts: JSON.parse(d.charts),
+      charts: JSON.parse(d.charts).map((chart: any) => ({
+        tableName: chart.tableName,
+        columnName: chart.columnName,
+        countByTarget: chart.countByTarget ?? null,
+        addedAt: chart.addedAt
+      })),
       is_most_recent: Boolean(d.is_most_recent),
       created_at: d.created_at,
       updated_at: d.updated_at
@@ -85,7 +91,12 @@ export class DashboardService {
       dashboard_id: d.dashboard_id,
       dataset_id: d.dataset_id,
       dashboard_name: d.dashboard_name,
-      charts: JSON.parse(d.charts),
+      charts: JSON.parse(d.charts).map((chart: any) => ({
+        tableName: chart.tableName,
+        columnName: chart.columnName,
+        countByTarget: chart.countByTarget ?? null,
+        addedAt: chart.addedAt
+      })),
       is_most_recent: Boolean(d.is_most_recent),
       created_at: d.created_at,
       updated_at: d.updated_at

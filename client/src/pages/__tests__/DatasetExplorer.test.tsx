@@ -573,5 +573,29 @@ describe('DatasetExplorer', () => {
         expect(screen.getAllByText('Regions via orders.customer_id → customers.region_id').length).toBeGreaterThan(0)
       })
     })
+
+    test('dashboard chart tooltips include ancestor path', async () => {
+      renderExplorer()
+
+      const countSelect = await activateOrdersTab()
+      fireEvent.change(countSelect, { target: { value: 'parent:customers' } })
+
+      await waitFor(() => {
+        expect(countSelect.value).toBe('parent:customers')
+      })
+
+      const addButton = (await screen.findAllByTitle('Add to dashboard'))[0]
+      fireEvent.click(addButton)
+
+      const dashboardTab = screen.getByRole('button', { name: /Dashboard/i })
+      fireEvent.click(dashboardTab)
+
+      await waitFor(() => {
+        const headings = screen.getAllByTitle((value, element) =>
+          element.tagName === 'H4' && value.includes('Customers via orders.customer_id')
+        )
+        expect(headings.length).toBeGreaterThan(0)
+      })
+    })
   })
 })

@@ -201,8 +201,8 @@ function DatasetExplorer() {
   const intersectionObserverAvailable = typeof window !== 'undefined' && 'IntersectionObserver' in window
 
   // Saved dashboards state
-const [savedDashboards, setSavedDashboards] = useState<SavedDashboard[]>([])
-const [activeDashboardId, setActiveDashboardId] = useState<string | null>(null) // null = "Most Recent"
+  const [savedDashboards, setSavedDashboards] = useState<SavedDashboard[]>([])
+  const [activeDashboardId, setActiveDashboardId] = useState<string | null>(null) // null = "Most Recent"
   const [showSaveDashboardDialog, setShowSaveDashboardDialog] = useState(false)
   const [showLoadDashboardDialog, setShowLoadDashboardDialog] = useState(false)
   const [showManageDashboardsDialog, setShowManageDashboardsDialog] = useState(false)
@@ -216,9 +216,11 @@ const [activeDashboardId, setActiveDashboardId] = useState<string | null>(null) 
   const dashboardInitialized = useRef(false)
   const savedDashboardsInitialized = useRef(false)
   const countByInitialized = useRef(false)
-const previousCountByRef = useRef<Record<string, CountBySelection>>({})
+  const previousCountByRef = useRef<Record<string, CountBySelection>>({})
   const [showPercentageLabels, setShowPercentageLabels] = useState(false)
   const [showSettingsMenu, setShowSettingsMenu] = useState(false)
+  const settingsButtonRef = useRef<HTMLButtonElement | null>(null)
+  const settingsMenuRef = useRef<HTMLDivElement | null>(null)
 
   // Helper functions for URL persistence
   const serializeFilters = (filters: Filter[]): string => {
@@ -1363,28 +1365,28 @@ const previousCountByRef = useRef<Record<string, CountBySelection>>({})
     return value.toFixed(2)
   }
 
-const rangeKey = (tableName: string, columnName: string) => `${tableName}.${columnName}`
+  const rangeKey = (tableName: string, columnName: string) => `${tableName}.${columnName}`
 
-const rangesEqual = (a: { start: number; end: number }, b: { start: number; end: number }) =>
-  Math.abs(a.start - b.start) < 1e-9 && Math.abs(a.end - b.end) < 1e-9
+  const rangesEqual = (a: { start: number; end: number }, b: { start: number; end: number }) =>
+    Math.abs(a.start - b.start) < 1e-9 && Math.abs(a.end - b.end) < 1e-9
 
-const getFilterColumn = (filter: Filter): string | undefined => {
-  if (filter.column) return filter.column
-  if (filter.or && Array.isArray(filter.or) && filter.or.length > 0) {
-    const child = filter.or[0] as Filter
-    return getFilterColumn(child)
+  const getFilterColumn = (filter: Filter): string | undefined => {
+    if (filter.column) return filter.column
+    if (filter.or && Array.isArray(filter.or) && filter.or.length > 0) {
+      const child = filter.or[0] as Filter
+      return getFilterColumn(child)
+    }
+    if (filter.and && Array.isArray(filter.and) && filter.and.length > 0) {
+      const child = filter.and[0] as Filter
+      return getFilterColumn(child)
+    }
+    if (filter.not) {
+      return getFilterColumn(filter.not)
+    }
+    return undefined
   }
-  if (filter.and && Array.isArray(filter.and) && filter.and.length > 0) {
-    const child = filter.and[0] as Filter
-    return getFilterColumn(child)
-  }
-  if (filter.not) {
-    return getFilterColumn(filter.not)
-  }
-  return undefined
-}
 
-const getFilterTableName = (filter: Filter): string | undefined => (filter as any).tableName
+  const getFilterTableName = (filter: Filter): string | undefined => (filter as any).tableName
 
   const normalizeDashboardCharts = (charts: Array<{ tableName: string; columnName: string; countByTarget?: string | null; addedAt: string }>) => {
     return charts.map(chart => ({
@@ -1688,6 +1690,35 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
   useEffect(() => {
     setShowSettingsMenu(false)
   }, [identifier])
+
+  useEffect(() => {
+    if (!showSettingsMenu) return
+
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (
+        settingsMenuRef.current &&
+        !settingsMenuRef.current.contains(target) &&
+        !settingsButtonRef.current?.contains(target)
+      ) {
+        setShowSettingsMenu(false)
+      }
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowSettingsMenu(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [showSettingsMenu])
 
   useEffect(() => {
     const storageKey = `${CHART_LABEL_STORAGE_PREFIX}${identifier}`
@@ -3276,92 +3307,89 @@ const renderNumericFilterMenu = (
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '-1rem', marginBottom: '0.5rem' }}>
-        <button
-          onClick={() => setShowSettingsMenu(prev => !prev)}
-          style={{
-            border: 'none',
-            borderRadius: '4px',
-            padding: '0.3rem 0.6rem',
-            background: '#ECEFF1',
-            color: '#333',
-            cursor: 'pointer',
-            fontSize: '0.75rem',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.35rem'
-          }}
-          aria-label="Chart settings"
-        >
-          <span role="img" aria-hidden="true">⚙</span>
-          Chart settings
-        </button>
-      </div>
-
-      {showSettingsMenu && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            zIndex: 1000
-          }}
-          onClick={() => setShowSettingsMenu(false)}
-        >
-          <div
+        <div style={{ position: 'relative', display: 'inline-block' }}>
+          <button
+            ref={settingsButtonRef}
+            onClick={() => setShowSettingsMenu(prev => !prev)}
             style={{
-              position: 'absolute',
-              top: '110px',
-              right: '40px',
-              background: 'white',
-              borderRadius: '8px',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-              padding: '0.75rem 1rem',
-              width: '220px'
+              border: 'none',
+              borderRadius: '4px',
+              padding: '0.3rem 0.6rem',
+              background: '#ECEFF1',
+              color: '#333',
+              cursor: 'pointer',
+              fontSize: '0.75rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.35rem'
             }}
-            onClick={(e) => e.stopPropagation()}
+            aria-label="Chart settings"
           >
-            <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.5rem' }}>Chart settings</div>
-            <div style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#444' }}>Chart labels</div>
-            <div style={{ display: 'flex', gap: '0.35rem' }}>
-              <button
-                type="button"
-                onClick={() => setShowPercentageLabels(false)}
-                style={{
-                  border: 'none',
-                  borderRadius: '999px',
-                  padding: '0.2rem 0.9rem',
-                  fontSize: '0.75rem',
-                  cursor: 'pointer',
-                  background: showPercentageLabels ? '#ECEFF1' : '#1976D2',
-                  color: showPercentageLabels ? '#333' : 'white'
-                }}
-              >
-                Counts
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowPercentageLabels(true)}
-                style={{
-                  border: 'none',
-                  borderRadius: '999px',
-                  padding: '0.2rem 0.9rem',
-                  fontSize: '0.75rem',
-                  cursor: 'pointer',
-                  background: showPercentageLabels ? '#1976D2' : '#ECEFF1',
-                  color: showPercentageLabels ? 'white' : '#333'
-                }}
-              >
-                Percentages
-              </button>
+            <span role="img" aria-hidden="true">⚙</span>
+            Chart settings
+          </button>
+          {showSettingsMenu && (
+            <div
+              ref={settingsMenuRef}
+              style={{
+                position: 'absolute',
+                top: 'calc(100% + 8px)',
+                right: 0,
+                background: 'white',
+                borderRadius: '8px',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                padding: '0.75rem 1rem',
+                width: '220px',
+                zIndex: 5
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.5rem' }}>Chart settings</div>
+              <div style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#444' }}>Chart labels</div>
+              <div style={{ display: 'flex', gap: '0.35rem' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPercentageLabels(false)
+                    setShowSettingsMenu(false)
+                  }}
+                  style={{
+                    border: 'none',
+                    borderRadius: '999px',
+                    padding: '0.2rem 0.9rem',
+                    fontSize: '0.75rem',
+                    cursor: 'pointer',
+                    background: showPercentageLabels ? '#ECEFF1' : '#1976D2',
+                    color: showPercentageLabels ? '#333' : 'white'
+                  }}
+                >
+                  Counts
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPercentageLabels(true)
+                    setShowSettingsMenu(false)
+                  }}
+                  style={{
+                    border: 'none',
+                    borderRadius: '999px',
+                    padding: '0.2rem 0.9rem',
+                    fontSize: '0.75rem',
+                    cursor: 'pointer',
+                    background: showPercentageLabels ? '#1976D2' : '#ECEFF1',
+                    color: showPercentageLabels ? 'white' : '#333'
+                  }}
+                >
+                  Percentages
+                </button>
+              </div>
+              <div style={{ fontSize: '0.7rem', color: '#777', marginTop: '0.4rem' }}>
+                {showPercentageLabels ? 'Percentages may exceed 100% when parents overlap.' : 'Switch to percentages when needed.'}
+              </div>
             </div>
-            <div style={{ fontSize: '0.7rem', color: '#777', marginTop: '0.4rem' }}>
-              {showPercentageLabels ? 'Percentages may exceed 100% when parents overlap.' : 'Switch to percentages when needed.'}
-            </div>
-          </div>
+          )}
         </div>
-      )}
+      </div>
 
       {/* Saved Filters Bar - Always visible when presets exist */}
       {presets.length > 0 && (
