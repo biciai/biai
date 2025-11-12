@@ -3,6 +3,7 @@ import clickhouseClient from '../config/clickhouse.js'
 export interface DashboardChart {
   tableName: string
   columnName: string
+  countByTarget?: string | null
   addedAt: string
 }
 

@@ -497,11 +497,6 @@ describe('DatasetExplorer', () => {
         expect(countSelect.value).toBe('parent:regions')
       })
 
-      const badgeTitle = 'Regions via orders.customer_id → customers.region_id'
-      await waitFor(() => {
-        const badges = screen.getAllByTitle(badgeTitle)
-        expect(badges.length).toBeGreaterThan(0)
-      })
     })
 
     test('reuses cached aggregations when toggling count targets', async () => {
@@ -531,6 +526,26 @@ describe('DatasetExplorer', () => {
         expect(countSelect.value).toBe('parent:customers')
       })
       expect(getOrderAggregationCallCount()).toBe(initialCalls + 1)
+    })
+
+    test('shows pie percentage toggle for parent metrics', async () => {
+      renderExplorer()
+
+      const countSelect = await activateOrdersTab()
+      fireEvent.change(countSelect, { target: { value: 'parent:regions' } })
+
+      await waitFor(() => {
+        expect(countSelect.value).toBe('parent:regions')
+      })
+
+      const settingsButton = screen.getByRole('button', { name: /Chart settings/i })
+      fireEvent.click(settingsButton)
+
+      const percentagesBtn = screen.getByRole('button', { name: 'Percentages' })
+      fireEvent.click(percentagesBtn)
+      await waitFor(() => {
+        expect(localStorage.getItem('chartLabels_test-dataset-id')).toBe('percent')
+      })
     })
   })
 

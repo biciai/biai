@@ -9,6 +9,7 @@ import { findRelationshipPath } from '../utils/filterHelpers'
 // Small categorical sets render better as pie charts; beyond this use bars.
 const MAX_PIE_CATEGORIES = 8
 const ROW_COUNT_KEY = 'rows'
+const CHART_LABEL_STORAGE_PREFIX = 'chartLabels_'
 const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 const CACHE_MAX_ENTRIES_PER_TABLE = 5
 const MAX_ANCESTOR_DEPTH = 4
@@ -200,8 +201,8 @@ function DatasetExplorer() {
   const intersectionObserverAvailable = typeof window !== 'undefined' && 'IntersectionObserver' in window
 
   // Saved dashboards state
-  const [savedDashboards, setSavedDashboards] = useState<SavedDashboard[]>([])
-  const [activeDashboardId, setActiveDashboardId] = useState<string | null>(null) // null = "Most Recent"
+const [savedDashboards, setSavedDashboards] = useState<SavedDashboard[]>([])
+const [activeDashboardId, setActiveDashboardId] = useState<string | null>(null) // null = "Most Recent"
   const [showSaveDashboardDialog, setShowSaveDashboardDialog] = useState(false)
   const [showLoadDashboardDialog, setShowLoadDashboardDialog] = useState(false)
   const [showManageDashboardsDialog, setShowManageDashboardsDialog] = useState(false)
@@ -215,7 +216,9 @@ function DatasetExplorer() {
   const dashboardInitialized = useRef(false)
   const savedDashboardsInitialized = useRef(false)
   const countByInitialized = useRef(false)
-  const previousCountByRef = useRef<Record<string, CountBySelection>>({})
+const previousCountByRef = useRef<Record<string, CountBySelection>>({})
+  const [showPercentageLabels, setShowPercentageLabels] = useState(false)
+  const [showSettingsMenu, setShowSettingsMenu] = useState(false)
 
   // Helper functions for URL persistence
   const serializeFilters = (filters: Filter[]): string => {
@@ -1336,29 +1339,6 @@ function DatasetExplorer() {
     return targetLabel ? `${targetLabel} via ${chain}` : chain
   }
 
-  const MetricPathBadge = ({ aggregation }: { aggregation?: ColumnAggregation }) => {
-    const pathLabel = formatMetricPath(aggregation)
-    if (!pathLabel) return null
-    return (
-      <span
-        style={{
-          fontSize: '0.65rem',
-          color: '#424242',
-          background: '#F5F5F5',
-          borderRadius: '999px',
-          padding: '0.1rem 0.4rem',
-          display: 'inline-block',
-          whiteSpace: 'normal',
-          maxWidth: '280px',
-          lineHeight: 1.3
-        }}
-        title={pathLabel}
-      >
-        {pathLabel}
-      </span>
-    )
-  }
-
   const metricsMatch = (a?: ColumnAggregation, b?: ColumnAggregation) => {
     if (!a || !b) return false
     const typeA = a.metric_type || 'rows'
@@ -1545,6 +1525,7 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
 
     const aggregation = getAggregation(tableName, columnName)
     const metricLabels = getMetricLabels(aggregation)
+    const pathLabel = formatMetricPath(aggregation)
 
     const columnHasFilter = hasColumnFilter(columnName)
 
@@ -1703,6 +1684,28 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
     setCountBySelections({})
     setCountByReady(false)
   }, [identifier])
+
+  useEffect(() => {
+    setShowSettingsMenu(false)
+  }, [identifier])
+
+  useEffect(() => {
+    const storageKey = `${CHART_LABEL_STORAGE_PREFIX}${identifier}`
+    const stored = localStorage.getItem(storageKey) ?? localStorage.getItem(`pieLabels_${identifier}`)
+    if (stored === 'percent') {
+      setShowPercentageLabels(true)
+    } else {
+      setShowPercentageLabels(false)
+    }
+  }, [identifier])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(`${CHART_LABEL_STORAGE_PREFIX}${identifier}`, showPercentageLabels ? 'percent' : 'count')
+    } catch (error) {
+      console.error('Failed to persist chart label mode:', error)
+    }
+  }, [showPercentageLabels, identifier])
 
   useEffect(() => {
     if (countByInitialized.current) return
@@ -2277,6 +2280,7 @@ const renderNumericFilterMenu = (
     const metricLabels = getMetricLabels(aggregation)
 
     const metadata = getColumnMetadata(tableName, field)
+    const pathLabel = formatMetricPath(aggregation)
     const tooltipText = [
       metadata?.display_name || title,
       `ID: ${field}`,
@@ -2348,7 +2352,6 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
-          <MetricPathBadge aggregation={aggregation} />
           <button
             type="button"
             onClick={(event) => {
@@ -2528,17 +2531,23 @@ const renderNumericFilterMenu = (
     if (!aggregation?.categories || aggregation.categories.length === 0) return null
 
     const metricLabels = getMetricLabels(aggregation)
+    const pathLabel = formatMetricPath(aggregation)
     const labels = aggregation.categories.map(c => c.display_value ?? (c.value === '' ? '(Empty)' : String(c.value)))
     const values = aggregation.categories.map(c => c.count)
     const filterValues = aggregation.categories.map(c => normalizeFilterValue(c.value))
+    const shouldShowPiePercentages = showPercentageLabels
 
     const metadata = getColumnMetadata(tableName, field)
 
-    const tooltipText = [
+    const tooltipParts = [
       metadata?.display_name || title,
       `ID: ${field}`,
       metadata?.description || ''
-    ].filter(Boolean).join('\n')
+    ]
+    if (pathLabel) {
+      tooltipParts.push(pathLabel)
+    }
+    const tooltipText = tooltipParts.filter(Boolean).join('\n')
 
     const baselineAggregation = getBaselineAggregation(tableName, field)
     const categoriesForMenu =
@@ -2553,6 +2562,7 @@ const renderNumericFilterMenu = (
     const percentTexts = values.map(val =>
       totalCount > 0 ? `${((val / totalCount) * 100).toFixed(1)}%` : '0%'
     )
+    const countTexts = values.map(val => val.toLocaleString())
 
     return (
       <div style={{
@@ -2594,7 +2604,6 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
-          <MetricPathBadge aggregation={aggregation} />
           <button
             type="button"
             onClick={(event) => {
@@ -2680,8 +2689,6 @@ const renderNumericFilterMenu = (
             type: 'pie',
             labels,
             values,
-            textinfo: 'label+text',
-            text: percentTexts,
             textposition: 'inside',
             insidetextorientation: 'radial',
             marker: {
@@ -2698,7 +2705,12 @@ const renderNumericFilterMenu = (
               }
             },
             textfont: { size: 9 },
-            hovertemplate: `%{label}<br>Count (${metricLabels.short}): %{value}<br>Percent of total: %{text}<extra></extra>`
+            hovertemplate: `${['%{label}', `Count (${metricLabels.short}): %{value}`, 'Percent of total: %{customdata}']
+              .concat(pathLabel ? [pathLabel] : [])
+              .join('<br>')}<extra></extra>`,
+            customdata: percentTexts,
+            textinfo: shouldShowPiePercentages ? 'label+text' : 'label+value',
+            text: shouldShowPiePercentages ? percentTexts : countTexts,
           }]}
           layout={{
             height: 135,
@@ -2741,11 +2753,15 @@ const renderNumericFilterMenu = (
 
     const metadata = getColumnMetadata(tableName, field)
 
-    const tooltipText = [
+    const tooltipParts = [
       metadata?.display_name || title,
       `ID: ${field}`,
       metadata?.description || ''
-    ].filter(Boolean).join('\n')
+    ]
+    if (pathLabel) {
+      tooltipParts.push(pathLabel)
+    }
+    const tooltipText = tooltipParts.filter(Boolean).join('\n')
 
     const baselineAggregation = getBaselineAggregation(tableName, field)
     const categoriesForMenu =
@@ -2799,7 +2815,6 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
-          <MetricPathBadge aggregation={aggregation} />
           <button
             type="button"
             onClick={(event) => {
@@ -2898,7 +2913,9 @@ const renderNumericFilterMenu = (
                 )
               }
             },
-            hovertemplate: `%{x}<br>Count (${metricLabels.short}): %{y}<br>Percent of total: %{text}<extra></extra>`,
+            hovertemplate: `${['%{x}', `Count (${metricLabels.short}): %{y}`, 'Percent of total: %{text}']
+              .concat(pathLabel ? [pathLabel] : [])
+              .join('<br>')}<extra></extra>`,
             text: percentTexts,
             textposition: 'auto'
           }]}
@@ -2954,6 +2971,7 @@ const renderNumericFilterMenu = (
     if (!aggregation?.numeric_stats) return null
 
     const metricLabels = getMetricLabels(aggregation)
+    const pathLabel = formatMetricPath(aggregation)
     const rawHistogram = aggregation.histogram ?? []
     if (rawHistogram.length === 0) return null
 
@@ -2965,13 +2983,16 @@ const renderNumericFilterMenu = (
       `Range: [${aggregation.numeric_stats.min !== null ? aggregation.numeric_stats.min.toFixed(2) : 'N/A'}, ${aggregation.numeric_stats.max !== null ? aggregation.numeric_stats.max.toFixed(2) : 'N/A'}]`
     ].join(' | ')
 
-    const tooltipText = [
+    const tooltipParts = [
       metadata?.display_name || title,
       `ID: ${field}`,
-      metadata?.description || '',
-      '',
-      statsText
-    ].filter(Boolean).join('\n')
+      metadata?.description || ''
+    ]
+    if (pathLabel) {
+      tooltipParts.push(pathLabel)
+    }
+    tooltipParts.push('', statsText)
+    const tooltipText = tooltipParts.filter(Boolean).join('\n')
 
     const baselineAggregation = getBaselineAggregation(tableName, field)
     const histogramMatches = metricsMatch(baselineAggregation, aggregation)
@@ -3031,6 +3052,9 @@ const renderNumericFilterMenu = (
     const percentTexts = roundedYValues.map(val =>
       totalCount > 0 ? `${((val / totalCount) * 100).toFixed(1)}%` : '0%'
     )
+    const countTexts = roundedYValues.map(val =>
+      val >= 1000 ? Math.round(val).toLocaleString() : Math.round(val).toString()
+    )
 
     return (
       <div style={{
@@ -3072,7 +3096,6 @@ const renderNumericFilterMenu = (
           >
             {metadata?.display_name || title}
           </h4>
-          <MetricPathBadge aggregation={aggregation} />
           <button
             type="button"
             onClick={(event) => {
@@ -3147,9 +3170,16 @@ const renderNumericFilterMenu = (
                 )
               }
             },
-            hovertemplate: `Range: [%{customdata[0]:.2f}, %{customdata[1]:.2f}]<br>Count (${metricLabels.short}): %{y}<br>Percent of total: %{text}<extra></extra>`,
-            customdata: binsForPlot.map(bin => [bin.bin_start, bin.bin_end]),
-            text: percentTexts
+            hovertemplate: `${[
+              'Range: [%{customdata[0]:.2f}, %{customdata[1]:.2f}]',
+              `Count (${metricLabels.short}): %{y}`,
+              'Percent of total: %{customdata[2]}'
+            ]
+              .concat(pathLabel ? [pathLabel] : [])
+              .join('<br>')}<extra></extra>`,
+            customdata: binsForPlot.map((bin, idx) => [bin.bin_start, bin.bin_end, percentTexts[idx]]),
+            text: showPercentageLabels ? percentTexts : countTexts,
+            textposition: 'auto'
           }]}
           layout={{
             height: 135,
@@ -3245,6 +3275,94 @@ const renderNumericFilterMenu = (
         </div>
       </div>
 
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '-1rem', marginBottom: '0.5rem' }}>
+        <button
+          onClick={() => setShowSettingsMenu(prev => !prev)}
+          style={{
+            border: 'none',
+            borderRadius: '4px',
+            padding: '0.3rem 0.6rem',
+            background: '#ECEFF1',
+            color: '#333',
+            cursor: 'pointer',
+            fontSize: '0.75rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.35rem'
+          }}
+          aria-label="Chart settings"
+        >
+          <span role="img" aria-hidden="true">⚙</span>
+          Chart settings
+        </button>
+      </div>
+
+      {showSettingsMenu && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 1000
+          }}
+          onClick={() => setShowSettingsMenu(false)}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              top: '110px',
+              right: '40px',
+              background: 'white',
+              borderRadius: '8px',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              padding: '0.75rem 1rem',
+              width: '220px'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.5rem' }}>Chart settings</div>
+            <div style={{ fontSize: '0.75rem', marginBottom: '0.25rem', color: '#444' }}>Chart labels</div>
+            <div style={{ display: 'flex', gap: '0.35rem' }}>
+              <button
+                type="button"
+                onClick={() => setShowPercentageLabels(false)}
+                style={{
+                  border: 'none',
+                  borderRadius: '999px',
+                  padding: '0.2rem 0.9rem',
+                  fontSize: '0.75rem',
+                  cursor: 'pointer',
+                  background: showPercentageLabels ? '#ECEFF1' : '#1976D2',
+                  color: showPercentageLabels ? '#333' : 'white'
+                }}
+              >
+                Counts
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowPercentageLabels(true)}
+                style={{
+                  border: 'none',
+                  borderRadius: '999px',
+                  padding: '0.2rem 0.9rem',
+                  fontSize: '0.75rem',
+                  cursor: 'pointer',
+                  background: showPercentageLabels ? '#1976D2' : '#ECEFF1',
+                  color: showPercentageLabels ? 'white' : '#333'
+                }}
+              >
+                Percentages
+              </button>
+            </div>
+            <div style={{ fontSize: '0.7rem', color: '#777', marginTop: '0.4rem' }}>
+              {showPercentageLabels ? 'Percentages may exceed 100% when parents overlap.' : 'Switch to percentages when needed.'}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Saved Filters Bar - Always visible when presets exist */}
       {presets.length > 0 && (
         <div style={{
@@ -3296,6 +3414,7 @@ const renderNumericFilterMenu = (
           </div>
         </div>
       )}
+
 
       {/* Active Filters */}
       {filters.length > 0 && (
@@ -4405,6 +4524,27 @@ const renderNumericFilterMenu = (
                   const countLabel = getCountByLabelFromTarget(tableName, countByTarget ?? null)
                   const table = dataset.tables.find(t => t.name === tableName)
 
+                  const renderDashboardHeader = (aggr?: ColumnAggregation) => (
+                    <div style={{
+                      fontSize: '0.65rem',
+                      color: '#777',
+                      marginBottom: '0.15rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.35rem',
+                      flexWrap: 'wrap'
+                    }}>
+                      <div style={{
+                        width: '4px',
+                        height: '14px',
+                        borderRadius: '2px',
+                        background: tableColor,
+                        opacity: aggr ? 1 : 0.4
+                      }} />
+                      <span>{countLabel}</span>
+                    </div>
+                  )
+
                   if (!aggregation) {
                     return (
                       <div
@@ -4425,7 +4565,7 @@ const renderNumericFilterMenu = (
                           border: tableColor ? `2px solid ${tableColor}15` : undefined
                         }}
                       >
-                        <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.5rem' }}>{countLabel}</div>
+                        {renderDashboardHeader()}
                         <div style={{ fontSize: '0.8rem', color: '#999', textAlign: 'center' }}>
                           Loading {displayTitle}…
                         </div>
@@ -4436,7 +4576,7 @@ const renderNumericFilterMenu = (
                   if (aggregation.display_type === 'categorical' && aggregation.categories) {
                     const categoryCount = aggregation.categories.length
                     const viewPref = getViewPreference(tableName, columnName, categoryCount)
-                    const allowPie = categoryCount <= MAX_PIE_CATEGORIES && aggregation.metric_type !== 'parent'
+                    const allowPie = categoryCount <= MAX_PIE_CATEGORIES
 
                     if (viewPref === 'table') {
                       return (
@@ -4446,7 +4586,7 @@ const renderNumericFilterMenu = (
                           data-dashboard-key={cardKey}
                           style={{ gridColumn: 'span 2', gridRow: 'span 2' }}
                         >
-                          <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
+                        {renderDashboardHeader(aggregation)}
                           {renderTableView(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                         </div>
                       )
@@ -4455,7 +4595,7 @@ const renderNumericFilterMenu = (
                     if (allowPie) {
                       return (
                         <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey}>
-                          <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
+                        {renderDashboardHeader(aggregation)}
                           {renderPieChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                         </div>
                       )
@@ -4463,14 +4603,14 @@ const renderNumericFilterMenu = (
 
                     return (
                       <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
-                        <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
+                        {renderDashboardHeader(aggregation)}
                         {renderBarChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                       </div>
                     )
                   } else if (aggregation.display_type === 'numeric' && aggregation.histogram) {
                     return (
                       <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
-                        <div style={{ fontSize: '0.65rem', color: '#777', marginBottom: '0.15rem' }}>{countLabel}</div>
+                        {renderDashboardHeader(aggregation)}
                         {renderHistogram(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
                       </div>
                     )
@@ -4726,7 +4866,7 @@ const renderNumericFilterMenu = (
                 if (agg.display_type === 'categorical' && agg.categories) {
                   const categoryCount = agg.categories.length
                   const viewPref = getViewPreference(table.name, agg.column_name, categoryCount)
-                  const allowPie = categoryCount <= MAX_PIE_CATEGORIES && agg.metric_type !== 'parent'
+                  const allowPie = categoryCount <= MAX_PIE_CATEGORIES
 
                   if (viewPref === 'table') {
                     return (

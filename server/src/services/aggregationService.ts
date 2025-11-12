@@ -1042,6 +1042,7 @@ class AggregationService {
     const pathSegments: MetricPathSegment[] = []
     const aliasByTable = new Map<string, string>([[currentTableName, BASE_TABLE_ALIAS]])
 
+    // Always create joins for each step so alias lookups work even for single-hop relationships
     path.forEach((step, index) => {
       pathSegments.push({
         from_table: step.from,
