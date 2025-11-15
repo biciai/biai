@@ -5039,7 +5039,7 @@ const renderNumericFilterMenu = (
                         }}
                       >
                         {renderChartHeader({
-                          title: `${table?.displayName || tableName} - ${displayTitle}`,
+                          title: displayTitle,
                           tooltip: `${displayTitle} is loading…`,
                           countIndicator: indicatorNode
                         })}
@@ -5064,7 +5064,7 @@ const renderNumericFilterMenu = (
                           style={{ gridColumn: 'span 2', gridRow: 'span 2' }}
                         >
                           {renderTableView(
-                            `${table?.displayName || tableName} - ${displayTitle}`,
+                            displayTitle,
                             tableName,
                             columnName,
                             tableColor,
@@ -5080,7 +5080,7 @@ const renderNumericFilterMenu = (
                       return (
                         <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey}>
                           {renderPieChart(
-                            `${table?.displayName || tableName} - ${displayTitle}`,
+                            displayTitle,
                             tableName,
                             columnName,
                             tableColor,
@@ -5095,7 +5095,7 @@ const renderNumericFilterMenu = (
                     return (
                       <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
                         {renderBarChart(
-                          `${table?.displayName || tableName} - ${displayTitle}`,
+                          displayTitle,
                           tableName,
                           columnName,
                           tableColor,
@@ -5109,7 +5109,7 @@ const renderNumericFilterMenu = (
                     return (
                       <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
                         {renderHistogram(
-                          `${table?.displayName || tableName} - ${displayTitle}`,
+                          displayTitle,
                           tableName,
                           columnName,
                           tableColor,
