@@ -9,6 +9,9 @@ build/
 client/dist/
 server/dist/
 
+# Temporary files
+.tmp/
+
 # Environment variables
 .env
 .env.local

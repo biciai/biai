@@ -253,7 +253,11 @@ class AggregationService {
     filter: Filter,
     allTablesMetadata: TableMetadata[]
   ): string | null {
-    const filterTableName = filter.tableName
+    // Unwrap NOT to access the actual filter's tableName
+    const hasNot = !!(filter as any).not
+    const actualFilter = hasNot ? (filter as any).not : filter
+
+    const filterTableName = actualFilter.tableName
     if (!filterTableName || filterTableName === currentTableName) {
       return null // Not a cross-table filter
     }
@@ -272,8 +276,8 @@ class AggregationService {
       return null
     }
 
-    // Build the filter condition for the target table
-    const filterCondition = this.buildFilterCondition(filter, null)
+    // Build the filter condition for the target table (use unwrapped filter)
+    const filterCondition = this.buildFilterCondition(actualFilter, null)
     if (!filterCondition) return null
 
     // Build nested IN subqueries for ClickHouse (no JOINs, better performance)
@@ -314,10 +318,19 @@ class AggregationService {
       subquery = `SELECT ${selectCol} FROM ${qualifiedTable} WHERE ${whereCol} IN (${subquery})`
     }
 
-    // Final wrap: current_table.column IN (subquery)
+    // Final wrap: current_table.column IN (subquery) or NOT IN if filter was negated
     const firstStep = path[0]
     const finalColumn = firstStep.direction === 'forward' ? firstStep.fk : firstStep.refCol
-    subquery = `${this.columnRef(finalColumn)} IN (${subquery})`
+    const columnRef = this.columnRef(finalColumn)
+    const operator = hasNot ? 'NOT IN' : 'IN'
+
+    // When using NOT IN, add NULL guard to preserve orphaned rows
+    // (NULL NOT IN (...) evaluates to UNKNOWN, which filters out rows incorrectly)
+    if (hasNot) {
+      subquery = `(${columnRef} ${operator} (${subquery}) OR ${columnRef} IS NULL)`
+    } else {
+      subquery = `${columnRef} ${operator} (${subquery})`
+    }
 
     return subquery
   }

@@ -354,6 +354,75 @@ describe('AggregationService - Cross-Table Filtering', () => {
     expect(result).toBe("AND (NOT (ancestor_patients.radiation_therapy = 'Yes'))")
   })
 
+  test('buildWhereClause generates NOT IN subquery for NOT wrapped cross-table filters', () => {
+    const result = callPrivate('buildWhereClause')(
+      [{ not: { column: 'radiation_therapy', operator: 'eq', value: 'Yes', tableName: 'patients' } } as Filter],
+      undefined,
+      'samples',
+      mockTablesMetadata
+    )
+
+    expect(result).toContain('NOT IN')
+    expect(result).toContain('SELECT patient_id FROM')
+    expect(result).toContain("radiation_therapy = 'Yes'")
+  })
+
+  test('buildWhereClause handles NOT with OR combination on cross-table filters', () => {
+    const result = callPrivate('buildWhereClause')(
+      [
+        {
+          not: {
+            or: [
+              { column: 'radiation_therapy', operator: 'eq', value: 'Yes', tableName: 'patients' },
+              { column: 'age', operator: 'gte', value: 60, tableName: 'patients' }
+            ],
+            tableName: 'patients'
+          }
+        } as Filter
+      ],
+      undefined,
+      'samples',
+      mockTablesMetadata
+    )
+
+    expect(result).toContain('NOT IN')
+    expect(result).toContain('SELECT patient_id FROM')
+    expect(result).toContain("radiation_therapy = 'Yes'")
+    expect(result).toContain('age >= 60')
+    expect(result).toContain(' OR ')
+  })
+
+  test('buildWhereClause handles multi-hop NOT IN cross-table filters', () => {
+    const result = callPrivate('buildWhereClause')(
+      [{ not: { column: 'age', operator: 'gte', value: 60, tableName: 'patients' } } as Filter],
+      undefined,
+      'mutations',
+      mockTransitiveTablesMetadata
+    )
+
+    expect(result).toContain('NOT IN')
+    // Should build nested subqueries: mutations.sample_id NOT IN (SELECT sample_id FROM samples WHERE patient_id IN (SELECT patient_id FROM patients WHERE age >= 60))
+    expect(result).toContain('SELECT sample_id FROM')
+    expect(result).toContain('SELECT patient_id FROM')
+    expect(result).toContain('age >= 60')
+  })
+
+  test('buildWhereClause includes NULL guard for NOT IN cross-table filters', () => {
+    const result = callPrivate('buildWhereClause')(
+      [{ not: { column: 'radiation_therapy', operator: 'eq', value: 'Yes', tableName: 'patients' } } as Filter],
+      undefined,
+      'samples',
+      mockTablesMetadata
+    )
+
+    // Should include NULL guard to preserve orphaned rows (samples with NULL patient_id)
+    // Example: (base_table.patient_id NOT IN (...) OR base_table.patient_id IS NULL)
+    expect(result).toContain('NOT IN')
+    expect(result).toContain('IS NULL')
+    expect(result).toContain('OR')
+    expect(result).toContain("radiation_therapy = 'Yes'")
+  })
+
   describe('findRelationshipPath', () => {
     test('finds direct relationship path', () => {
       const path = callPrivate('findRelationshipPath')(
