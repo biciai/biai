@@ -5,7 +5,7 @@ import type { PlotMouseEvent, PlotSelectionEvent } from 'plotly.js'
 import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
 import type { MetricPathSegment } from '../types'
-import { findRelationshipPath } from '../utils/filterHelpers'
+import { findRelationshipPath, type Filter } from '../utils/filterHelpers'
 // Small categorical sets render better as pie charts; beyond this use bars.
 const MAX_PIE_CATEGORIES = 8
 const ROW_COUNT_KEY = 'rows'
@@ -16,6 +16,58 @@ const DASHBOARD_SCOPE_KEY = 'dashboard'
 const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 const CACHE_MAX_ENTRIES_PER_TABLE = 5
 const MAX_ANCESTOR_DEPTH = 4
+
+export const unwrapNot = (filter?: Filter | null): Filter | undefined => {
+  if (!filter) return undefined
+  return filter.not ?? filter
+}
+
+const cloneFilterNode = (filter: Filter): Filter => {
+  const cloned: Filter = {
+    ...filter,
+    and: filter.and ? filter.and.map(cloneFilterNode) : undefined,
+    or: filter.or ? filter.or.map(cloneFilterNode) : undefined,
+    not: filter.not ? cloneFilterNode(filter.not) : undefined
+  }
+
+  if (cloned.countByKey === undefined && cloned.tableName) {
+    cloned.countByKey = ROW_COUNT_KEY
+  }
+
+  return cloned
+}
+
+export const migrateFiltersToCurrentSchema = (filters: Filter[]): Filter[] =>
+  filters.map(cloneFilterNode)
+
+const chartOverrideStorageKey = (identifier: string) => `${CHART_OVERRIDE_STORAGE_PREFIX}${identifier}`
+
+export const persistChartOverrides = (
+  storage: Storage,
+  identifier: string,
+  overrides: Record<string, string>
+): void => {
+  const key = chartOverrideStorageKey(identifier)
+  if (Object.keys(overrides).length === 0) {
+    storage.removeItem(key)
+  } else {
+    storage.setItem(key, JSON.stringify(overrides))
+  }
+}
+
+export const loadChartOverrides = (
+  storage: Storage,
+  identifier: string
+): Record<string, string> | null => {
+  const key = chartOverrideStorageKey(identifier)
+  const stored = storage.getItem(key)
+  if (!stored) return null
+  try {
+    return JSON.parse(stored)
+  } catch {
+    return null
+  }
+}
 
 interface Column {
   name: string
@@ -79,15 +131,6 @@ interface ColumnAggregation {
   metric_parent_table?: string
   metric_parent_column?: string
   metric_path?: MetricPathSegment[]
-}
-
-interface Filter {
-  column?: string
-  operator?: 'eq' | 'in' | 'gt' | 'lt' | 'gte' | 'lte' | 'between'
-  value?: any
-  and?: Filter[]
-  or?: Filter[]
-  not?: Filter
 }
 
 interface FilterPreset {
@@ -260,7 +303,10 @@ function DatasetExplorer() {
   const loadFiltersFromLocalStorage = (): Filter[] | null => {
     try {
       const stored = localStorage.getItem(`filters_${identifier}`)
-      return stored ? JSON.parse(stored) : null
+      if (!stored) return null
+      const parsed: Filter[] = JSON.parse(stored)
+      if (parsed.length === 0) return []
+      return migrateFiltersToCurrentSchema(parsed)
     } catch (error) {
       console.error('Failed to load filters from localStorage:', error)
       return null
@@ -313,11 +359,7 @@ function DatasetExplorer() {
 
   const saveChartOverridesToLocalStorage = (overrides: Record<string, string>) => {
     try {
-      if (Object.keys(overrides).length === 0) {
-        localStorage.removeItem(`${CHART_OVERRIDE_STORAGE_PREFIX}${identifier}`)
-      } else {
-        localStorage.setItem(`${CHART_OVERRIDE_STORAGE_PREFIX}${identifier}`, JSON.stringify(overrides))
-      }
+      persistChartOverrides(localStorage, identifier, overrides)
     } catch (error) {
       console.error('Failed to persist chart overrides:', error)
     }
@@ -325,8 +367,7 @@ function DatasetExplorer() {
 
   const loadChartOverridesFromLocalStorage = (): Record<string, string> | null => {
     try {
-      const stored = localStorage.getItem(`${CHART_OVERRIDE_STORAGE_PREFIX}${identifier}`)
-      return stored ? JSON.parse(stored) : null
+      return loadChartOverrides(localStorage, identifier)
     } catch (error) {
       console.error('Failed to load chart overrides from localStorage:', error)
       return null
@@ -349,6 +390,7 @@ function DatasetExplorer() {
       const parsed: FilterPreset[] = JSON.parse(stored)
       return parsed.map(preset => ({
         ...preset,
+        filters: migrateFiltersToCurrentSchema(preset.filters || []),
         countBySelections: preset.countBySelections || {}
       }))
     } catch (error) {
@@ -376,7 +418,7 @@ function DatasetExplorer() {
   }
 
   const applyPreset = (preset: FilterPreset) => {
-    setFilters(JSON.parse(JSON.stringify(preset.filters))) // Deep clone
+    setFilters(migrateFiltersToCurrentSchema(preset.filters || []))
     setCountBySelections(JSON.parse(JSON.stringify(preset.countBySelections || {})))
     setShowPresetsDropdown(false)
   }
@@ -849,7 +891,7 @@ function DatasetExplorer() {
     if (encodedFilters) {
       const restored = deserializeFilters(encodedFilters)
       if (restored && restored.length > 0) {
-        setFilters(restored)
+        setFilters(migrateFiltersToCurrentSchema(restored))
         filtersInitialized.current = true
         return
       }
@@ -1709,7 +1751,14 @@ const rangeKey = (tableName: string, columnName: string, countKey?: string) =>
     return undefined
   }
 
-  const getFilterTableName = (filter: Filter): string | undefined => (filter as any).tableName
+  /**
+   * Determine which table a filter applies to for cache lookups / backend requests.
+   *
+   * Note: {@link Filter.countByKey} is purely client-side metadata that scopes UI controls.
+   * The backend only inspects {@link Filter.tableName} to build JOIN paths, so we never rewrite
+   * tableName when users select different ancestor count targets.
+   */
+  const getFilterTableNameForCacheKey = (filter: Filter): string | undefined => filter.tableName
 
   const normalizeDashboardCharts = (charts: Array<{ tableName: string; columnName: string; countByTarget?: string | null; addedAt: string }>) => {
     return charts.map(chart => ({
@@ -1733,7 +1782,7 @@ const rangeKey = (tableName: string, columnName: string, countKey?: string) =>
 
     // Group filters by their tableName property
     for (const filter of filters) {
-      const filterTableName = getFilterTableName(filter)
+      const filterTableName = getFilterTableNameForCacheKey(filter)
       if (!filterTableName) continue
 
       // This filter belongs to filterTableName
@@ -1772,25 +1821,28 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
   return false
 }
 
-const getFilterCountKey = (filter: Filter): string | undefined => {
-  const actual = (filter as any).not || filter
-  return (actual as any).countByKey ?? (filter as any).countByKey
+const getFilterCountKey = (filter: Filter): string => {
+  const actual = unwrapNot(filter)
+  return actual?.countByKey ?? filter.countByKey ?? ROW_COUNT_KEY
 }
 
-  const hasColumnFilter = (column: string, countKey?: string): boolean =>
-    filters.some(f => {
-      if (!filterContainsColumn((f as any).not || f, column)) return false
-      if (!countKey) return true
-      return getFilterCountKey(f) === countKey
+  const hasColumnFilter = (column: string, countKey?: string): boolean => {
+    const resolvedKey = countKey ?? ROW_COUNT_KEY
+    return filters.some(f => {
+      const actual = unwrapNot(f)
+      if (!actual || !filterContainsColumn(actual, column)) return false
+      return getFilterCountKey(f) === resolvedKey
     })
+  }
 
-  const removeColumnFilters = (prev: Filter[], column: string, countKey?: string): Filter[] =>
-    prev.filter(filter => {
-      const actualFilter = (filter as any).not || filter
-      if (!filterContainsColumn(actualFilter, column)) return true
-      if (countKey && getFilterCountKey(filter) !== countKey) return true
-      return false
+  const removeColumnFilters = (prev: Filter[], column: string, countKey?: string): Filter[] => {
+    const resolvedKey = countKey ?? ROW_COUNT_KEY
+    return prev.filter(filter => {
+      const actualFilter = unwrapNot(filter)
+      if (!actualFilter || !filterContainsColumn(actualFilter, column)) return true
+      return getFilterCountKey(filter) !== resolvedKey
     })
+  }
 
   const clearColumnFilter = (tableName: string, columnName: string, countKey?: string) => {
     setFilters(prev => removeColumnFilters(prev, columnName, countKey))
@@ -1840,10 +1892,22 @@ const getFilterCountKey = (filter: Filter): string | undefined => {
       if (nextRanges.length === 0) return without
       if (nextRanges.length === 1) {
         const range = nextRanges[0]
-        return [...without, { column: columnName, operator: 'between', value: [range.start, range.end], tableName, countByKey: countKey } as unknown as Filter]
+        return [
+          ...without,
+          {
+            column: columnName,
+            operator: 'between',
+            value: [range.start, range.end],
+            tableName,
+            countByKey: countKey
+          }
+        ]
       }
       const orFilters = nextRanges.map(range => ({ column: columnName, operator: 'between', value: [range.start, range.end] }))
-      return [...without, { column: columnName, or: orFilters, tableName, countByKey: countKey } as unknown as Filter]
+      return [
+        ...without,
+        { column: columnName, or: orFilters, tableName, countByKey: countKey }
+      ]
     })
   }
 
@@ -1870,32 +1934,30 @@ const getFilterCountKey = (filter: Filter): string | undefined => {
 
     // Check if the current filter for this column has NOT wrapper
     const currentFilter = filters.find(f => {
-      const actualF = (f as any).not || f
-      if (getFilterColumn(actualF) !== columnName) return false
-      if (!cacheKey) return true
+      const actualF = unwrapNot(f)
+      if (!actualF || getFilterColumn(actualF) !== columnName) return false
       return getFilterCountKey(f) === cacheKey
     })
-    const isNot = currentFilter ? !!(currentFilter as any).not : false
+    const isNot = !!currentFilter?.not
 
     // Toggle NOT for this column's filter
     const toggleColumnNot = () => {
       setFilters(prev => {
         const idx = prev.findIndex(f => {
-          const actualF = (f as any).not || f
-          if (getFilterColumn(actualF) !== columnName) return false
-          if (cacheKey && getFilterCountKey(f) !== cacheKey) return false
-          return true
+          const actualF = unwrapNot(f)
+          if (!actualF || getFilterColumn(actualF) !== columnName) return false
+          return getFilterCountKey(f) === cacheKey
         })
         if (idx === -1) return prev
 
         const updated = [...prev]
         const filter = prev[idx]
-        if ((filter as any).not) {
+        if (filter.not) {
           // Remove NOT wrapper
-          updated[idx] = (filter as any).not
+          updated[idx] = filter.not
         } else {
           // Add NOT wrapper
-          updated[idx] = { not: filter } as any
+          updated[idx] = { not: filter }
         }
         return updated
       })
@@ -2298,30 +2360,30 @@ const renderNumericFilterMenu = (
 
     // Check if the current filter for this column has NOT wrapper
     const currentFilter = filters.find(f => {
-      const actualF = (f as any).not || f
-      if (getFilterColumn(actualF) !== columnName) return false
-      if (cacheKey && getFilterCountKey(f) !== cacheKey) return false
-      return true
+      const actualF = unwrapNot(f)
+      if (!actualF || getFilterColumn(actualF) !== columnName) return false
+      return getFilterCountKey(f) === cacheKey
     })
-    const isNot = currentFilter ? !!(currentFilter as any).not : false
+    const isNot = !!currentFilter?.not
 
     // Toggle NOT for this column's filter
     const toggleColumnNot = () => {
       setFilters(prev => {
         const idx = prev.findIndex(f => {
-          const actualF = (f as any).not || f
-          return getFilterColumn(actualF) === columnName
+          const actualF = unwrapNot(f)
+          if (!actualF || getFilterColumn(actualF) !== columnName) return false
+          return getFilterCountKey(f) === cacheKey
         })
         if (idx === -1) return prev
 
         const updated = [...prev]
         const filter = prev[idx]
-        if ((filter as any).not) {
+        if (filter.not) {
           // Remove NOT wrapper
-          updated[idx] = (filter as any).not
+          updated[idx] = filter.not
         } else {
           // Add NOT wrapper
-          updated[idx] = { not: filter } as any
+          updated[idx] = { not: filter }
         }
         return updated
       })
@@ -2525,42 +2587,36 @@ const renderNumericFilterMenu = (
 
   const toggleFilter = (column: string, value: string | number, tableName?: string, countByKey?: string) => {
     const filterValue = normalizeFilterValue(value)
+    const resolvedCountKey = countByKey ?? ROW_COUNT_KEY
 
     setFilters(prevFilters => {
       const nextFilters = [...prevFilters]
 
       const existingIndex = nextFilters.findIndex(f => {
-        const actualFilter = (f as any).not || f
-        if (actualFilter.column !== column) return false
-        if (countByKey && getFilterCountKey(f) !== countByKey) return false
-        if (!countByKey && getFilterCountKey(f)) return false
-        return true
+        const actualFilter = unwrapNot(f)
+        if (!actualFilter || actualFilter.column !== column) return false
+        return getFilterCountKey(f) === resolvedCountKey
       })
 
-      const applyMetadata = (target: any, source?: any) => {
+      const applyMetadata = (target: Filter, source?: Filter) => {
         if (tableName) {
           target.tableName = tableName
         } else if (source?.tableName) {
           target.tableName = source.tableName
         }
-        if (countByKey) {
-          target.countByKey = countByKey
-        } else if (source?.countByKey) {
-          target.countByKey = source.countByKey
-        }
+        target.countByKey = resolvedCountKey
       }
 
-      const isNot = existingIndex >= 0 && !!(nextFilters[existingIndex] as any).not
-
       if (existingIndex === -1) {
-        const newFilter: any = { column, operator: 'eq', value: filterValue }
+        const newFilter: Filter = { column, operator: 'eq', value: filterValue }
         applyMetadata(newFilter)
         nextFilters.push(newFilter)
         return nextFilters
       }
 
       const existingWrapped = nextFilters[existingIndex]
-      const existing = isNot ? (existingWrapped as any).not : existingWrapped
+      const isNot = !!existingWrapped.not
+      const existing = isNot && existingWrapped.not ? existingWrapped.not : existingWrapped
 
       if (existing.operator === 'eq') {
         const existingValue = normalizeFilterValue(existing.value as string | number)
@@ -2569,13 +2625,13 @@ const renderNumericFilterMenu = (
           return nextFilters
         }
 
-        const updatedFilter: any = {
+        const updatedFilter: Filter = {
           column,
           operator: 'in',
           value: [existingValue, filterValue]
         }
         applyMetadata(updatedFilter, existing)
-        nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
+        nextFilters[existingIndex] = isNot ? { not: updatedFilter } : updatedFilter
         return nextFilters
       }
 
@@ -2594,21 +2650,21 @@ const renderNumericFilterMenu = (
         if (values.length === 0) {
           nextFilters.splice(existingIndex, 1)
         } else if (values.length === 1) {
-          const updatedFilter: any = { column, operator: 'eq', value: values[0] }
+          const updatedFilter: Filter = { column, operator: 'eq', value: values[0] }
           applyMetadata(updatedFilter, existing)
-          nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
+          nextFilters[existingIndex] = isNot ? { not: updatedFilter } : updatedFilter
         } else {
-          const updatedFilter: any = { column, operator: 'in', value: values }
+          const updatedFilter: Filter = { column, operator: 'in', value: values }
           applyMetadata(updatedFilter, existing)
-          nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
+          nextFilters[existingIndex] = isNot ? { not: updatedFilter } : updatedFilter
         }
 
         return nextFilters
       }
 
-      const updatedFilter: any = { column, operator: 'eq', value: filterValue }
+      const updatedFilter: Filter = { column, operator: 'eq', value: filterValue }
       applyMetadata(updatedFilter, existing)
-      nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
+      nextFilters[existingIndex] = isNot ? { not: updatedFilter } : updatedFilter
       return nextFilters
     })
   }
@@ -2621,11 +2677,11 @@ const renderNumericFilterMenu = (
 
   const isValueFiltered = (column: string, value: string | number, countByKey?: string): boolean => {
     const compareValue = normalizeFilterValue(value)
+    const resolvedKey = countByKey ?? ROW_COUNT_KEY
     return filters.some(f => {
-      // Unwrap NOT if present
-      const actualFilter = (f as any).not || f
-      if (actualFilter.column !== column) return false
-      if (countByKey && getFilterCountKey(f) !== countByKey) return false
+      const actualFilter = unwrapNot(f)
+      if (!actualFilter || actualFilter.column !== column) return false
+      if (getFilterCountKey(f) !== resolvedKey) return false
       if (actualFilter.operator === 'eq') {
         return normalizeFilterValue(actualFilter.value as string | number) === compareValue
       }
@@ -3476,7 +3532,7 @@ const renderNumericFilterMenu = (
             if (selectedValues.length > 0) {
               setFilters(prev => [
                 ...removeColumnFilters(prev, field, cacheKey),
-                { column: field, operator: 'in', value: selectedValues, tableName, countByKey: cacheKey } as any
+                { column: field, operator: 'in', value: selectedValues, tableName, countByKey: cacheKey }
               ])
             }
           }}
@@ -3960,12 +4016,12 @@ const renderNumericFilterMenu = (
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
             {filters.map((filter, idx) => {
-              // Check if this filter is wrapped with NOT
-              const isNot = !!(filter as any).not
-              const actualFilter = isNot ? (filter as any).not : filter
+              const actualFilter = unwrapNot(filter)
+              if (!actualFilter) return null
+              const isNot = !!filter.not
 
               const columnName = getFilterColumn(actualFilter)
-              const tableName = getFilterTableName(actualFilter)
+              const tableName = getFilterTableNameForCacheKey(actualFilter)
               const tableColor = tableName ? getTableColor(tableName) : '#9E9E9E'
               const table = dataset?.tables.find(t => t.name === tableName)
 
@@ -3990,7 +4046,7 @@ const renderNumericFilterMenu = (
                     updated[idx] = actualFilter
                   } else {
                     // Add NOT wrapper
-                    updated[idx] = { not: actualFilter } as any
+                    updated[idx] = { not: actualFilter }
                   }
                   return updated
                 })

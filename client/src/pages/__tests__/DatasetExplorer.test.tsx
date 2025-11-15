@@ -1,8 +1,13 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { BrowserRouter } from 'react-router-dom'
-import DatasetExplorer from '../DatasetExplorer'
+import DatasetExplorer, {
+  migrateFiltersToCurrentSchema,
+  persistChartOverrides,
+  loadChartOverrides
+} from '../DatasetExplorer'
 import api from '../../services/api'
+import type { Filter } from '../../utils/filterHelpers'
 
 // Mock the API module
 vi.mock('../../services/api', () => ({
@@ -591,6 +596,61 @@ describe('DatasetExplorer', () => {
           element.tagName === 'H4' && value.includes('Customers via orders.customer_id')
         )
         expect(headings.length).toBeGreaterThan(0)
+      })
+    })
+  })
+
+  describe('Filter migration utilities', () => {
+    test('migrates legacy filters to include row count keys', () => {
+      const legacyFilters: Filter[] = [
+        { column: 'age', operator: 'gte', value: 40, tableName: 'customers' },
+        { column: 'amount', operator: 'lt', value: 1000, tableName: 'orders', not: { column: 'amount', operator: 'lt', value: 1000, tableName: 'orders' } }
+      ]
+
+      const migrated = migrateFiltersToCurrentSchema(legacyFilters)
+
+      expect(migrated).toHaveLength(legacyFilters.length)
+      migrated.forEach(filter => {
+        const actual = filter.not ?? filter
+        expect(actual?.countByKey).toBe('rows')
+      })
+
+      // Ensure original references are not mutated
+      expect(legacyFilters[0].countByKey).toBeUndefined()
+    })
+  })
+
+  describe('Chart override persistence', () => {
+    test('persist/load helpers round-trip overrides via storage', () => {
+      const storageKey = 'chartOverrides_unit-test'
+      localStorage.removeItem(storageKey)
+
+      persistChartOverrides(localStorage, 'unit-test', { 'customers.age': 'parent:regions' })
+
+      expect(localStorage.getItem(storageKey)).toBe('{"customers.age":"parent:regions"}')
+
+      const loaded = loadChartOverrides(localStorage, 'unit-test')
+      expect(loaded).toEqual({ 'customers.age': 'parent:regions' })
+
+      persistChartOverrides(localStorage, 'unit-test', {})
+      expect(localStorage.getItem(storageKey)).toBeNull()
+    })
+
+    test('loads overrides from localStorage and requests ancestor aggregations', async () => {
+      localStorage.setItem('chartOverrides_test-dataset-id', JSON.stringify({ 'customers.age': 'parent:regions' }))
+
+      renderExplorer()
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Dataset')).toBeInTheDocument()
+      })
+
+      await waitFor(() => {
+        const hasParentRequest = vi.mocked(api.get).mock.calls.some(([url, config]) => {
+          const countBy = (config as { params?: Record<string, any> } | undefined)?.params?.countBy
+          return typeof url === 'string' && url.includes('/tables/table1/aggregations') && countBy === 'parent:regions'
+        })
+        expect(hasParentRequest).toBe(true)
       })
     })
   })
