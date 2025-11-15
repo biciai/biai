@@ -255,15 +255,8 @@ describe('DatasetExplorer', () => {
     })
     const ordersTab = screen.getByRole('button', { name: /Orders/i })
     fireEvent.click(ordersTab)
-    let targetSelect: HTMLSelectElement | undefined
-    await waitFor(() => {
-      const comboboxes = screen.getAllByRole('combobox') as HTMLSelectElement[]
-      targetSelect = comboboxes.find(select =>
-        Array.from(select.options).some(option => option.textContent === 'Rows (Orders)')
-      )
-      expect(targetSelect).toBeDefined()
-    })
-    return targetSelect!
+    const countSelect = await screen.findByLabelText<HTMLSelectElement>(/Count by for Orders/i)
+    return countSelect
   }
 
   const getOrderAggregationCallCount = () =>
@@ -487,8 +480,8 @@ describe('DatasetExplorer', () => {
 
       const optionLabels = Array.from(countSelect.querySelectorAll('option')).map(option => option.textContent)
       expect(optionLabels).toEqual(expect.arrayContaining([
-        'Customers via orders.customer_id',
-        'Regions via orders.customer_id → customers.region_id'
+        'Customers',
+        'Regions'
       ]))
 
       fireEvent.change(countSelect, { target: { value: 'parent:regions' } })
@@ -570,7 +563,10 @@ describe('DatasetExplorer', () => {
       fireEvent.click(dashboardTab)
 
       await waitFor(() => {
-        expect(screen.getAllByText('Regions via orders.customer_id → customers.region_id').length).toBeGreaterThan(0)
+        const headings = screen.getAllByTitle((value, element) =>
+          element.tagName === 'H4' && value.includes('Regions via orders.customer_id → customers.region_id')
+        )
+        expect(headings.length).toBeGreaterThan(0)
       })
     })
 
