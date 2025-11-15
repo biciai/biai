@@ -1477,7 +1477,7 @@ function DatasetExplorer() {
       const target = cacheKey.slice('parent:'.length)
       return getTableDisplayNameByName(target) || target
     }
-    return getTableDisplayNameByName(tableName) || tableName
+    return 'Rows'
   }
 
   const getCountByOptions = (tableName: string) => [
