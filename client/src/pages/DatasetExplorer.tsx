@@ -1638,12 +1638,13 @@ function DatasetExplorer() {
     <div
       style={{
         display: 'flex',
-        flexDirection: 'column',
-        gap: '0.25rem',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '0.35rem',
         marginBottom: '0.4rem'
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', minWidth: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', minWidth: 0, flex: 1 }}>
         {countIndicator}
         <h4
           style={{
@@ -1661,18 +1662,9 @@ function DatasetExplorer() {
           {title}
         </h4>
       </div>
-      {actions && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.25rem',
-            flexWrap: 'wrap'
-          }}
-        >
-          {actions}
-        </div>
-      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
+        {actions}
+      </div>
     </div>
   )
 
