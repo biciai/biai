@@ -407,6 +407,22 @@ describe('AggregationService - Cross-Table Filtering', () => {
     expect(result).toContain('age >= 60')
   })
 
+  test('buildWhereClause includes NULL guard for NOT IN cross-table filters', () => {
+    const result = callPrivate('buildWhereClause')(
+      [{ not: { column: 'radiation_therapy', operator: 'eq', value: 'Yes', tableName: 'patients' } } as Filter],
+      undefined,
+      'samples',
+      mockTablesMetadata
+    )
+
+    // Should include NULL guard to preserve orphaned rows (samples with NULL patient_id)
+    // Example: (base_table.patient_id NOT IN (...) OR base_table.patient_id IS NULL)
+    expect(result).toContain('NOT IN')
+    expect(result).toContain('IS NULL')
+    expect(result).toContain('OR')
+    expect(result).toContain("radiation_therapy = 'Yes'")
+  })
+
   describe('findRelationshipPath', () => {
     test('finds direct relationship path', () => {
       const path = callPrivate('findRelationshipPath')(

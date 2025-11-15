@@ -321,8 +321,16 @@ class AggregationService {
     // Final wrap: current_table.column IN (subquery) or NOT IN if filter was negated
     const firstStep = path[0]
     const finalColumn = firstStep.direction === 'forward' ? firstStep.fk : firstStep.refCol
+    const columnRef = this.columnRef(finalColumn)
     const operator = hasNot ? 'NOT IN' : 'IN'
-    subquery = `${this.columnRef(finalColumn)} ${operator} (${subquery})`
+
+    // When using NOT IN, add NULL guard to preserve orphaned rows
+    // (NULL NOT IN (...) evaluates to UNKNOWN, which filters out rows incorrectly)
+    if (hasNot) {
+      subquery = `(${columnRef} ${operator} (${subquery}) OR ${columnRef} IS NULL)`
+    } else {
+      subquery = `${columnRef} ${operator} (${subquery})`
+    }
 
     return subquery
   }
