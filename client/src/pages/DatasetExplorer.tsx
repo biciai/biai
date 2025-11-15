@@ -1535,9 +1535,6 @@ function DatasetExplorer() {
             padding: 0
           }}
         />
-        <div style={{ fontSize: '0.7rem', color: '#555', fontWeight: 600, maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {label}
-        </div>
         {isOpen && (
           <div
             style={{
