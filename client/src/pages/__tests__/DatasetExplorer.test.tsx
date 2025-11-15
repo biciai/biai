@@ -344,6 +344,87 @@ describe('DatasetExplorer', () => {
       expect(decoded[0].column).toBe('age')
       expect(decoded[0].value).toBe(25)
     })
+
+    test('serializes and deserializes NOT wrapped filters correctly', () => {
+      // Create a NOT wrapped filter
+      const notFilter = [
+        {
+          not: {
+            column: 'age',
+            operator: 'in' as const,
+            value: [30, 40, 50],
+            tableName: 'customers'
+          }
+        }
+      ]
+
+      // Serialize (same as the app does)
+      const encoded = btoa(encodeURIComponent(JSON.stringify(notFilter)))
+
+      // Deserialize
+      const decoded = JSON.parse(decodeURIComponent(atob(encoded)))
+
+      // Verify NOT wrapper is preserved
+      expect(decoded).toHaveLength(1)
+      expect(decoded[0].not).toBeDefined()
+      expect(decoded[0].not.column).toBe('age')
+      expect(decoded[0].not.operator).toBe('in')
+      expect(decoded[0].not.value).toEqual([30, 40, 50])
+      expect(decoded[0].not.tableName).toBe('customers')
+    })
+
+    test('serializes and deserializes nested NOT with OR filters correctly', () => {
+      // Create a NOT wrapper around OR combination
+      const complexFilter = [
+        {
+          not: {
+            or: [
+              { column: 'age', operator: 'gte' as const, value: 60, tableName: 'patients' },
+              { column: 'radiation_therapy', operator: 'eq' as const, value: 'Yes', tableName: 'patients' }
+            ],
+            tableName: 'patients'
+          }
+        }
+      ]
+
+      // Serialize
+      const encoded = btoa(encodeURIComponent(JSON.stringify(complexFilter)))
+
+      // Deserialize
+      const decoded = JSON.parse(decodeURIComponent(atob(encoded)))
+
+      // Verify complex structure is preserved
+      expect(decoded[0].not).toBeDefined()
+      expect(decoded[0].not.or).toHaveLength(2)
+      expect(decoded[0].not.or[0].column).toBe('age')
+      expect(decoded[0].not.or[1].column).toBe('radiation_therapy')
+      expect(decoded[0].not.tableName).toBe('patients')
+    })
+
+    test('serializes NOT filters with countByKey metadata', () => {
+      // NOT filter with countByKey (client-side metadata from PR #62)
+      const notFilterWithKey = [
+        {
+          not: {
+            column: 'sample_type',
+            operator: 'eq' as const,
+            value: 'Primary',
+            tableName: 'samples',
+            countByKey: 'parent:patients'
+          }
+        }
+      ]
+
+      // Serialize
+      const encoded = btoa(encodeURIComponent(JSON.stringify(notFilterWithKey)))
+
+      // Deserialize
+      const decoded = JSON.parse(decodeURIComponent(atob(encoded)))
+
+      // Verify countByKey is preserved along with NOT wrapper
+      expect(decoded[0].not.countByKey).toBe('parent:patients')
+      expect(decoded[0].not.column).toBe('sample_type')
+    })
   })
 
   describe('Filter Presets', () => {
@@ -457,6 +538,41 @@ describe('DatasetExplorer', () => {
 
       const countSelect = await activateOrdersTab()
       expect(countSelect.value).toBe('parent:customers')
+    })
+
+    test('applying a preset with NOT filters preserves NOT wrapper', async () => {
+      const presetWithNOT = {
+        id: 'preset-not',
+        name: 'NOT Filter Test',
+        filters: [
+          {
+            not: {
+              column: 'age',
+              operator: 'in' as const,
+              value: [30, 40, 50],
+              tableName: 'customers'
+            }
+          }
+        ],
+        countBySelections: {},
+        createdAt: new Date().toISOString()
+      }
+      localStorage.setItem('presets_test-dataset-id', JSON.stringify([presetWithNOT]))
+
+      renderExplorer()
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Dataset')).toBeInTheDocument()
+      })
+
+      // Verify NOT filter structure is preserved in storage
+      const storedPresets = localStorage.getItem('presets_test-dataset-id')
+      expect(storedPresets).toBeTruthy()
+      const presets = JSON.parse(storedPresets!)
+      expect(presets[0].filters[0].not).toBeDefined()
+      expect(presets[0].filters[0].not.column).toBe('age')
+      expect(presets[0].filters[0].not.operator).toBe('in')
+      expect(presets[0].filters[0].not.value).toEqual([30, 40, 50])
     })
   })
 
