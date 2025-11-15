@@ -2706,10 +2706,12 @@ const renderNumericFilterMenu = (
         : getAggregation(tableName, field, cacheKey)
 
     const metadata = getColumnMetadata(tableName, field)
+    const tableDisplayName = getTableDisplayNameByName(tableName) || tableName
     const tooltipParts = [
       metadata?.display_name || title,
       `ID: ${field}`,
-      metadata?.description || ''
+      metadata?.description || '',
+      `Table: ${tableDisplayName}`
     ]
     if (aggregation) {
       const pathLabel = formatMetricPath(aggregation)
@@ -3002,10 +3004,12 @@ const renderNumericFilterMenu = (
         : getAggregation(tableName, field, cacheKey)
 
     const metadata = getColumnMetadata(tableName, field)
+    const tableDisplayName = getTableDisplayNameByName(tableName) || tableName
     const tooltipParts = [
       metadata?.display_name || title,
       `ID: ${field}`,
-      metadata?.description || ''
+      metadata?.description || '',
+      `Table: ${tableDisplayName}`
     ]
     if (aggregation) {
       const pathLabel = formatMetricPath(aggregation)
@@ -3245,10 +3249,12 @@ const renderNumericFilterMenu = (
         : getAggregation(tableName, field, cacheKey)
 
     const metadata = getColumnMetadata(tableName, field)
+    const tableDisplayName = getTableDisplayNameByName(tableName) || tableName
     const tooltipParts = [
       metadata?.display_name || title,
       `ID: ${field}`,
-      metadata?.description || ''
+      metadata?.description || '',
+      `Table: ${tableDisplayName}`
     ]
     if (aggregation) {
       const pathLabel = formatMetricPath(aggregation)
@@ -3505,6 +3511,7 @@ const renderNumericFilterMenu = (
     const metricLabels = getMetricLabels(aggregation)
     const pathLabel = formatMetricPath(aggregation)
     const metadata = getColumnMetadata(tableName, field)
+    const tableDisplayName = getTableDisplayNameByName(tableName) || tableName
 
     const statsText = [
       `Mean: ${aggregation.numeric_stats.mean !== null ? aggregation.numeric_stats.mean.toFixed(2) : 'N/A'}`,
@@ -3515,7 +3522,8 @@ const renderNumericFilterMenu = (
     const tooltipParts = [
       metadata?.display_name || title,
       `ID: ${field}`,
-      metadata?.description || ''
+      metadata?.description || '',
+      `Table: ${tableDisplayName}`
     ]
     if (pathLabel) tooltipParts.push(pathLabel)
     tooltipParts.push('', statsText)
