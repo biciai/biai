@@ -10,6 +10,11 @@ export interface Filter {
   or?: Filter[]
   not?: Filter
   tableName?: string
+  /**
+   * Client-side metadata describing which count context (rows vs parent table) produced the filter.
+   * The backend ignores this field and only relies on {@link tableName} to derive join paths.
+   */
+  countByKey?: string
 }
 
 export interface TableRelationship {

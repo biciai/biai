@@ -5,14 +5,69 @@ import type { PlotMouseEvent, PlotSelectionEvent } from 'plotly.js'
 import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
 import type { MetricPathSegment } from '../types'
-import { findRelationshipPath } from '../utils/filterHelpers'
+import { findRelationshipPath, type Filter } from '../utils/filterHelpers'
 // Small categorical sets render better as pie charts; beyond this use bars.
 const MAX_PIE_CATEGORIES = 8
 const ROW_COUNT_KEY = 'rows'
 const CHART_LABEL_STORAGE_PREFIX = 'chartLabels_'
+const CHART_OVERRIDE_STORAGE_PREFIX = 'chartOverrides_'
+const TABLE_SCOPE_KEY = 'table'
+const DASHBOARD_SCOPE_KEY = 'dashboard'
 const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
 const CACHE_MAX_ENTRIES_PER_TABLE = 5
 const MAX_ANCESTOR_DEPTH = 4
+
+export const unwrapNot = (filter?: Filter | null): Filter | undefined => {
+  if (!filter) return undefined
+  return filter.not ?? filter
+}
+
+const cloneFilterNode = (filter: Filter): Filter => {
+  const cloned: Filter = {
+    ...filter,
+    and: filter.and ? filter.and.map(cloneFilterNode) : undefined,
+    or: filter.or ? filter.or.map(cloneFilterNode) : undefined,
+    not: filter.not ? cloneFilterNode(filter.not) : undefined
+  }
+
+  if (cloned.countByKey === undefined && cloned.tableName) {
+    cloned.countByKey = ROW_COUNT_KEY
+  }
+
+  return cloned
+}
+
+export const migrateFiltersToCurrentSchema = (filters: Filter[]): Filter[] =>
+  filters.map(cloneFilterNode)
+
+const chartOverrideStorageKey = (identifier: string) => `${CHART_OVERRIDE_STORAGE_PREFIX}${identifier}`
+
+export const persistChartOverrides = (
+  storage: Storage,
+  identifier: string,
+  overrides: Record<string, string>
+): void => {
+  const key = chartOverrideStorageKey(identifier)
+  if (Object.keys(overrides).length === 0) {
+    storage.removeItem(key)
+  } else {
+    storage.setItem(key, JSON.stringify(overrides))
+  }
+}
+
+export const loadChartOverrides = (
+  storage: Storage,
+  identifier: string
+): Record<string, string> | null => {
+  const key = chartOverrideStorageKey(identifier)
+  const stored = storage.getItem(key)
+  if (!stored) return null
+  try {
+    return JSON.parse(stored)
+  } catch {
+    return null
+  }
+}
 
 interface Column {
   name: string
@@ -76,15 +131,6 @@ interface ColumnAggregation {
   metric_parent_table?: string
   metric_parent_column?: string
   metric_path?: MetricPathSegment[]
-}
-
-interface Filter {
-  column?: string
-  operator?: 'eq' | 'in' | 'gt' | 'lt' | 'gte' | 'lte' | 'between'
-  value?: any
-  and?: Filter[]
-  or?: Filter[]
-  not?: Filter
 }
 
 interface FilterPreset {
@@ -170,7 +216,7 @@ function DatasetExplorer() {
   const [aggregations, setAggregations] = useState<Record<string, Record<string, AggregationCacheEntry>>>({})
   const [baselineAggregations, setBaselineAggregations] = useState<Record<string, ColumnAggregation[]>>({})
   const [filters, setFilters] = useState<Filter[]>([])
-  const [activeFilterMenu, setActiveFilterMenu] = useState<{ tableName: string; columnName: string } | null>(null)
+  const [activeFilterMenu, setActiveFilterMenu] = useState<{ tableName: string; columnName: string; countKey?: string } | null>(null)
   const [customRangeInputs, setCustomRangeInputs] = useState<Record<string, { min: string; max: string }>>({})
   const [rangeSelections, setRangeSelections] = useState<Record<string, Array<{ start: number; end: number }>>>({})
   const [countBySelections, setCountBySelections] = useState<Record<string, CountBySelection>>({})
@@ -193,6 +239,8 @@ function DatasetExplorer() {
 
   // Dashboard state: track which charts are pinned to dashboard
   const [dashboardCharts, setDashboardCharts] = useState<Array<{ tableName: string; columnName: string; countByTarget: string | null; addedAt: string }>>([])
+  const [chartCountOverrides, setChartCountOverrides] = useState<Record<string, string>>({})
+  const [activeCountMenuKey, setActiveCountMenuKey] = useState<string | null>(null)
   const [ancestorOptions, setAncestorOptions] = useState<Record<string, AncestorOption[]>>({})
   const [visibleDashboardKeys, setVisibleDashboardKeys] = useState<Record<string, boolean>>({})
   const dashboardObserverRef = useRef<IntersectionObserver | null>(null)
@@ -217,6 +265,7 @@ function DatasetExplorer() {
   const savedDashboardsInitialized = useRef(false)
   const countByInitialized = useRef(false)
   const previousCountByRef = useRef<Record<string, CountBySelection>>({})
+  const chartOverridesInitialized = useRef(false)
   const [showPercentageLabels, setShowPercentageLabels] = useState(false)
   const [showSettingsMenu, setShowSettingsMenu] = useState(false)
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -254,7 +303,10 @@ function DatasetExplorer() {
   const loadFiltersFromLocalStorage = (): Filter[] | null => {
     try {
       const stored = localStorage.getItem(`filters_${identifier}`)
-      return stored ? JSON.parse(stored) : null
+      if (!stored) return null
+      const parsed: Filter[] = JSON.parse(stored)
+      if (parsed.length === 0) return []
+      return migrateFiltersToCurrentSchema(parsed)
     } catch (error) {
       console.error('Failed to load filters from localStorage:', error)
       return null
@@ -305,6 +357,23 @@ function DatasetExplorer() {
     }
   }
 
+  const saveChartOverridesToLocalStorage = (overrides: Record<string, string>) => {
+    try {
+      persistChartOverrides(localStorage, identifier, overrides)
+    } catch (error) {
+      console.error('Failed to persist chart overrides:', error)
+    }
+  }
+
+  const loadChartOverridesFromLocalStorage = (): Record<string, string> | null => {
+    try {
+      return loadChartOverrides(localStorage, identifier)
+    } catch (error) {
+      console.error('Failed to load chart overrides from localStorage:', error)
+      return null
+    }
+  }
+
   // Helper functions for preset management
   const savePresetsToLocalStorage = (presets: FilterPreset[]) => {
     try {
@@ -321,6 +390,7 @@ function DatasetExplorer() {
       const parsed: FilterPreset[] = JSON.parse(stored)
       return parsed.map(preset => ({
         ...preset,
+        filters: migrateFiltersToCurrentSchema(preset.filters || []),
         countBySelections: preset.countBySelections || {}
       }))
     } catch (error) {
@@ -348,7 +418,7 @@ function DatasetExplorer() {
   }
 
   const applyPreset = (preset: FilterPreset) => {
-    setFilters(JSON.parse(JSON.stringify(preset.filters))) // Deep clone
+    setFilters(migrateFiltersToCurrentSchema(preset.filters || []))
     setCountBySelections(JSON.parse(JSON.stringify(preset.countBySelections || {})))
     setShowPresetsDropdown(false)
   }
@@ -436,7 +506,8 @@ function DatasetExplorer() {
 
   // Dashboard chart management
   const isOnDashboard = (tableName: string, columnName: string): boolean => {
-    const target = countBySelections[tableName]?.targetTable ?? null
+    const cacheKey = getEffectiveCacheKeyForChart(tableName, columnName)
+    const target = targetFromCacheKey(cacheKey)
     return dashboardCharts.some(chart =>
       chart.tableName === tableName &&
       chart.columnName === columnName &&
@@ -445,7 +516,8 @@ function DatasetExplorer() {
   }
 
   const toggleDashboard = (tableName: string, columnName: string) => {
-    const target = countBySelections[tableName]?.targetTable ?? null
+    const cacheKey = getEffectiveCacheKeyForChart(tableName, columnName)
+    const target = targetFromCacheKey(cacheKey)
     if (isOnDashboard(tableName, columnName)) {
       // Remove from dashboard
       setDashboardCharts(prev =>
@@ -455,6 +527,7 @@ function DatasetExplorer() {
     } else {
       // Add to dashboard
       setDashboardCharts(prev => [...prev, { tableName, columnName, countByTarget: target, addedAt: new Date().toISOString() }])
+      ensureAggregationForCacheKey(tableName, cacheKey)
     }
   }
 
@@ -471,22 +544,31 @@ function DatasetExplorer() {
     })
 
     // Add all charts that aren't already on dashboard
-    const target = countBySelections[tableName]?.targetTable ?? null
     const newCharts = visibleAggregations
-      .filter(agg => !dashboardCharts.some(chart =>
-        chart.tableName === tableName &&
-        chart.columnName === agg.column_name &&
-        chart.countByTarget === target
-      ))
-      .map(agg => ({
-        tableName,
-        columnName: agg.column_name,
-        countByTarget: target,
-        addedAt: new Date().toISOString()
-      }))
+      .map(agg => {
+        const cacheKey = getEffectiveCacheKeyForChart(tableName, agg.column_name)
+        const target = targetFromCacheKey(cacheKey)
+        return {
+          tableName,
+          columnName: agg.column_name,
+          countByTarget: target,
+          addedAt: new Date().toISOString()
+        }
+      })
+      .filter(newChart =>
+        !dashboardCharts.some(chart =>
+          chart.tableName === newChart.tableName &&
+          chart.columnName === newChart.columnName &&
+          chart.countByTarget === newChart.countByTarget
+        )
+      )
 
     if (newCharts.length > 0) {
       setDashboardCharts(prev => [...prev, ...newCharts])
+      newCharts.forEach(chart => {
+        const cacheKey = chart.countByTarget ? `parent:${chart.countByTarget}` : ROW_COUNT_KEY
+        ensureAggregationForCacheKey(chart.tableName, cacheKey)
+      })
     }
   }
 
@@ -809,7 +891,7 @@ function DatasetExplorer() {
     if (encodedFilters) {
       const restored = deserializeFilters(encodedFilters)
       if (restored && restored.length > 0) {
-        setFilters(restored)
+        setFilters(migrateFiltersToCurrentSchema(restored))
         filtersInitialized.current = true
         return
       }
@@ -1012,6 +1094,16 @@ function DatasetExplorer() {
       })
     }
   }
+
+  useEffect(() => {
+    if (!dataset || !countByReady) return
+    Object.entries(chartCountOverrides).forEach(([key, cacheKey]) => {
+      const [tableName, columnName] = key.split('.')
+      if (tableName && columnName) {
+        ensureAggregationForCacheKey(tableName, cacheKey)
+      }
+    })
+  }, [chartCountOverrides, dataset, countByReady])
 
   useEffect(() => {
     if (!dataset || !countByReady) return
@@ -1365,7 +1457,280 @@ function DatasetExplorer() {
     return value.toFixed(2)
   }
 
-  const rangeKey = (tableName: string, columnName: string) => `${tableName}.${columnName}`
+  const chartKey = (tableName: string, columnName: string) => `${tableName}.${columnName}`
+
+  const getChartOverrideKey = (tableName: string, columnName: string): string | undefined =>
+    chartCountOverrides[chartKey(tableName, columnName)]
+
+  const getEffectiveCacheKeyForChart = (tableName: string, columnName: string): string => {
+    const override = getChartOverrideKey(tableName, columnName)
+    return override ?? getCountByCacheKey(tableName)
+  }
+
+  const parseSelectionFromCacheKey = (key?: string): CountBySelection | null => {
+    if (!key) return null
+    if (key.startsWith('parent:')) {
+      return { mode: 'parent', targetTable: key.slice('parent:'.length) }
+    }
+    return null
+  }
+
+  const targetFromCacheKey = (key?: string): string | null => {
+    if (!key) return null
+    return key.startsWith('parent:') ? key.slice('parent:'.length) : null
+  }
+
+  const setChartOverrideForChart = (tableName: string, columnName: string, override?: string) => {
+    setChartCountOverrides(prev => {
+      const key = chartKey(tableName, columnName)
+      const defaultKey = getCountByCacheKey(tableName)
+      if (!override || override === defaultKey) {
+        if (!(key in prev)) return prev
+        const { [key]: _removed, ...rest } = prev
+        return rest
+      }
+      if (prev[key] === override) return prev
+      return { ...prev, [key]: override }
+    })
+  }
+
+  const ensureAggregationForCacheKey = (tableName: string, cacheKey: string) => {
+    if (!dataset || !countByReady) return
+    const table = dataset.tables.find(t => t.name === tableName)
+    if (!table) return
+    const cachedEntry = aggregations[tableName]?.[cacheKey]
+    if (isCacheEntryFresh(cachedEntry, currentFiltersKey)) return
+
+    const shouldUseDatabaseAPI = isDatabaseMode || dataset.database_type === 'connected'
+    const dbIdentifier = isDatabaseMode ? identifier : dataset.database_name
+    const selectionOverride = parseSelectionFromCacheKey(cacheKey)
+
+    loadTableAggregations(table.id, table.name, {
+      useDbAPI: shouldUseDatabaseAPI,
+      dbName: dbIdentifier,
+      datasetId: dataset.id,
+      cacheKey,
+      selectionOverride
+    })
+  }
+
+  const getCountByLabelFromCacheKey = (tableName: string, cacheKey: string): string => {
+    if (cacheKey.startsWith('parent:')) {
+      const target = cacheKey.slice('parent:'.length)
+      return getTableDisplayNameByName(target) || target
+    }
+    return 'Rows'
+  }
+
+  const getCountByOptions = (tableName: string) => [
+    {
+      value: ROW_COUNT_KEY,
+      label: getTableDisplayNameByName(tableName) || tableName
+    },
+    ...(ancestorOptions[tableName] || []).map(option => ({
+      value: option.key,
+      label: getTableDisplayNameByName(option.targetTable) || option.targetTable
+    }))
+  ]
+
+  const getCountIndicatorColor = (tableName: string, cacheKey: string): string => {
+    const target = targetFromCacheKey(cacheKey)
+    return getTableColor(target ?? tableName)
+  }
+
+  const renderCountIndicator = ({
+    menuKey,
+    indicatorColor,
+    label,
+    options,
+    currentValue,
+    onSelect,
+    buttonLabel
+  }: {
+    menuKey: string
+    indicatorColor: string
+    label: string
+    options: Array<{ value: string; label: string }>
+    currentValue: string
+    onSelect: (value: string) => void
+    buttonLabel: string
+  }) => {
+    const isOpen = activeCountMenuKey === menuKey
+
+    return (
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+        <button
+          type="button"
+          aria-label={buttonLabel}
+          title={`${label} (click to change)`}
+          onClick={event => {
+            event.stopPropagation()
+            setActiveCountMenuKey(prev => (prev === menuKey ? null : menuKey))
+          }}
+          style={{
+            width: '10px',
+            height: '22px',
+            borderRadius: '4px',
+            border: 'none',
+            background: indicatorColor,
+            cursor: 'pointer',
+            padding: 0
+          }}
+        />
+        {isOpen && (
+          <div
+            style={{
+              position: 'absolute',
+              top: '120%',
+              left: 0,
+              background: 'white',
+              border: '1px solid #ddd',
+              borderRadius: '6px',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              padding: '0.35rem 0.4rem',
+              zIndex: 20,
+              minWidth: '160px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.3rem'
+            }}
+            onClick={event => event.stopPropagation()}
+          >
+            {options.map(option => {
+              const active = option.value === currentValue
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    onSelect(option.value)
+                    setActiveCountMenuKey(null)
+                  }}
+                  style={{
+                    textAlign: 'left',
+                    border: active ? '1px solid #1976D2' : '1px solid transparent',
+                    borderRadius: '4px',
+                    background: active ? '#E3F2FD' : 'transparent',
+                    color: '#333',
+                    fontSize: '0.72rem',
+                    padding: '0.15rem 0.35rem',
+                    cursor: 'pointer'
+                  }}
+                >
+                  {option.label}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const renderTableCountIndicator = (tableName: string, columnName: string, cacheKey: string) => {
+    const indicatorColor = getCountIndicatorColor(tableName, cacheKey)
+    const label = getCountByLabelFromCacheKey(tableName, cacheKey)
+    const options = getCountByOptions(tableName)
+    const currentValue = cacheKey
+    return renderCountIndicator({
+      menuKey: `${TABLE_SCOPE_KEY}:${tableName}.${columnName}`,
+      indicatorColor,
+      label,
+      options,
+      currentValue,
+      buttonLabel: `Change count-by for ${tableName}.${columnName}`,
+      onSelect: value => handleChartCountOverrideChange(tableName, columnName, value)
+    })
+  }
+
+  const renderDashboardCountIndicator = (
+    chartIndex: number,
+    tableName: string,
+    columnName: string,
+    cacheKey: string
+  ) => {
+    const indicatorColor = getCountIndicatorColor(tableName, cacheKey)
+    const label = getCountByLabelFromCacheKey(tableName, cacheKey)
+    const options = getCountByOptions(tableName)
+    return renderCountIndicator({
+      menuKey: `${DASHBOARD_SCOPE_KEY}:${chartIndex}`,
+      indicatorColor,
+      label,
+      options,
+      currentValue: cacheKey,
+      buttonLabel: `Change count-by for dashboard chart ${tableName}.${columnName}`,
+      onSelect: value => handleDashboardChartCountChange(chartIndex, tableName, value)
+    })
+  }
+
+  const renderChartHeader = ({
+    title,
+    tooltip,
+    countIndicator,
+    actions
+  }: {
+    title: string
+    tooltip?: string
+    countIndicator: React.ReactNode
+    actions?: React.ReactNode
+  }) => (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '0.35rem',
+        marginBottom: '0.4rem'
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', minWidth: 0, flex: 1 }}>
+        {countIndicator}
+        <h4
+          style={{
+            margin: 0,
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            cursor: tooltip ? 'help' : 'default',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            flex: 1
+          }}
+          title={tooltip}
+        >
+          {title}
+        </h4>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
+        {actions}
+      </div>
+    </div>
+  )
+
+  const handleChartCountOverrideChange = (tableName: string, columnName: string, value: string) => {
+    const defaultKey = getCountByCacheKey(tableName)
+    if (value === defaultKey) {
+      setChartOverrideForChart(tableName, columnName)
+    } else {
+      setChartOverrideForChart(tableName, columnName, value)
+    }
+    ensureAggregationForCacheKey(tableName, value)
+  }
+
+  const handleDashboardChartCountChange = (chartIndex: number, tableName: string, value: string) => {
+    const nextTarget = value.startsWith('parent:') ? value.slice('parent:'.length) : null
+    setDashboardCharts(prev =>
+      prev.map((chart, idx) =>
+        idx === chartIndex ? { ...chart, countByTarget: nextTarget } : chart
+      )
+    )
+    ensureAggregationForCacheKey(tableName, value)
+  }
+
+
+
+const rangeKey = (tableName: string, columnName: string, countKey?: string) =>
+  `${tableName}.${columnName}:${countKey ?? 'rows'}`
 
   const rangesEqual = (a: { start: number; end: number }, b: { start: number; end: number }) =>
     Math.abs(a.start - b.start) < 1e-9 && Math.abs(a.end - b.end) < 1e-9
@@ -1386,7 +1751,14 @@ function DatasetExplorer() {
     return undefined
   }
 
-  const getFilterTableName = (filter: Filter): string | undefined => (filter as any).tableName
+  /**
+   * Determine which table a filter applies to for cache lookups / backend requests.
+   *
+   * Note: {@link Filter.countByKey} is purely client-side metadata that scopes UI controls.
+   * The backend only inspects {@link Filter.tableName} to build JOIN paths, so we never rewrite
+   * tableName when users select different ancestor count targets.
+   */
+  const getFilterTableNameForCacheKey = (filter: Filter): string | undefined => filter.tableName
 
   const normalizeDashboardCharts = (charts: Array<{ tableName: string; columnName: string; countByTarget?: string | null; addedAt: string }>) => {
     return charts.map(chart => ({
@@ -1410,7 +1782,7 @@ function DatasetExplorer() {
 
     // Group filters by their tableName property
     for (const filter of filters) {
-      const filterTableName = getFilterTableName(filter)
+      const filterTableName = getFilterTableNameForCacheKey(filter)
       if (!filterTableName) continue
 
       // This filter belongs to filterTableName
@@ -1440,32 +1812,41 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
   if (filter.or && Array.isArray(filter.or)) {
     return filter.or.some(child => filterContainsColumn(child, column))
   }
-    if (filter.and && Array.isArray(filter.and)) {
-      return filter.and.some(child => filterContainsColumn(child, column))
-    }
-    if (filter.not) {
-      return filterContainsColumn(filter.not, column)
-    }
-    return false
+  if (filter.and && Array.isArray(filter.and)) {
+    return filter.and.some(child => filterContainsColumn(child, column))
+  }
+  if (filter.not) {
+    return filterContainsColumn(filter.not, column)
+  }
+  return false
+}
+
+const getFilterCountKey = (filter: Filter): string => {
+  const actual = unwrapNot(filter)
+  return actual?.countByKey ?? filter.countByKey ?? ROW_COUNT_KEY
+}
+
+  const hasColumnFilter = (column: string, countKey?: string): boolean => {
+    const resolvedKey = countKey ?? ROW_COUNT_KEY
+    return filters.some(f => {
+      const actual = unwrapNot(f)
+      if (!actual || !filterContainsColumn(actual, column)) return false
+      return getFilterCountKey(f) === resolvedKey
+    })
   }
 
-  const hasColumnFilter = (column: string): boolean => filters.some(f => filterContainsColumn(f, column))
-
-  const removeColumnFilters = (prev: Filter[], column: string): Filter[] =>
-    prev.filter(filter => {
-      // Unwrap NOT if present
-      const actualFilter = (filter as any).not || filter
-
-      if (actualFilter.column === column) return false
-      if (actualFilter.or && Array.isArray(actualFilter.or)) {
-        return !actualFilter.or.every(child => filterContainsColumn(child, column))
-      }
-      return true
+  const removeColumnFilters = (prev: Filter[], column: string, countKey?: string): Filter[] => {
+    const resolvedKey = countKey ?? ROW_COUNT_KEY
+    return prev.filter(filter => {
+      const actualFilter = unwrapNot(filter)
+      if (!actualFilter || !filterContainsColumn(actualFilter, column)) return true
+      return getFilterCountKey(filter) !== resolvedKey
     })
+  }
 
-  const clearColumnFilter = (tableName: string, columnName: string) => {
-    setFilters(prev => removeColumnFilters(prev, columnName))
-    const key = rangeKey(tableName, columnName)
+  const clearColumnFilter = (tableName: string, columnName: string, countKey?: string) => {
+    setFilters(prev => removeColumnFilters(prev, columnName, countKey))
+    const key = rangeKey(tableName, columnName, countKey)
     setCustomRangeInputs(prev => {
       if (!(key in prev)) return prev
       const { [key]: _removed, ...rest } = prev
@@ -1481,9 +1862,10 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
   const updateColumnRanges = (
     tableName: string,
     columnName: string,
-    updater: (ranges: Array<{ start: number; end: number }>) => Array<{ start: number; end: number }>
+    updater: (ranges: Array<{ start: number; end: number }>) => Array<{ start: number; end: number }>,
+    countKey?: string
   ) => {
-    const key = rangeKey(tableName, columnName)
+    const key = rangeKey(tableName, columnName, countKey)
     let nextRanges: Array<{ start: number; end: number }> = []
     setRangeSelections(prev => {
       const prevRanges = prev[key] ?? []
@@ -1506,55 +1888,76 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
     })
 
     setFilters(prev => {
-      const without = removeColumnFilters(prev, columnName)
+      const without = removeColumnFilters(prev, columnName, countKey)
       if (nextRanges.length === 0) return without
       if (nextRanges.length === 1) {
         const range = nextRanges[0]
-        return [...without, { column: columnName, operator: 'between', value: [range.start, range.end], tableName } as unknown as Filter]
+        return [
+          ...without,
+          {
+            column: columnName,
+            operator: 'between',
+            value: [range.start, range.end],
+            tableName,
+            countByKey: countKey
+          }
+        ]
       }
       const orFilters = nextRanges.map(range => ({ column: columnName, operator: 'between', value: [range.start, range.end] }))
-      return [...without, { column: columnName, or: orFilters, tableName } as unknown as Filter]
+      return [
+        ...without,
+        { column: columnName, or: orFilters, tableName, countByKey: countKey }
+      ]
     })
   }
 
   const renderFilterMenu = (
     tableName: string,
     columnName: string,
-    categories?: CategoryCount[]
+    categories?: CategoryCount[],
+    cacheKeyOverride?: string
   ) => {
-    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === columnName
-    if (!menuOpen || !categories || categories.length === 0) return null
+    const cacheKey = cacheKeyOverride ?? getEffectiveCacheKeyForChart(tableName, columnName)
+    const menuOpen =
+      activeFilterMenu?.tableName === tableName &&
+      activeFilterMenu.columnName === columnName &&
+      activeFilterMenu.countKey === cacheKey
+    if (!menuOpen) return null
 
-    const aggregation = getAggregation(tableName, columnName)
+    const aggregation = getAggregation(tableName, columnName, cacheKey)
+    if (!aggregation || !categories || categories.length === 0) return null
+
     const metricLabels = getMetricLabels(aggregation)
     const pathLabel = formatMetricPath(aggregation)
 
-    const columnHasFilter = hasColumnFilter(columnName)
+    const columnHasFilter = hasColumnFilter(columnName, cacheKey)
 
     // Check if the current filter for this column has NOT wrapper
     const currentFilter = filters.find(f => {
-      const actualF = (f as any).not || f
-      return getFilterColumn(actualF) === columnName
+      const actualF = unwrapNot(f)
+      if (!actualF || getFilterColumn(actualF) !== columnName) return false
+      return getFilterCountKey(f) === cacheKey
     })
-    const isNot = currentFilter ? !!(currentFilter as any).not : false
+    const isNot = !!currentFilter?.not
 
     // Toggle NOT for this column's filter
     const toggleColumnNot = () => {
       setFilters(prev => {
         const idx = prev.findIndex(f => {
-          const actualF = (f as any).not || f
-          return getFilterColumn(actualF) === columnName
+          const actualF = unwrapNot(f)
+          if (!actualF || getFilterColumn(actualF) !== columnName) return false
+          return getFilterCountKey(f) === cacheKey
         })
         if (idx === -1) return prev
 
         const updated = [...prev]
         const filter = prev[idx]
-        if ((filter as any).not) {
+        if (filter.not) {
           // Remove NOT wrapper
-          updated[idx] = (filter as any).not
+          updated[idx] = filter.not
         } else {
           // Add NOT wrapper
-          updated[idx] = { not: filter } as any
+          updated[idx] = { not: filter }
         }
         return updated
       })
@@ -1588,7 +1991,7 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
       >
         <div style={{ display: 'flex', gap: '0.25rem' }}>
           <button
-            onClick={() => clearColumnFilter(tableName, columnName)}
+            onClick={() => clearColumnFilter(tableName, columnName, cacheKey)}
             style={{
               border: 'none',
               background: columnHasFilter ? '#1976D2' : '#eee',
@@ -1627,13 +2030,13 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
         {categories.map(category => {
           const rawValue = normalizeFilterValue(category.value)
           const label = category.display_value ?? (category.value === '' ? '(Empty)' : String(category.value))
-          const active = isValueFiltered(columnName, rawValue)
+          const active = isValueFiltered(columnName, rawValue, cacheKey)
 
           return (
             <button
               key={`${tableName}-${columnName}-${label}`}
               onMouseDown={event => event.preventDefault()}
-              onClick={() => toggleFilter(columnName, rawValue, tableName)}
+              onClick={() => toggleFilter(columnName, rawValue, tableName, cacheKey)}
               style={{
                 border: active ? '1px solid #1976D2' : '1px solid #ccc',
                 background: active ? '#E3F2FD' : '#fafafa',
@@ -1656,8 +2059,8 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
 
   useEffect(() => {
     if (!activeFilterMenu) return
-    const { tableName, columnName } = activeFilterMenu
-    const key = rangeKey(tableName, columnName)
+    const { tableName, columnName, countKey } = activeFilterMenu
+    const key = rangeKey(tableName, columnName, countKey)
     const baselineAgg = getBaselineAggregation(tableName, columnName)
     if (!baselineAgg || baselineAgg.display_type !== 'numeric') return
     const stats = baselineAgg.numeric_stats
@@ -1685,7 +2088,21 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
     countByInitialized.current = false
     setCountBySelections({})
     setCountByReady(false)
+    chartOverridesInitialized.current = false
+    setChartCountOverrides({})
+    setActiveCountMenuKey(null)
   }, [identifier])
+
+  useEffect(() => {
+    const storedOverrides = loadChartOverridesFromLocalStorage()
+    setChartCountOverrides(storedOverrides || {})
+    chartOverridesInitialized.current = true
+  }, [identifier])
+
+  useEffect(() => {
+    if (!chartOverridesInitialized.current) return
+    saveChartOverridesToLocalStorage(chartCountOverrides)
+  }, [chartCountOverrides, identifier])
 
   useEffect(() => {
     setShowSettingsMenu(false)
@@ -1719,6 +2136,13 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [showSettingsMenu])
+
+  useEffect(() => {
+    if (!activeCountMenuKey) return
+    const handleClick = () => setActiveCountMenuKey(null)
+    document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [activeCountMenuKey])
 
   useEffect(() => {
     const storageKey = `${CHART_LABEL_STORAGE_PREFIX}${identifier}`
@@ -1779,8 +2203,8 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
     }))
   }
 
-  const applyCustomRange = (tableName: string, columnName: string) => {
-    const key = `${tableName}.${columnName}`
+  const applyCustomRange = (tableName: string, columnName: string, countKey?: string) => {
+    const key = rangeKey(tableName, columnName, countKey)
     const range = customRangeInputs[key]
     if (!range) return
 
@@ -1804,7 +2228,7 @@ const filterContainsColumn = (filter: Filter, column: string): boolean => {
       const existingIndex = prevRanges.findIndex(range => rangesEqual(range, nextRange))
       if (existingIndex >= 0) return prevRanges
       return [...prevRanges, nextRange]
-    })
+    }, countKey)
   }
 
   const getNiceBinWidth = (range: number, desiredBins: number): number => {
@@ -1900,17 +2324,24 @@ const renderNumericFilterMenu = (
     tableName: string,
     columnName: string,
     histogram?: HistogramBin[],
-    stats?: NumericStats
+    stats?: NumericStats,
+    cacheKeyOverride?: string
   ) => {
-    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === columnName
+    const cacheKey = cacheKeyOverride ?? getEffectiveCacheKeyForChart(tableName, columnName)
+    const menuOpen =
+      activeFilterMenu?.tableName === tableName &&
+      activeFilterMenu.columnName === columnName &&
+      activeFilterMenu.countKey === cacheKey
     if (!menuOpen) return null
 
     const bins = histogram ?? []
-    const aggregation = getAggregation(tableName, columnName)
+    const aggregation = getAggregation(tableName, columnName, cacheKey)
+    if (!aggregation) return null
+
     const metricLabels = getMetricLabels(aggregation)
-    const key = `${tableName}.${columnName}`
+    const key = rangeKey(tableName, columnName, cacheKey)
     const range = customRangeInputs[key] || { min: stats && stats.min !== null ? String(stats.min) : '', max: stats && stats.max !== null ? String(stats.max) : '' }
-    const columnHasFilter = hasColumnFilter(columnName)
+    const columnHasFilter = hasColumnFilter(columnName, cacheKey)
     const selectedRanges = rangeSelections[key] ?? []
     const customRanges = selectedRanges.filter(range => !bins.some(bin => rangesEqual(range, { start: bin.bin_start, end: bin.bin_end })))
     const minDisplay = stats && stats.min !== null ? formatRangeValue(stats.min) : '–'
@@ -1929,28 +2360,30 @@ const renderNumericFilterMenu = (
 
     // Check if the current filter for this column has NOT wrapper
     const currentFilter = filters.find(f => {
-      const actualF = (f as any).not || f
-      return getFilterColumn(actualF) === columnName
+      const actualF = unwrapNot(f)
+      if (!actualF || getFilterColumn(actualF) !== columnName) return false
+      return getFilterCountKey(f) === cacheKey
     })
-    const isNot = currentFilter ? !!(currentFilter as any).not : false
+    const isNot = !!currentFilter?.not
 
     // Toggle NOT for this column's filter
     const toggleColumnNot = () => {
       setFilters(prev => {
         const idx = prev.findIndex(f => {
-          const actualF = (f as any).not || f
-          return getFilterColumn(actualF) === columnName
+          const actualF = unwrapNot(f)
+          if (!actualF || getFilterColumn(actualF) !== columnName) return false
+          return getFilterCountKey(f) === cacheKey
         })
         if (idx === -1) return prev
 
         const updated = [...prev]
         const filter = prev[idx]
-        if ((filter as any).not) {
+        if (filter.not) {
           // Remove NOT wrapper
-          updated[idx] = (filter as any).not
+          updated[idx] = filter.not
         } else {
           // Add NOT wrapper
-          updated[idx] = { not: filter } as any
+          updated[idx] = { not: filter }
         }
         return updated
       })
@@ -1990,18 +2423,18 @@ const renderNumericFilterMenu = (
           </>
         )}
         {(() => {
-          const aggregation = getAggregation(tableName, columnName)
+          const aggregation = getAggregation(tableName, columnName, cacheKey)
           const metricLabels = getMetricLabels(aggregation)
           const nullCount = aggregation?.null_count ?? 0
           if (nullCount === 0) return null
 
-          const nullActive = isValueFiltered(columnName, '')
+          const nullActive = isValueFiltered(columnName, '', cacheKey)
           return (
             <>
               <div style={{ borderBottom: '1px solid #eee', margin: '0.25rem 0' }} />
               <button
                 onMouseDown={event => event.preventDefault()}
-                onClick={() => toggleFilter(columnName, '', tableName)}
+                onClick={() => toggleFilter(columnName, '', tableName, cacheKey)}
                 style={{
                   border: nullActive ? '1px solid #1976D2' : '1px solid #ccc',
                   background: nullActive ? '#E3F2FD' : '#fafafa',
@@ -2021,7 +2454,7 @@ const renderNumericFilterMenu = (
         })()}
         <div style={{ display: 'flex', gap: '0.25rem' }}>
           <button
-            onClick={() => clearColumnFilter(tableName, columnName)}
+            onClick={() => clearColumnFilter(tableName, columnName, cacheKey)}
             style={{
               border: 'none',
               background: columnHasFilter ? '#1976D2' : '#eee',
@@ -2059,13 +2492,13 @@ const renderNumericFilterMenu = (
         {bins.length > 0 && (
           <div style={{ borderTop: '1px solid #eee', paddingTop: '0.25rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
             {bins.map((bin, index) => {
-              const active = isRangeFiltered(tableName, columnName, bin.bin_start, bin.bin_end)
+              const active = isRangeFiltered(tableName, columnName, bin.bin_start, bin.bin_end, cacheKey)
               const label = `${formatRangeValue(bin.bin_start)} – ${formatRangeValue(bin.bin_end)}`
               return (
                 <button
                   key={`${tableName}-${columnName}-bin-${index}`}
                   onMouseDown={event => event.preventDefault()}
-                  onClick={() => toggleRangeFilter(tableName, columnName, bin.bin_start, bin.bin_end)}
+                  onClick={() => toggleRangeFilter(tableName, columnName, bin.bin_start, bin.bin_end, cacheKey)}
                   style={{
                     border: active ? '1px solid #1976D2' : '1px solid #ccc',
                     background: active ? '#E3F2FD' : '#fafafa',
@@ -2091,7 +2524,7 @@ const renderNumericFilterMenu = (
                 <button
                   key={`${tableName}-${columnName}-custom-${index}`}
                   onMouseDown={event => event.preventDefault()}
-                  onClick={() => updateColumnRanges(tableName, columnName, prev => prev.filter(r => !rangesEqual(r, range)))}
+                  onClick={() => updateColumnRanges(tableName, columnName, prev => prev.filter(r => !rangesEqual(r, range)), cacheKey)}
                   style={{
                     border: '1px solid #1976D2',
                     background: '#E3F2FD',
@@ -2133,7 +2566,7 @@ const renderNumericFilterMenu = (
             </label>
           </div>
           <button
-            onClick={() => applyCustomRange(tableName, columnName)}
+            onClick={() => applyCustomRange(tableName, columnName, cacheKey)}
             style={{
               border: 'none',
               background: hasValidRange ? '#1976D2' : '#ccc',
@@ -2152,30 +2585,38 @@ const renderNumericFilterMenu = (
     )
   }
 
-  const toggleFilter = (column: string, value: string | number, tableName?: string) => {
+  const toggleFilter = (column: string, value: string | number, tableName?: string, countByKey?: string) => {
     const filterValue = normalizeFilterValue(value)
+    const resolvedCountKey = countByKey ?? ROW_COUNT_KEY
 
     setFilters(prevFilters => {
       const nextFilters = [...prevFilters]
 
-      // Find existing filter, checking both regular and NOT-wrapped filters
       const existingIndex = nextFilters.findIndex(f => {
-        const actualFilter = (f as any).not || f
-        return actualFilter.column === column
+        const actualFilter = unwrapNot(f)
+        if (!actualFilter || actualFilter.column !== column) return false
+        return getFilterCountKey(f) === resolvedCountKey
       })
 
-      // Check if the found filter is NOT-wrapped
-      const isNot = existingIndex >= 0 && !!(nextFilters[existingIndex] as any).not
+      const applyMetadata = (target: Filter, source?: Filter) => {
+        if (tableName) {
+          target.tableName = tableName
+        } else if (source?.tableName) {
+          target.tableName = source.tableName
+        }
+        target.countByKey = resolvedCountKey
+      }
 
       if (existingIndex === -1) {
-        const newFilter: any = { column, operator: 'eq', value: filterValue }
-        if (tableName) newFilter.tableName = tableName
+        const newFilter: Filter = { column, operator: 'eq', value: filterValue }
+        applyMetadata(newFilter)
         nextFilters.push(newFilter)
         return nextFilters
       }
 
-      // Get the actual filter (unwrap NOT if present)
-      const existing = isNot ? (nextFilters[existingIndex] as any).not : nextFilters[existingIndex]
+      const existingWrapped = nextFilters[existingIndex]
+      const isNot = !!existingWrapped.not
+      const existing = isNot && existingWrapped.not ? existingWrapped.not : existingWrapped
 
       if (existing.operator === 'eq') {
         const existingValue = normalizeFilterValue(existing.value as string | number)
@@ -2184,14 +2625,13 @@ const renderNumericFilterMenu = (
           return nextFilters
         }
 
-        const updatedFilter: any = {
+        const updatedFilter: Filter = {
           column,
           operator: 'in',
           value: [existingValue, filterValue]
         }
-        if (tableName) updatedFilter.tableName = tableName
-        // Re-wrap with NOT if it was originally wrapped
-        nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
+        applyMetadata(updatedFilter, existing)
+        nextFilters[existingIndex] = isNot ? { not: updatedFilter } : updatedFilter
         return nextFilters
       }
 
@@ -2210,24 +2650,21 @@ const renderNumericFilterMenu = (
         if (values.length === 0) {
           nextFilters.splice(existingIndex, 1)
         } else if (values.length === 1) {
-          const updatedFilter: any = { column, operator: 'eq', value: values[0] }
-          if (tableName) updatedFilter.tableName = tableName
-          // Re-wrap with NOT if it was originally wrapped
-          nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
+          const updatedFilter: Filter = { column, operator: 'eq', value: values[0] }
+          applyMetadata(updatedFilter, existing)
+          nextFilters[existingIndex] = isNot ? { not: updatedFilter } : updatedFilter
         } else {
-          const updatedFilter: any = { column, operator: 'in', value: values }
-          if (tableName) updatedFilter.tableName = tableName
-          // Re-wrap with NOT if it was originally wrapped
-          nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
+          const updatedFilter: Filter = { column, operator: 'in', value: values }
+          applyMetadata(updatedFilter, existing)
+          nextFilters[existingIndex] = isNot ? { not: updatedFilter } : updatedFilter
         }
 
         return nextFilters
       }
 
-      const updatedFilter: any = { column, operator: 'eq', value: filterValue }
-      if (tableName) updatedFilter.tableName = tableName
-      // Re-wrap with NOT if it was originally wrapped
-      nextFilters[existingIndex] = isNot ? { not: updatedFilter } as any : updatedFilter
+      const updatedFilter: Filter = { column, operator: 'eq', value: filterValue }
+      applyMetadata(updatedFilter, existing)
+      nextFilters[existingIndex] = isNot ? { not: updatedFilter } : updatedFilter
       return nextFilters
     })
   }
@@ -2238,12 +2675,13 @@ const renderNumericFilterMenu = (
     setRangeSelections({})
   }
 
-  const isValueFiltered = (column: string, value: string | number): boolean => {
+  const isValueFiltered = (column: string, value: string | number, countByKey?: string): boolean => {
     const compareValue = normalizeFilterValue(value)
+    const resolvedKey = countByKey ?? ROW_COUNT_KEY
     return filters.some(f => {
-      // Unwrap NOT if present
-      const actualFilter = (f as any).not || f
-      if (actualFilter.column !== column) return false
+      const actualFilter = unwrapNot(f)
+      if (!actualFilter || actualFilter.column !== column) return false
+      if (getFilterCountKey(f) !== resolvedKey) return false
       if (actualFilter.operator === 'eq') {
         return normalizeFilterValue(actualFilter.value as string | number) === compareValue
       }
@@ -2256,7 +2694,7 @@ const renderNumericFilterMenu = (
     })
   }
 
-  const toggleRangeFilter = (tableName: string, column: string, binStart: number, binEnd: number) => {
+  const toggleRangeFilter = (tableName: string, column: string, binStart: number, binEnd: number, countKey?: string) => {
     const range = { start: binStart, end: binEnd }
     updateColumnRanges(tableName, column, prevRanges => {
       const existingIndex = prevRanges.findIndex(r => rangesEqual(r, range))
@@ -2264,11 +2702,11 @@ const renderNumericFilterMenu = (
         return [...prevRanges.slice(0, existingIndex), ...prevRanges.slice(existingIndex + 1)]
       }
       return [...prevRanges, range]
-    })
+    }, countKey)
   }
 
-  const isRangeFiltered = (tableName: string, column: string, binStart: number, binEnd: number): boolean => {
-    const key = rangeKey(tableName, column)
+  const isRangeFiltered = (tableName: string, column: string, binStart: number, binEnd: number, countKey?: string): boolean => {
+    const key = rangeKey(tableName, column, countKey)
     const ranges = rangeSelections[key] ?? []
     return ranges.some(range => rangesEqual(range, { start: binStart, end: binEnd }))
   }
@@ -2305,28 +2743,176 @@ const renderNumericFilterMenu = (
 
   const getCountByValueForTable = (tableName: string) => getCountByCacheKey(tableName)
 
-  const renderTableView = (title: string, tableName: string, field: string, tableColor?: string, aggregationOverride?: ColumnAggregation) => {
-    const aggregation = aggregationOverride ?? getAggregation(tableName, field)
-    if (!aggregation?.categories || aggregation.categories.length === 0) return null
-    const metricLabels = getMetricLabels(aggregation)
+  const renderTableView = (
+    title: string,
+    tableName: string,
+    field: string,
+    tableColor?: string,
+    aggregationOverride?: ColumnAggregation,
+    cacheKeyOverride?: string,
+    countIndicatorOverride?: React.ReactNode
+  ) => {
+    const cacheKey = cacheKeyOverride ?? getEffectiveCacheKeyForChart(tableName, field)
+    const aggregation =
+      aggregationOverride && (!cacheKeyOverride || cacheKeyOverride === cacheKey)
+        ? aggregationOverride
+        : getAggregation(tableName, field, cacheKey)
 
     const metadata = getColumnMetadata(tableName, field)
-    const pathLabel = formatMetricPath(aggregation)
-    const tooltipText = [
+    const tableDisplayName = getTableDisplayNameByName(tableName) || tableName
+    const tooltipParts = [
       metadata?.display_name || title,
       `ID: ${field}`,
-      metadata?.description || ''
-    ].filter(Boolean).join('\n')
+      metadata?.description || '',
+      `Table: ${tableDisplayName}`
+    ]
+    if (aggregation) {
+      const pathLabel = formatMetricPath(aggregation)
+      if (pathLabel) {
+        tooltipParts.push(pathLabel)
+      }
+    }
+    const tooltipText = tooltipParts.filter(Boolean).join('\n')
 
+    const menuOpen =
+      activeFilterMenu?.tableName === tableName &&
+      activeFilterMenu.columnName === field &&
+      activeFilterMenu.countKey === cacheKey
+    const columnActive = hasColumnFilter(field, cacheKey)
+
+    const actionButtons = (
+      <>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            toggleViewPreference(tableName, field)
+          }}
+          style={{
+            border: 'none',
+            background: '#f0f0f0',
+            color: '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.7rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title="Switch to chart view"
+        >
+          ◐
+        </button>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            toggleDashboard(tableName, field)
+          }}
+          style={{
+            border: 'none',
+            background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+            color: isOnDashboard(tableName, field) ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.7rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title={isOnDashboard(tableName, field) ? 'Remove from dashboard' : 'Add to dashboard'}
+        >
+          {isOnDashboard(tableName, field) ? '✓' : '+'}
+        </button>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            setActiveFilterMenu(prev =>
+              prev && prev.tableName === tableName && prev.columnName === field && prev.countKey === cacheKey
+                ? null
+                : { tableName, columnName: field, countKey: cacheKey }
+            )
+          }}
+          style={{
+            border: 'none',
+            background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
+            color: menuOpen || columnActive ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.75rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title="Filter values"
+        >
+          ⚲
+        </button>
+      </>
+    )
+
+    const countIndicator = countIndicatorOverride ?? renderTableCountIndicator(tableName, field, cacheKey)
+
+    const containerStyle: React.CSSProperties = {
+      position: 'relative',
+      background: 'white',
+      padding: '0.5rem',
+      borderRadius: '8px',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+      width: '358px',
+      height: '358px',
+      boxSizing: 'border-box',
+      flexShrink: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      border: tableColor ? `2px solid ${tableColor}20` : undefined
+    }
+
+    if (!aggregation || !aggregation.categories || aggregation.categories.length === 0) {
+      const message = aggregation ? 'No data for current filters' : 'Loading data…'
+      return (
+        <div style={containerStyle}>
+          {renderChartHeader({
+            title: metadata?.display_name || title,
+            tooltip: tooltipText,
+            countIndicator,
+            actions: actionButtons
+          })}
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#999',
+              fontSize: '0.75rem',
+              textAlign: 'center',
+              padding: '0.5rem'
+            }}
+          >
+            {message}
+          </div>
+        </div>
+      )
+    }
+
+    const metricLabels = getMetricLabels(aggregation)
     const baselineAggregation = getBaselineAggregation(tableName, field)
     const categoriesForMenu =
       metricsMatch(baselineAggregation, aggregation) && baselineAggregation?.categories?.length
         ? baselineAggregation.categories
         : aggregation.categories
-    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
-    const columnActive = hasColumnFilter(field)
 
-    // Prepare table data
     const totalRows = aggregation.total_rows ?? aggregation.categories.reduce((sum, cat) => sum + cat.count, 0)
 
     const tableData = aggregation.categories.map(cat => ({
@@ -2336,172 +2922,68 @@ const renderNumericFilterMenu = (
       percentage: totalRows > 0 ? (cat.count / totalRows) * 100 : 0
     }))
 
-    // Sort by count descending by default
     const sortedData = [...tableData].sort((a, b) => b.count - a.count)
-
     const showLimit = 100
     const visibleData = sortedData.slice(0, showLimit)
     const hasMore = sortedData.length > showLimit
 
     return (
-      <div style={{
-        position: 'relative',
-        background: 'white',
-        padding: '0.5rem',
-        borderRadius: '8px',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-        width: '358px',
-        height: '358px',
-        boxSizing: 'border-box',
-        flexShrink: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        border: tableColor ? `2px solid ${tableColor}20` : undefined
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.5rem' }}>
-          {tableColor && (
-            <div style={{
-              width: '3px',
-              height: '14px',
-              borderRadius: '1.5px',
-              background: tableColor,
-              flexShrink: 0
-            }} />
-          )}
-          <h4
-            style={{
-              margin: 0,
-              fontSize: '0.75rem',
-              fontWeight: 600,
-              cursor: 'help',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              flexGrow: 1
-            }}
-            title={tooltipText}
-          >
-            {metadata?.display_name || title}
-          </h4>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              toggleViewPreference(tableName, field)
-            }}
-            style={{
-              border: 'none',
-              background: '#f0f0f0',
-              color: '#333',
-              borderRadius: '50%',
-              width: '20px',
-              height: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.7rem',
-              cursor: 'pointer',
-              lineHeight: 1,
-              flexShrink: 0
-            }}
-            title="Switch to chart view"
-          >
-            ◐
-          </button>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              toggleDashboard(tableName, field)
-            }}
-            style={{
-              border: 'none',
-              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
-              color: isOnDashboard(tableName, field) ? 'white' : '#333',
-              borderRadius: '50%',
-              width: '20px',
-              height: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.7rem',
-              cursor: 'pointer',
-              lineHeight: 1,
-              flexShrink: 0
-            }}
-            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
-          >
-            {isOnDashboard(tableName, field) ? '✓' : '+'}
-          </button>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              setActiveFilterMenu(prev =>
-                prev && prev.tableName === tableName && prev.columnName === field
-                  ? null
-                  : { tableName, columnName: field }
-              )
-            }}
-            style={{
-              border: 'none',
-              background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
-              color: menuOpen || columnActive ? 'white' : '#333',
-              borderRadius: '50%',
-              width: '20px',
-              height: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.75rem',
-              cursor: 'pointer',
-              lineHeight: 1,
-              flexShrink: 0
-            }}
-            title="Filter values"
-          >
-            ⚲
-          </button>
-        </div>
-
-        {/* Table */}
-        <div style={{
-          overflowY: 'auto',
-          flex: 1,
-          minHeight: 0,
-          fontSize: '0.75rem'
-        }}>
-          <table style={{
-            width: '100%',
-            borderCollapse: 'collapse',
+      <div style={containerStyle}>
+        {renderChartHeader({
+          title: metadata?.display_name || title,
+          tooltip: tooltipText,
+          countIndicator,
+          actions: actionButtons
+        })}
+        <div
+          style={{
+            overflowY: 'auto',
+            flex: 1,
+            minHeight: 0,
             fontSize: '0.75rem'
-          }}>
-            <thead style={{
-              position: 'sticky',
-              top: 0,
-              background: '#f5f5f5',
-              borderBottom: '2px solid #ddd'
-            }}>
+          }}
+        >
+          <table
+            style={{
+              width: '100%',
+              borderCollapse: 'collapse',
+              fontSize: '0.75rem'
+            }}
+          >
+            <thead
+              style={{
+                position: 'sticky',
+                top: 0,
+                background: '#f5f5f5',
+                borderBottom: '2px solid #ddd'
+              }}
+            >
               <tr>
-                <th style={{
-                  padding: '0.4rem 0.5rem',
-                  textAlign: 'left',
-                  fontWeight: 600
-                }}>
+                <th
+                  style={{
+                    padding: '0.4rem 0.5rem',
+                    textAlign: 'left',
+                    fontWeight: 600
+                  }}
+                >
                   Category
                 </th>
-                <th style={{
-                  padding: '0.4rem 0.5rem',
-                  textAlign: 'right',
-                  fontWeight: 600
-                }}>
+                <th
+                  style={{
+                    padding: '0.4rem 0.5rem',
+                    textAlign: 'right',
+                    fontWeight: 600
+                  }}
+                >
                   Count ↓
                 </th>
-                <th style={{
-                  padding: '0.4rem 0.5rem',
-                  textAlign: 'right',
-                  fontWeight: 600
-                }}>
+                <th
+                  style={{
+                    padding: '0.4rem 0.5rem',
+                    textAlign: 'right',
+                    fontWeight: 600
+                  }}
+                >
                   %
                 </th>
               </tr>
@@ -2509,30 +2991,32 @@ const renderNumericFilterMenu = (
             <tbody>
               {visibleData.map((row, idx) => {
                 const rawValue = normalizeFilterValue(row.rawValue)
-                const isFiltered = isValueFiltered(field, rawValue)
+                const isFiltered = isValueFiltered(field, rawValue, cacheKey)
                 return (
                   <tr
                     key={idx}
-                    onClick={() => toggleFilter(field, rawValue, tableName)}
+                    onClick={() => toggleFilter(field, rawValue, tableName, cacheKey)}
                     style={{
                       cursor: 'pointer',
                       background: isFiltered ? '#E3F2FD' : idx % 2 === 0 ? 'white' : '#fafafa',
                       borderLeft: isFiltered ? '3px solid #1976D2' : '3px solid transparent'
                     }}
-                    onMouseEnter={(e) => {
+                    onMouseEnter={e => {
                       if (!isFiltered) e.currentTarget.style.background = '#f0f0f0'
                     }}
-                    onMouseLeave={(e) => {
+                    onMouseLeave={e => {
                       if (!isFiltered) e.currentTarget.style.background = idx % 2 === 0 ? 'white' : '#fafafa'
                     }}
                   >
-                    <td style={{
-                      padding: '0.4rem 0.5rem',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                      maxWidth: '180px'
-                    }}>
+                    <td
+                      style={{
+                        padding: '0.4rem 0.5rem',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        maxWidth: '180px'
+                      }}
+                    >
                       {row.category}
                     </td>
                     <td style={{ padding: '0.4rem 0.5rem', textAlign: 'right' }}>
@@ -2552,14 +3036,170 @@ const renderNumericFilterMenu = (
             </div>
           )}
         </div>
-        {renderFilterMenu(tableName, field, categoriesForMenu)}
+        {renderFilterMenu(tableName, field, categoriesForMenu, cacheKey)}
       </div>
     )
   }
 
-  const renderPieChart = (title: string, tableName: string, field: string, tableColor?: string, aggregationOverride?: ColumnAggregation) => {
-    const aggregation = aggregationOverride ?? getAggregation(tableName, field)
-    if (!aggregation?.categories || aggregation.categories.length === 0) return null
+  const renderPieChart = (
+    title: string,
+    tableName: string,
+    field: string,
+    tableColor?: string,
+    aggregationOverride?: ColumnAggregation,
+    cacheKeyOverride?: string,
+    countIndicatorOverride?: React.ReactNode
+  ) => {
+    const cacheKey = cacheKeyOverride ?? getEffectiveCacheKeyForChart(tableName, field)
+    const aggregation =
+      aggregationOverride && (!cacheKeyOverride || cacheKeyOverride === cacheKey)
+        ? aggregationOverride
+        : getAggregation(tableName, field, cacheKey)
+
+    const metadata = getColumnMetadata(tableName, field)
+    const tableDisplayName = getTableDisplayNameByName(tableName) || tableName
+    const tooltipParts = [
+      metadata?.display_name || title,
+      `ID: ${field}`,
+      metadata?.description || '',
+      `Table: ${tableDisplayName}`
+    ]
+    if (aggregation) {
+      const pathLabel = formatMetricPath(aggregation)
+      if (pathLabel) tooltipParts.push(pathLabel)
+    }
+    const tooltipText = tooltipParts.filter(Boolean).join('\n')
+
+    const menuOpen =
+      activeFilterMenu?.tableName === tableName &&
+      activeFilterMenu.columnName === field &&
+      activeFilterMenu.countKey === cacheKey
+    const columnActive = hasColumnFilter(field, cacheKey)
+    const actionButtons = (
+      <>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            toggleViewPreference(tableName, field)
+          }}
+          style={{
+            border: 'none',
+            background: '#f0f0f0',
+            color: '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.7rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title="Switch to table view"
+        >
+          ⊞
+        </button>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            toggleDashboard(tableName, field)
+          }}
+          style={{
+            border: 'none',
+            background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+            color: isOnDashboard(tableName, field) ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.7rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title={isOnDashboard(tableName, field) ? 'Remove from dashboard' : 'Add to dashboard'}
+        >
+          {isOnDashboard(tableName, field) ? '✓' : '+'}
+        </button>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            setActiveFilterMenu(prev =>
+              prev && prev.tableName === tableName && prev.columnName === field && prev.countKey === cacheKey
+                ? null
+                : { tableName, columnName: field, countKey: cacheKey }
+            )
+          }}
+          style={{
+            border: 'none',
+            background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
+            color: menuOpen || columnActive ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.75rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title="Filter values"
+        >
+          ⚲
+        </button>
+      </>
+    )
+
+    const containerStyle: React.CSSProperties = {
+      position: 'relative',
+      background: 'white',
+      padding: '0.5rem',
+      borderRadius: '8px',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+      width: '175px',
+      minHeight: '175px',
+      boxSizing: 'border-box',
+      flexShrink: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      border: tableColor ? `2px solid ${tableColor}20` : undefined
+    }
+
+    const countIndicator = countIndicatorOverride ?? renderTableCountIndicator(tableName, field, cacheKey)
+
+    if (!aggregation || !aggregation.categories || aggregation.categories.length === 0) {
+      const message = aggregation ? 'No data for current filters' : 'Loading data…'
+      return (
+        <div style={containerStyle}>
+          {renderChartHeader({
+            title: metadata?.display_name || title,
+            tooltip: tooltipText,
+            countIndicator,
+            actions: actionButtons
+          })}
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#999',
+              fontSize: '0.75rem',
+              textAlign: 'center',
+              padding: '0.5rem'
+            }}
+          >
+            {message}
+          </div>
+        </div>
+      )
+    }
 
     const metricLabels = getMetricLabels(aggregation)
     const pathLabel = formatMetricPath(aggregation)
@@ -2568,26 +3208,11 @@ const renderNumericFilterMenu = (
     const filterValues = aggregation.categories.map(c => normalizeFilterValue(c.value))
     const shouldShowPiePercentages = showPercentageLabels
 
-    const metadata = getColumnMetadata(tableName, field)
-
-    const tooltipParts = [
-      metadata?.display_name || title,
-      `ID: ${field}`,
-      metadata?.description || ''
-    ]
-    if (pathLabel) {
-      tooltipParts.push(pathLabel)
-    }
-    const tooltipText = tooltipParts.filter(Boolean).join('\n')
-
     const baselineAggregation = getBaselineAggregation(tableName, field)
     const categoriesForMenu =
       metricsMatch(baselineAggregation, aggregation) && baselineAggregation?.categories?.length
         ? baselineAggregation.categories
         : aggregation.categories
-
-    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
-    const columnActive = hasColumnFilter(field)
 
     const totalCount = aggregation.total_rows ?? values.reduce((sum, val) => sum + val, 0)
     const percentTexts = values.map(val =>
@@ -2596,125 +3221,13 @@ const renderNumericFilterMenu = (
     const countTexts = values.map(val => val.toLocaleString())
 
     return (
-      <div style={{
-        position: 'relative',
-        background: 'white',
-        padding: '0.5rem',
-        borderRadius: '8px',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-        width: '175px',
-        minHeight: '175px',
-        boxSizing: 'border-box',
-        flexShrink: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        border: tableColor ? `2px solid ${tableColor}20` : undefined
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
-          {tableColor && (
-            <div style={{
-              width: '3px',
-              height: '14px',
-              borderRadius: '1.5px',
-              background: tableColor,
-              flexShrink: 0
-            }} />
-          )}
-          <h4
-            style={{
-              margin: 0,
-              fontSize: '0.75rem',
-              fontWeight: 600,
-              cursor: 'help',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              flexGrow: 1
-            }}
-            title={tooltipText}
-          >
-            {metadata?.display_name || title}
-          </h4>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              toggleViewPreference(tableName, field)
-            }}
-            style={{
-              border: 'none',
-              background: '#f0f0f0',
-              color: '#333',
-              borderRadius: '50%',
-              width: '20px',
-              height: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.7rem',
-              cursor: 'pointer',
-              lineHeight: 1,
-              flexShrink: 0
-            }}
-            title="Switch to table view"
-          >
-            ⊞
-          </button>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              toggleDashboard(tableName, field)
-            }}
-            style={{
-              border: 'none',
-              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
-              color: isOnDashboard(tableName, field) ? 'white' : '#333',
-              borderRadius: '50%',
-              width: '20px',
-              height: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.7rem',
-              cursor: 'pointer',
-              lineHeight: 1,
-              flexShrink: 0
-            }}
-            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
-          >
-            {isOnDashboard(tableName, field) ? '✓' : '+'}
-          </button>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              setActiveFilterMenu(prev =>
-                prev && prev.tableName === tableName && prev.columnName === field
-                  ? null
-                  : { tableName, columnName: field }
-              )
-            }}
-            style={{
-              border: 'none',
-              background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
-              color: menuOpen || columnActive ? 'white' : '#333',
-              borderRadius: '50%',
-              width: '20px',
-              height: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.75rem',
-              cursor: 'pointer',
-              lineHeight: 1,
-              flexShrink: 0
-            }}
-            title="Filter values"
-          >
-            ⚲
-          </button>
-        </div>
+      <div style={containerStyle}>
+        {renderChartHeader({
+          title: metadata?.display_name || title,
+          tooltip: tooltipText,
+          countIndicator,
+          actions: actionButtons
+        })}
         <Plot
           data={[{
             type: 'pie',
@@ -2724,14 +3237,14 @@ const renderNumericFilterMenu = (
             insidetextorientation: 'radial',
             marker: {
               colors: filterValues.map(value =>
-                isValueFiltered(field, value) ? '#1976D2' : undefined
+                isValueFiltered(field, value, cacheKey) ? '#1976D2' : undefined
               ),
               line: {
                 color: filterValues.map(value =>
-                  isValueFiltered(field, value) ? '#000' : undefined
+                  isValueFiltered(field, value, cacheKey) ? '#000' : undefined
                 ),
                 width: filterValues.map(value =>
-                  isValueFiltered(field, value) ? 2 : 0
+                  isValueFiltered(field, value, cacheKey) ? 2 : 0
                 )
               }
             },
@@ -2741,7 +3254,7 @@ const renderNumericFilterMenu = (
               .join('<br>')}<extra></extra>`,
             customdata: percentTexts,
             textinfo: shouldShowPiePercentages ? 'label+text' : 'label+value',
-            text: shouldShowPiePercentages ? percentTexts : countTexts,
+            text: shouldShowPiePercentages ? percentTexts : countTexts
           }]}
           layout={{
             height: 135,
@@ -2764,168 +3277,200 @@ const renderNumericFilterMenu = (
             const index = point.pointNumber ?? point.pointIndex
             if (typeof index === 'number' && index >= 0 && index < filterValues.length) {
               const clickedValue = filterValues[index]
-              toggleFilter(field, clickedValue, tableName)
+              toggleFilter(field, clickedValue, tableName, cacheKey)
             }
           }}
         />
-        {renderFilterMenu(tableName, field, categoriesForMenu)}
+        {renderFilterMenu(tableName, field, categoriesForMenu, cacheKey)}
       </div>
     )
   }
 
-  const renderBarChart = (title: string, tableName: string, field: string, tableColor?: string, aggregationOverride?: ColumnAggregation) => {
-    const aggregation = aggregationOverride ?? getAggregation(tableName, field)
-    if (!aggregation?.categories || aggregation.categories.length === 0) return null
-
-    const metricLabels = getMetricLabels(aggregation)
-    const labels = aggregation.categories.map(c => c.display_value ?? (c.value === '' ? '(Empty)' : String(c.value)))
-    const values = aggregation.categories.map(c => c.count)
-    const filterValues = aggregation.categories.map(c => normalizeFilterValue(c.value))
+  const renderBarChart = (
+    title: string,
+    tableName: string,
+    field: string,
+    tableColor?: string,
+    aggregationOverride?: ColumnAggregation,
+    cacheKeyOverride?: string,
+    countIndicatorOverride?: React.ReactNode
+  ) => {
+    const cacheKey = cacheKeyOverride ?? getEffectiveCacheKeyForChart(tableName, field)
+    const aggregation =
+      aggregationOverride && (!cacheKeyOverride || cacheKeyOverride === cacheKey)
+        ? aggregationOverride
+        : getAggregation(tableName, field, cacheKey)
 
     const metadata = getColumnMetadata(tableName, field)
-
+    const tableDisplayName = getTableDisplayNameByName(tableName) || tableName
     const tooltipParts = [
       metadata?.display_name || title,
       `ID: ${field}`,
-      metadata?.description || ''
+      metadata?.description || '',
+      `Table: ${tableDisplayName}`
     ]
-    if (pathLabel) {
-      tooltipParts.push(pathLabel)
+    if (aggregation) {
+      const pathLabel = formatMetricPath(aggregation)
+      if (pathLabel) tooltipParts.push(pathLabel)
     }
     const tooltipText = tooltipParts.filter(Boolean).join('\n')
+
+    const menuOpen =
+      activeFilterMenu?.tableName === tableName &&
+      activeFilterMenu.columnName === field &&
+      activeFilterMenu.countKey === cacheKey
+    const columnActive = hasColumnFilter(field, cacheKey)
+
+    const actionButtons = (
+      <>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            toggleViewPreference(tableName, field)
+          }}
+          style={{
+            border: 'none',
+            background: '#f0f0f0',
+            color: '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.7rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title="Switch to table view"
+        >
+          ⊞
+        </button>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            toggleDashboard(tableName, field)
+          }}
+          style={{
+            border: 'none',
+            background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+            color: isOnDashboard(tableName, field) ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.7rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title={isOnDashboard(tableName, field) ? 'Remove from dashboard' : 'Add to dashboard'}
+        >
+          {isOnDashboard(tableName, field) ? '✓' : '+'}
+        </button>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            setActiveFilterMenu(prev =>
+              prev && prev.tableName === tableName && prev.columnName === field && prev.countKey === cacheKey
+                ? null
+                : { tableName, columnName: field, countKey: cacheKey }
+            )
+          }}
+          style={{
+            border: 'none',
+            background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
+            color: menuOpen || columnActive ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.75rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title="Filter values"
+        >
+          ⚲
+        </button>
+      </>
+    )
+
+    const containerStyle: React.CSSProperties = {
+      position: 'relative',
+      background: 'white',
+      padding: '0.5rem',
+      borderRadius: '8px',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+      width: '358px',
+      minHeight: '175px',
+      boxSizing: 'border-box',
+      flexShrink: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      border: tableColor ? `2px solid ${tableColor}20` : undefined
+    }
+
+    const countIndicator = countIndicatorOverride ?? renderTableCountIndicator(tableName, field, cacheKey)
+
+    if (!aggregation || !aggregation.categories || aggregation.categories.length === 0) {
+      const message = aggregation ? 'No data for current filters' : 'Loading data…'
+      return (
+        <div style={containerStyle}>
+          {renderChartHeader({
+            title: metadata?.display_name || title,
+            tooltip: tooltipText,
+            countIndicator,
+            actions: actionButtons
+          })}
+          <div
+            style={{
+              flex: 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#999',
+              fontSize: '0.75rem',
+              textAlign: 'center',
+              padding: '0.5rem'
+            }}
+          >
+            {message}
+          </div>
+        </div>
+      )
+    }
+
+    const metricLabels = getMetricLabels(aggregation)
+    const pathLabel = formatMetricPath(aggregation)
+    const labels = aggregation.categories.map(c => c.display_value ?? (c.value === '' ? '(Empty)' : String(c.value)))
+    const values = aggregation.categories.map(c => c.count)
+    const filterValues = aggregation.categories.map(c => normalizeFilterValue(c.value))
+    const totalCount = aggregation.total_rows ?? values.reduce((sum, val) => sum + val, 0)
+    const percentTexts = values.map(val =>
+      totalCount > 0 ? `${((val / totalCount) * 100).toFixed(1)}%` : '0%'
+    )
 
     const baselineAggregation = getBaselineAggregation(tableName, field)
     const categoriesForMenu =
       metricsMatch(baselineAggregation, aggregation) && baselineAggregation?.categories?.length
         ? baselineAggregation.categories
         : aggregation.categories
-    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
-    const columnActive = hasColumnFilter(field)
-    const totalCount = aggregation.total_rows ?? values.reduce((sum, val) => sum + val, 0)
-    const percentTexts = values.map(val =>
-      totalCount > 0 ? `${((val / totalCount) * 100).toFixed(1)}%` : '0%'
-    )
 
     return (
-      <div style={{
-        position: 'relative',
-        background: 'white',
-        padding: '0.5rem',
-        borderRadius: '8px',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-        width: '358px',
-        minHeight: '175px',
-        boxSizing: 'border-box',
-        flexShrink: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        border: tableColor ? `2px solid ${tableColor}20` : undefined
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
-          {tableColor && (
-            <div style={{
-              width: '3px',
-              height: '14px',
-              borderRadius: '1.5px',
-              background: tableColor,
-              flexShrink: 0
-            }} />
-          )}
-          <h4
-            style={{
-              margin: 0,
-              fontSize: '0.75rem',
-              fontWeight: 600,
-              cursor: 'help',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              flexGrow: 1
-            }}
-            title={tooltipText}
-          >
-            {metadata?.display_name || title}
-          </h4>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              toggleViewPreference(tableName, field)
-            }}
-            style={{
-              border: 'none',
-              background: '#f0f0f0',
-              color: '#333',
-              borderRadius: '50%',
-              width: '20px',
-              height: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.7rem',
-              cursor: 'pointer',
-              lineHeight: 1,
-              flexShrink: 0
-            }}
-            title="Switch to table view"
-          >
-            ⊞
-          </button>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              toggleDashboard(tableName, field)
-            }}
-            style={{
-              border: 'none',
-              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
-              color: isOnDashboard(tableName, field) ? 'white' : '#333',
-              borderRadius: '50%',
-              width: '20px',
-              height: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.7rem',
-              cursor: 'pointer',
-              lineHeight: 1,
-              flexShrink: 0
-            }}
-            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
-          >
-            {isOnDashboard(tableName, field) ? '✓' : '+'}
-          </button>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              setActiveFilterMenu(prev =>
-                prev && prev.tableName === tableName && prev.columnName === field
-                  ? null
-                  : { tableName, columnName: field }
-              )
-            }}
-            style={{
-              border: 'none',
-              background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
-              color: menuOpen || columnActive ? 'white' : '#333',
-              borderRadius: '50%',
-              width: '20px',
-              height: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.75rem',
-              cursor: 'pointer',
-              lineHeight: 1,
-              flexShrink: 0
-            }}
-            title="Filter values"
-          >
-            ⚲
-          </button>
-        </div>
+      <div style={containerStyle}>
+        {renderChartHeader({
+          title: metadata?.display_name || title,
+          tooltip: tooltipText,
+          countIndicator,
+          actions: actionButtons
+        })}
         <Plot
           data={[{
             type: 'bar',
@@ -2933,14 +3478,14 @@ const renderNumericFilterMenu = (
             y: values,
             marker: {
               color: filterValues.map(value =>
-                isValueFiltered(field, value) ? '#1976D2' : '#2196F3'
+                isValueFiltered(field, value, cacheKey) ? '#1976D2' : '#2196F3'
               ),
               line: {
                 color: filterValues.map(value =>
-                  isValueFiltered(field, value) ? '#000' : undefined
+                  isValueFiltered(field, value, cacheKey) ? '#000' : undefined
                 ),
                 width: filterValues.map(value =>
-                  isValueFiltered(field, value) ? 2 : 0
+                  isValueFiltered(field, value, cacheKey) ? 2 : 0
                 )
               }
             },
@@ -2974,7 +3519,7 @@ const renderNumericFilterMenu = (
             const pointIndex = point.pointIndex
             if (typeof pointIndex === 'number' && pointIndex >= 0 && pointIndex < filterValues.length) {
               const clickedValue = filterValues[pointIndex]
-              toggleFilter(field, clickedValue, tableName)
+              toggleFilter(field, clickedValue, tableName, cacheKey)
             }
           }}
           onSelected={(event: PlotSelectionEvent) => {
@@ -2986,27 +3531,40 @@ const renderNumericFilterMenu = (
 
             if (selectedValues.length > 0) {
               setFilters(prev => [
-                ...prev.filter(f => f.column !== field),
-                { column: field, operator: 'in', value: selectedValues, tableName } as any
+                ...removeColumnFilters(prev, field, cacheKey),
+                { column: field, operator: 'in', value: selectedValues, tableName, countByKey: cacheKey }
               ])
             }
           }}
         />
-        {renderFilterMenu(tableName, field, categoriesForMenu)}
+        {renderFilterMenu(tableName, field, categoriesForMenu, cacheKey)}
       </div>
     )
   }
 
-  const renderHistogram = (title: string, tableName: string, field: string, tableColor?: string, aggregationOverride?: ColumnAggregation) => {
-    const aggregation = aggregationOverride ?? getAggregation(tableName, field)
+  const renderHistogram = (
+    title: string,
+    tableName: string,
+    field: string,
+    tableColor?: string,
+    aggregationOverride?: ColumnAggregation,
+    cacheKeyOverride?: string,
+    countIndicatorOverride?: React.ReactNode
+  ) => {
+    const cacheKey = cacheKeyOverride ?? getEffectiveCacheKeyForChart(tableName, field)
+    const aggregation =
+      aggregationOverride && (!cacheKeyOverride || cacheKeyOverride === cacheKey)
+        ? aggregationOverride
+        : getAggregation(tableName, field, cacheKey)
     if (!aggregation?.numeric_stats) return null
 
-    const metricLabels = getMetricLabels(aggregation)
-    const pathLabel = formatMetricPath(aggregation)
     const rawHistogram = aggregation.histogram ?? []
     if (rawHistogram.length === 0) return null
 
+    const metricLabels = getMetricLabels(aggregation)
+    const pathLabel = formatMetricPath(aggregation)
     const metadata = getColumnMetadata(tableName, field)
+    const tableDisplayName = getTableDisplayNameByName(tableName) || tableName
 
     const statsText = [
       `Mean: ${aggregation.numeric_stats.mean !== null ? aggregation.numeric_stats.mean.toFixed(2) : 'N/A'}`,
@@ -3017,11 +3575,10 @@ const renderNumericFilterMenu = (
     const tooltipParts = [
       metadata?.display_name || title,
       `ID: ${field}`,
-      metadata?.description || ''
+      metadata?.description || '',
+      `Table: ${tableDisplayName}`
     ]
-    if (pathLabel) {
-      tooltipParts.push(pathLabel)
-    }
+    if (pathLabel) tooltipParts.push(pathLabel)
     tooltipParts.push('', statsText)
     const tooltipText = tooltipParts.filter(Boolean).join('\n')
 
@@ -3033,51 +3590,93 @@ const renderNumericFilterMenu = (
     const menuStats = histogramMatches && baselineAggregation?.numeric_stats
       ? baselineAggregation.numeric_stats
       : aggregation.numeric_stats
-    const menuOpen = activeFilterMenu?.tableName === tableName && activeFilterMenu.columnName === field
-    const columnActive = hasColumnFilter(field)
+
+    const menuOpen =
+      activeFilterMenu?.tableName === tableName &&
+      activeFilterMenu.columnName === field &&
+      activeFilterMenu.countKey === cacheKey
+    const columnActive = hasColumnFilter(field, cacheKey)
+
+    const actionButtons = (
+      <>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            toggleDashboard(tableName, field)
+          }}
+          style={{
+            border: 'none',
+            background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+            color: isOnDashboard(tableName, field) ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.7rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title={isOnDashboard(tableName, field) ? 'Remove from dashboard' : 'Add to dashboard'}
+        >
+          {isOnDashboard(tableName, field) ? '✓' : '+'}
+        </button>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            setActiveFilterMenu(prev =>
+              prev && prev.tableName === tableName && prev.columnName === field && prev.countKey === cacheKey
+                ? null
+                : { tableName, columnName: field, countKey: cacheKey }
+            )
+          }}
+          style={{
+            border: 'none',
+            background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
+            color: menuOpen || columnActive ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.75rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title="Filter values"
+        >
+          ⚲
+        </button>
+      </>
+    )
 
     const displayHistogram = getDisplayHistogram(menuHistogram, menuStats)
     const binsForPlot = displayHistogram.length > 0 ? displayHistogram : menuHistogram
 
-    // Convert histogram bins to bar chart data
-    // Use baseline bins for x-axis, but filtered counts for y-axis
     const xValues = binsForPlot.map(bin => (bin.bin_start + bin.bin_end) / 2)
-
-    // Map filtered counts to baseline bins by checking overlap
-    // Since filtered bins have different boundaries, we need to accumulate counts
-    // for filtered bins that overlap with each baseline bin
     const yValues = binsForPlot.map(baselineBin => {
       let totalCount = 0
-
-      // Sum up counts from all filtered bins that overlap with this baseline bin
       rawHistogram.forEach(filteredBin => {
-        // Check if there's any overlap between baseline and filtered bin
         const overlapStart = Math.max(baselineBin.bin_start, filteredBin.bin_start)
         const overlapEnd = Math.min(baselineBin.bin_end, filteredBin.bin_end)
-
         if (overlapStart < overlapEnd) {
-          // There's overlap - calculate what fraction of the filtered bin overlaps
           const filteredBinWidth = filteredBin.bin_end - filteredBin.bin_start
           const overlapWidth = overlapEnd - overlapStart
           const overlapFraction = overlapWidth / filteredBinWidth
-
-          // Add proportional count
           totalCount += filteredBin.count * overlapFraction
         }
       })
-
       return totalCount
     })
     const totalMetricCount = aggregation.total_rows ?? rawHistogram.reduce((sum, bin) => sum + bin.count, 0)
     const sumY = yValues.reduce((sum, val) => sum + val, 0)
-    // Rebinning can inflate totals when filtered bins overlap multiple baseline buckets.
-    // Scale the rebinned values down to the metric total so percentages stay ≤ 100%.
     const scalingFactor = sumY > 0 && totalMetricCount > 0 ? totalMetricCount / sumY : 1
-    const adjustedYValues = scalingFactor < 1
-      ? yValues.map(val => val * scalingFactor)
-      : yValues
+    const adjustedYValues = scalingFactor < 1 ? yValues.map(val => val * scalingFactor) : yValues
     const roundedYValues = adjustedYValues.map(val => Math.max(0, val))
-
     const binWidth = binsForPlot[0] ? binsForPlot[0].bin_end - binsForPlot[0].bin_start : 1
     const totalCount = totalMetricCount > 0 ? totalMetricCount : roundedYValues.reduce((sum, val) => sum + val, 0)
     const percentTexts = roundedYValues.map(val =>
@@ -3087,117 +3686,47 @@ const renderNumericFilterMenu = (
       val >= 1000 ? Math.round(val).toLocaleString() : Math.round(val).toString()
     )
 
+    const containerStyle: React.CSSProperties = {
+      position: 'relative',
+      background: 'white',
+      padding: '0.5rem',
+      borderRadius: '8px',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+      width: '358px',
+      minHeight: '175px',
+      boxSizing: 'border-box',
+      flexShrink: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      border: tableColor ? `2px solid ${tableColor}20` : undefined
+    }
+
+    const countIndicator = countIndicatorOverride ?? renderTableCountIndicator(tableName, field, cacheKey)
+
     return (
-      <div style={{
-        position: 'relative',
-        background: 'white',
-        padding: '0.5rem',
-        borderRadius: '8px',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-        width: '358px',
-        minHeight: '175px',
-        boxSizing: 'border-box',
-        flexShrink: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        border: tableColor ? `2px solid ${tableColor}20` : undefined
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.25rem' }}>
-          {tableColor && (
-            <div style={{
-              width: '3px',
-              height: '14px',
-              borderRadius: '1.5px',
-              background: tableColor,
-              flexShrink: 0
-            }} />
-          )}
-          <h4
-            style={{
-              margin: 0,
-              fontSize: '0.75rem',
-              fontWeight: 600,
-              cursor: 'help',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-              flexGrow: 1
-            }}
-            title={tooltipText}
-          >
-            {metadata?.display_name || title}
-          </h4>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              toggleDashboard(tableName, field)
-            }}
-            style={{
-              border: 'none',
-              background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
-              color: isOnDashboard(tableName, field) ? 'white' : '#333',
-              borderRadius: '50%',
-              width: '20px',
-              height: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.7rem',
-              cursor: 'pointer',
-              lineHeight: 1,
-              flexShrink: 0
-            }}
-            title={isOnDashboard(tableName, field) ? "Remove from dashboard" : "Add to dashboard"}
-          >
-            {isOnDashboard(tableName, field) ? '✓' : '+'}
-          </button>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              setActiveFilterMenu(prev =>
-                prev && prev.tableName === tableName && prev.columnName === field
-                  ? null
-                  : { tableName, columnName: field }
-              )
-            }}
-            style={{
-              border: 'none',
-              background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
-              color: menuOpen || columnActive ? 'white' : '#333',
-              borderRadius: '50%',
-              width: '20px',
-              height: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '0.75rem',
-              cursor: 'pointer',
-              lineHeight: 1,
-              flexShrink: 0
-            }}
-            title="Filter values"
-          >
-            ⚲
-          </button>
-        </div>
+      <div style={containerStyle}>
+        {renderChartHeader({
+          title: metadata?.display_name || title,
+          tooltip: tooltipText,
+          countIndicator,
+          actions: actionButtons
+        })}
         <Plot
           data={[{
             type: 'bar',
             x: xValues,
-            y: yValues,
+            y: roundedYValues,
             width: binWidth * 0.9,
             marker: {
               color: binsForPlot.map(bin =>
-                isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end) ? '#2E7D32' : '#4CAF50'
+                isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end, cacheKey) ? '#2E7D32' : '#4CAF50'
               ),
               line: {
                 color: binsForPlot.map(bin =>
-                  isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end) ? '#000' : undefined
+                  isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end, cacheKey) ? '#000' : undefined
                 ),
                 width: binsForPlot.map(bin =>
-                  isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end) ? 2 : 0
+                  isRangeFiltered(tableName, field, bin.bin_start, bin.bin_end, cacheKey) ? 2 : 0
                 )
               }
             },
@@ -3233,27 +3762,25 @@ const renderNumericFilterMenu = (
           onClick={(event: PlotMouseEvent) => {
             const point = event.points?.[0]
             if (!point) return
-
             const pointIndex = point.pointIndex
             if (typeof pointIndex === 'number' && pointIndex >= 0 && pointIndex < binsForPlot.length) {
               const bin = binsForPlot[pointIndex]
-              toggleRangeFilter(tableName, field, bin.bin_start, bin.bin_end)
+              toggleRangeFilter(tableName, field, bin.bin_start, bin.bin_end, cacheKey)
             }
           }}
           onSelected={(event: PlotSelectionEvent) => {
             const rangeX = event?.range?.x
             if (!rangeX || rangeX.length < 2) return
-
             const [minX, maxX] = rangeX
             updateColumnRanges(tableName, field, prev => {
               const nextRange = { start: minX, end: maxX }
               const existingIndex = prev.findIndex(range => rangesEqual(range, nextRange))
               if (existingIndex >= 0) return prev
               return [...prev, nextRange]
-            })
+            }, cacheKey)
           }}
         />
-        {renderNumericFilterMenu(tableName, field, displayHistogram, menuStats)}
+        {renderNumericFilterMenu(tableName, field, displayHistogram, menuStats, cacheKey)}
       </div>
     )
   }
@@ -3489,12 +4016,12 @@ const renderNumericFilterMenu = (
           </div>
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
             {filters.map((filter, idx) => {
-              // Check if this filter is wrapped with NOT
-              const isNot = !!(filter as any).not
-              const actualFilter = isNot ? (filter as any).not : filter
+              const actualFilter = unwrapNot(filter)
+              if (!actualFilter) return null
+              const isNot = !!filter.not
 
               const columnName = getFilterColumn(actualFilter)
-              const tableName = getFilterTableName(actualFilter)
+              const tableName = getFilterTableNameForCacheKey(actualFilter)
               const tableColor = tableName ? getTableColor(tableName) : '#9E9E9E'
               const table = dataset?.tables.find(t => t.name === tableName)
 
@@ -3504,7 +4031,7 @@ const renderNumericFilterMenu = (
               // Remove handler - uses actualFilter's column/table regardless of NOT wrapper
               const removeHandler = () => {
                 if (tableName && columnName) {
-                  clearColumnFilter(tableName, columnName)
+                  clearColumnFilter(tableName, columnName, getFilterCountKey(filter))
                 } else {
                   setFilters(filters.filter((_, i) => i !== idx))
                 }
@@ -3519,7 +4046,7 @@ const renderNumericFilterMenu = (
                     updated[idx] = actualFilter
                   } else {
                     // Add NOT wrapper
-                    updated[idx] = { not: actualFilter } as any
+                    updated[idx] = { not: actualFilter }
                   }
                   return updated
                 })
@@ -4541,7 +5068,7 @@ const renderNumericFilterMenu = (
                 gap: '0.5rem',
                 gridAutoFlow: 'dense'
               }}>
-                {dashboardCharts.map(chart => {
+                {dashboardCharts.map((chart, chartIndex) => {
                   const { tableName, columnName, countByTarget } = chart
                   const overrideKey = countByTarget ? `parent:${countByTarget}` : ROW_COUNT_KEY
                   const cardKey = getDashboardChartKey(chart)
@@ -4549,29 +5076,8 @@ const renderNumericFilterMenu = (
                   const aggregation = getAggregation(tableName, columnName, overrideKey)
                   const tableColor = getTableColor(tableName)
                   const displayTitle = getDisplayTitle(tableName, columnName)
-                  const countLabel = getCountByLabelFromTarget(tableName, countByTarget ?? null)
                   const table = dataset.tables.find(t => t.name === tableName)
-
-                  const renderDashboardHeader = (aggr?: ColumnAggregation) => (
-                    <div style={{
-                      fontSize: '0.65rem',
-                      color: '#777',
-                      marginBottom: '0.15rem',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.35rem',
-                      flexWrap: 'wrap'
-                    }}>
-                      <div style={{
-                        width: '4px',
-                        height: '14px',
-                        borderRadius: '2px',
-                        background: tableColor,
-                        opacity: aggr ? 1 : 0.4
-                      }} />
-                      <span>{countLabel}</span>
-                    </div>
-                  )
+                  const indicatorNode = renderDashboardCountIndicator(chartIndex, tableName, columnName, overrideKey)
 
                   if (!aggregation) {
                     return (
@@ -4593,7 +5099,11 @@ const renderNumericFilterMenu = (
                           border: tableColor ? `2px solid ${tableColor}15` : undefined
                         }}
                       >
-                        {renderDashboardHeader()}
+                        {renderChartHeader({
+                          title: displayTitle,
+                          tooltip: `${displayTitle} is loading…`,
+                          countIndicator: indicatorNode
+                        })}
                         <div style={{ fontSize: '0.8rem', color: '#999', textAlign: 'center' }}>
                           Loading {displayTitle}…
                         </div>
@@ -4614,8 +5124,15 @@ const renderNumericFilterMenu = (
                           data-dashboard-key={cardKey}
                           style={{ gridColumn: 'span 2', gridRow: 'span 2' }}
                         >
-                        {renderDashboardHeader(aggregation)}
-                          {renderTableView(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
+                          {renderTableView(
+                            displayTitle,
+                            tableName,
+                            columnName,
+                            tableColor,
+                            aggregation,
+                            overrideKey,
+                            indicatorNode
+                          )}
                         </div>
                       )
                     }
@@ -4623,23 +5140,44 @@ const renderNumericFilterMenu = (
                     if (allowPie) {
                       return (
                         <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey}>
-                        {renderDashboardHeader(aggregation)}
-                          {renderPieChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
+                          {renderPieChart(
+                            displayTitle,
+                            tableName,
+                            columnName,
+                            tableColor,
+                            aggregation,
+                            overrideKey,
+                            indicatorNode
+                          )}
                         </div>
                       )
                     }
 
                     return (
                       <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
-                        {renderDashboardHeader(aggregation)}
-                        {renderBarChart(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
+                        {renderBarChart(
+                          displayTitle,
+                          tableName,
+                          columnName,
+                          tableColor,
+                          aggregation,
+                          overrideKey,
+                          indicatorNode
+                        )}
                       </div>
                     )
                   } else if (aggregation.display_type === 'numeric' && aggregation.histogram) {
                     return (
                       <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
-                        {renderDashboardHeader(aggregation)}
-                        {renderHistogram(`${table?.displayName || tableName} - ${displayTitle}`, tableName, columnName, tableColor, aggregation)}
+                        {renderHistogram(
+                          displayTitle,
+                          tableName,
+                          columnName,
+                          tableColor,
+                          aggregation,
+                          overrideKey,
+                          indicatorNode
+                        )}
                       </div>
                     )
                   }
@@ -4714,6 +5252,7 @@ const renderNumericFilterMenu = (
         const metricLabels = getMetricLabels(primaryAggregation)
         const parentOptions = ancestorOptions[table.name] || []
         const countByValue = getCountByValueForTable(table.name)
+        const countOptions = getCountByOptions(table.name)
 
         return (
           <div key={table.name} style={{ marginBottom: '2.5rem' }}>
@@ -4783,6 +5322,7 @@ const renderNumericFilterMenu = (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%' }}>
                       <label style={{ fontSize: '0.7rem', color: '#555', fontWeight: 600 }}>Count by</label>
                       <select
+                        aria-label={`Count by for ${table.displayName || table.name}`}
                         value={countByValue}
                         onChange={(event) => handleCountByChange(table.name, event.target.value)}
                         style={{
@@ -4794,9 +5334,8 @@ const renderNumericFilterMenu = (
                           color: '#333'
                         }}
                       >
-                        <option value="rows">Rows ({table.displayName || table.name})</option>
-                        {parentOptions.map(option => (
-                          <option key={option.key} value={option.key}>{option.label}</option>
+                        {countOptions.map(option => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
                         ))}
                       </select>
                     </div>
@@ -4890,6 +5429,9 @@ const renderNumericFilterMenu = (
             }}>
               {visibleAggregations.map(agg => {
                 const displayTitle = getDisplayTitle(table.name, agg.column_name)
+                const cacheKey = getEffectiveCacheKeyForChart(table.name, agg.column_name)
+                const defaultKey = getCountByCacheKey(table.name)
+                const aggregationForChart = cacheKey === defaultKey ? agg : undefined
 
                 if (agg.display_type === 'categorical' && agg.categories) {
                   const categoryCount = agg.categories.length
@@ -4899,7 +5441,7 @@ const renderNumericFilterMenu = (
                   if (viewPref === 'table') {
                     return (
                       <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2', gridRow: 'span 2' }}>
-                        {renderTableView(displayTitle, table.name, agg.column_name, tableColor)}
+                        {renderTableView(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
                       </div>
                     )
                   }
@@ -4907,20 +5449,20 @@ const renderNumericFilterMenu = (
                   if (allowPie) {
                     return (
                       <div key={`${table.name}_${agg.column_name}`}>
-                        {renderPieChart(displayTitle, table.name, agg.column_name, tableColor)}
+                        {renderPieChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
                       </div>
                     )
                   }
 
                   return (
                     <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2' }}>
-                      {renderBarChart(displayTitle, table.name, agg.column_name, tableColor)}
+                      {renderBarChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
                     </div>
                   )
                 } else if (agg.display_type === 'numeric' && agg.histogram) {
                   return (
                     <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2' }}>
-                      {renderHistogram(displayTitle, table.name, agg.column_name, tableColor)}
+                      {renderHistogram(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
                     </div>
                   )
                 }
