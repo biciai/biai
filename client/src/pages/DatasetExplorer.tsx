@@ -1534,28 +1534,44 @@ function DatasetExplorer() {
   ]
 
   const getCountIndicatorColor = (tableName: string, cacheKey: string): string => {
+    // Color bar represents the data source table
+    return getTableColor(tableName)
+  }
+
+  const getCountByTableColor = (tableName: string, cacheKey: string): string | null => {
+    // Border color represents the count-by table (when different from data source)
     const target = targetFromCacheKey(cacheKey)
-    return getTableColor(target ?? tableName)
+    return target ? getTableColor(target) : null
   }
 
   const renderCountIndicator = ({
     menuKey,
     indicatorColor,
+    borderColor,
     label,
     options,
     currentValue,
     onSelect,
-    buttonLabel
+    buttonLabel,
+    size = 'default'
   }: {
     menuKey: string
     indicatorColor: string
+    borderColor?: string | null
     label: string
     options: Array<{ value: string; label: string }>
     currentValue: string
     onSelect: (value: string) => void
     buttonLabel: string
+    size?: 'default' | 'large'
   }) => {
     const isOpen = activeCountMenuKey === menuKey
+    const hasBorder = borderColor && borderColor !== indicatorColor
+
+    // Size variants
+    const dimensions = size === 'large'
+      ? { width: hasBorder ? '16px' : '12px', height: '40px' }
+      : { width: hasBorder ? '14px' : '10px', height: '22px' }
 
     return (
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
@@ -1568,10 +1584,10 @@ function DatasetExplorer() {
             setActiveCountMenuKey(prev => (prev === menuKey ? null : menuKey))
           }}
           style={{
-            width: '10px',
-            height: '22px',
+            width: dimensions.width,
+            height: dimensions.height,
             borderRadius: '4px',
-            border: 'none',
+            border: hasBorder ? `2px solid ${borderColor}` : 'none',
             background: indicatorColor,
             cursor: 'pointer',
             padding: 0
@@ -1629,12 +1645,14 @@ function DatasetExplorer() {
 
   const renderTableCountIndicator = (tableName: string, columnName: string, cacheKey: string) => {
     const indicatorColor = getCountIndicatorColor(tableName, cacheKey)
+    const borderColor = getCountByTableColor(tableName, cacheKey)
     const label = getCountByLabelFromCacheKey(tableName, cacheKey)
     const options = getCountByOptions(tableName)
     const currentValue = cacheKey
     return renderCountIndicator({
       menuKey: `${TABLE_SCOPE_KEY}:${tableName}.${columnName}`,
       indicatorColor,
+      borderColor,
       label,
       options,
       currentValue,
@@ -1650,16 +1668,36 @@ function DatasetExplorer() {
     cacheKey: string
   ) => {
     const indicatorColor = getCountIndicatorColor(tableName, cacheKey)
+    const borderColor = getCountByTableColor(tableName, cacheKey)
     const label = getCountByLabelFromCacheKey(tableName, cacheKey)
     const options = getCountByOptions(tableName)
     return renderCountIndicator({
       menuKey: `${DASHBOARD_SCOPE_KEY}:${chartIndex}`,
       indicatorColor,
+      borderColor,
       label,
       options,
       currentValue: cacheKey,
       buttonLabel: `Change count-by for dashboard chart ${tableName}.${columnName}`,
       onSelect: value => handleDashboardChartCountChange(chartIndex, tableName, value)
+    })
+  }
+
+  const renderTabCountIndicator = (tableName: string, cacheKey: string) => {
+    const indicatorColor = getCountIndicatorColor(tableName, cacheKey)
+    const borderColor = getCountByTableColor(tableName, cacheKey)
+    const label = getCountByLabelFromCacheKey(tableName, cacheKey)
+    const options = getCountByOptions(tableName)
+    return renderCountIndicator({
+      menuKey: `tab:${tableName}`,
+      indicatorColor,
+      borderColor,
+      label,
+      options,
+      currentValue: cacheKey,
+      buttonLabel: `Change count-by for ${tableName}`,
+      onSelect: value => handleCountByChange(tableName, value),
+      size: 'large'
     })
   }
 
@@ -5269,13 +5307,15 @@ const renderNumericFilterMenu = (
               gap: '1rem'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <div style={{
-                  background: tableColor,
-                  color: 'white',
-                  width: '8px',
-                  height: '40px',
-                  borderRadius: '4px'
-                }} />
+                {parentOptions.length > 0 ? renderTabCountIndicator(table.name, countByValue) : (
+                  <div style={{
+                    background: tableColor,
+                    color: 'white',
+                    width: '8px',
+                    height: '40px',
+                    borderRadius: '4px'
+                  }} />
+                )}
                 <div>
                   <h3 style={{
                     margin: 0,
@@ -5317,37 +5357,6 @@ const renderNumericFilterMenu = (
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                {parentOptions.length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.25rem', minWidth: '210px' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', width: '100%' }}>
-                      <label style={{ fontSize: '0.7rem', color: '#555', fontWeight: 600 }}>Count by</label>
-                      <select
-                        aria-label={`Count by for ${table.displayName || table.name}`}
-                        value={countByValue}
-                        onChange={(event) => handleCountByChange(table.name, event.target.value)}
-                        style={{
-                          padding: '0.3rem 0.5rem',
-                          borderRadius: '4px',
-                          border: '1px solid #ccc',
-                          fontSize: '0.75rem',
-                          background: 'white',
-                          color: '#333'
-                        }}
-                      >
-                        {countOptions.map(option => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div style={{ fontSize: '0.7rem', color: '#555' }}>
-                      Counting <strong>{metricLabels.long}</strong>: {tableRowCount.toLocaleString()}
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ fontSize: '0.7rem', color: '#555' }}>
-                    Counting <strong>{metricLabels.long}</strong>: {tableRowCount.toLocaleString()}
-                  </div>
-                )}
                 {/* Filter badges */}
                 {directFilterCount > 0 && (
                   <div
