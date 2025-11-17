@@ -1534,13 +1534,20 @@ function DatasetExplorer() {
   ]
 
   const getCountIndicatorColor = (tableName: string, cacheKey: string): string => {
+    // Color bar represents the data source table
+    return getTableColor(tableName)
+  }
+
+  const getCountByTableColor = (tableName: string, cacheKey: string): string | null => {
+    // Border color represents the count-by table (when different from data source)
     const target = targetFromCacheKey(cacheKey)
-    return getTableColor(target ?? tableName)
+    return target ? getTableColor(target) : null
   }
 
   const renderCountIndicator = ({
     menuKey,
     indicatorColor,
+    borderColor,
     label,
     options,
     currentValue,
@@ -1549,6 +1556,7 @@ function DatasetExplorer() {
   }: {
     menuKey: string
     indicatorColor: string
+    borderColor?: string | null
     label: string
     options: Array<{ value: string; label: string }>
     currentValue: string
@@ -1556,6 +1564,7 @@ function DatasetExplorer() {
     buttonLabel: string
   }) => {
     const isOpen = activeCountMenuKey === menuKey
+    const hasBorder = borderColor && borderColor !== indicatorColor
 
     return (
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
@@ -1568,10 +1577,10 @@ function DatasetExplorer() {
             setActiveCountMenuKey(prev => (prev === menuKey ? null : menuKey))
           }}
           style={{
-            width: '10px',
+            width: hasBorder ? '14px' : '10px',
             height: '22px',
             borderRadius: '4px',
-            border: 'none',
+            border: hasBorder ? `2px solid ${borderColor}` : 'none',
             background: indicatorColor,
             cursor: 'pointer',
             padding: 0
@@ -1629,12 +1638,14 @@ function DatasetExplorer() {
 
   const renderTableCountIndicator = (tableName: string, columnName: string, cacheKey: string) => {
     const indicatorColor = getCountIndicatorColor(tableName, cacheKey)
+    const borderColor = getCountByTableColor(tableName, cacheKey)
     const label = getCountByLabelFromCacheKey(tableName, cacheKey)
     const options = getCountByOptions(tableName)
     const currentValue = cacheKey
     return renderCountIndicator({
       menuKey: `${TABLE_SCOPE_KEY}:${tableName}.${columnName}`,
       indicatorColor,
+      borderColor,
       label,
       options,
       currentValue,
@@ -1650,11 +1661,13 @@ function DatasetExplorer() {
     cacheKey: string
   ) => {
     const indicatorColor = getCountIndicatorColor(tableName, cacheKey)
+    const borderColor = getCountByTableColor(tableName, cacheKey)
     const label = getCountByLabelFromCacheKey(tableName, cacheKey)
     const options = getCountByOptions(tableName)
     return renderCountIndicator({
       menuKey: `${DASHBOARD_SCOPE_KEY}:${chartIndex}`,
       indicatorColor,
+      borderColor,
       label,
       options,
       currentValue: cacheKey,
