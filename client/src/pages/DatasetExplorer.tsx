@@ -5290,7 +5290,6 @@ const renderNumericFilterMenu = (
         const metricLabels = getMetricLabels(primaryAggregation)
         const parentOptions = ancestorOptions[table.name] || []
         const countByValue = getCountByValueForTable(table.name)
-        const countOptions = getCountByOptions(table.name)
 
         return (
           <div key={table.name} style={{ marginBottom: '2.5rem' }}>
@@ -5349,9 +5348,13 @@ const renderNumericFilterMenu = (
                           {baselineRowCount > 0 ? ((tableRowCount / baselineRowCount) * 100).toFixed(1) : '0'}%
                         </span>
                         <span> {metricLabels.short} · {visibleAggregations.length} columns</span>
+                        <span style={{ color: '#999', fontSize: '0.75rem' }}> (by {getCountByLabelFromCacheKey(table.name, countByValue)})</span>
                       </>
                     ) : (
-                      <>{tableRowCount.toLocaleString()} {metricLabels.short} · {visibleAggregations.length} columns</>
+                      <>
+                        {tableRowCount.toLocaleString()} {metricLabels.short} · {visibleAggregations.length} columns
+                        <span style={{ color: '#999', fontSize: '0.75rem' }}> (by {getCountByLabelFromCacheKey(table.name, countByValue)})</span>
+                      </>
                     )}
                   </div>
                 </div>
