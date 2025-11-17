@@ -994,4 +994,161 @@ describe('AggregationService - countBy metrics', () => {
 
     getTableColumnsSpy.mockRestore()
   })
+
+  test('NOT filter with parent counting uses parent-level exclusion semantics', () => {
+    const metricContext = {
+      type: 'parent' as const,
+      joins: [
+        {
+          alias: 'ancestor_0',
+          table: 'biai.patients_raw',
+          foreignKey: 'patient_id',
+          on: 'base_table.patient_id = ancestor_0.patient_id'
+        }
+      ]
+    }
+
+    const filter = {
+      not: {
+        column: 'sample_type',
+        operator: 'eq' as const,
+        value: 'Primary',
+        tableName: 'samples'
+      }
+    }
+
+    const result = callPrivate('buildWhereClause')(
+      [filter],
+      undefined,
+      'samples',
+      metadata,
+      undefined,
+      metricContext,
+      'biai.samples_raw'
+    )
+
+    // Should use parent-level exclusion: parent_id NOT IN (SELECT patient_id FROM samples WHERE sample_type = 'Primary')
+    expect(result).toContain('NOT IN')
+    expect(result).toContain('SELECT patient_id')
+    expect(result).toContain('FROM biai.samples_raw')
+    expect(result).toContain("sample_type = 'Primary'")
+    expect(result).toContain('base_table.patient_id')
+  })
+
+  test('NOT filter with parent counting excludes parents with ANY matching child', () => {
+    const metricContext = {
+      type: 'parent' as const,
+      joins: [
+        {
+          alias: 'ancestor_0',
+          table: 'biai.patients_raw',
+          foreignKey: 'patient_id',
+          on: 'base_table.patient_id = ancestor_0.patient_id'
+        }
+      ]
+    }
+
+    const filter = {
+      not: {
+        column: 'sample_type',
+        operator: 'in' as const,
+        value: ['Primary', 'Recurrent'],
+        tableName: 'samples'
+      }
+    }
+
+    const result = callPrivate('buildWhereClause')(
+      [filter],
+      undefined,
+      'samples',
+      metadata,
+      undefined,
+      metricContext,
+      'biai.samples_raw'
+    )
+
+    // Should exclude parents where ANY child has sample_type IN ('Primary', 'Recurrent')
+    expect(result).toContain('NOT IN')
+    expect(result).toContain('SELECT patient_id')
+    expect(result).toContain("sample_type IN ('Primary'")
+    expect(result).toContain("'Recurrent')")
+  })
+
+  test('NOT filter without parent counting uses row-level semantics', () => {
+    const metricContext = {
+      type: 'rows' as const
+    }
+
+    const filter = {
+      not: {
+        column: 'sample_type',
+        operator: 'eq' as const,
+        value: 'Primary'
+      }
+    }
+
+    const result = callPrivate('buildWhereClause')(
+      [filter],
+      undefined,
+      'samples',
+      metadata,
+      undefined,
+      metricContext,
+      'biai.samples_raw'
+    )
+
+    // Should use row-level NOT (no subquery)
+    expect(result).toContain('NOT')
+    expect(result).toContain("sample_type = 'Primary'")
+    expect(result).not.toContain('NOT IN')
+    expect(result).not.toContain('SELECT')
+  })
+
+  test('NOT filter on parent attribute with parent counting uses regular NOT', () => {
+    const metricContext = {
+      type: 'parent' as const,
+      joins: [
+        {
+          alias: 'ancestor_0',
+          table: 'biai.patients_raw',
+          foreignKey: 'patient_id',
+          on: 'base_table.patient_id = ancestor_0.patient_id'
+        }
+      ],
+      aliasByTable: {
+        samples: 'base_table',
+        patients: 'ancestor_0'
+      }
+    }
+
+    const aliasResolver = (tableName?: string) => {
+      if (tableName === 'patients') return 'ancestor_0'
+      if (tableName === 'samples') return 'base_table'
+      return undefined
+    }
+
+    const filter = {
+      not: {
+        column: 'age',
+        operator: 'gte' as const,
+        value: 60,
+        tableName: 'patients'
+      }
+    }
+
+    const result = callPrivate('buildWhereClause')(
+      [filter],
+      undefined,
+      'samples',
+      metadata,
+      aliasResolver,
+      metricContext,
+      'biai.samples_raw'
+    )
+
+    // Parent-level filters should use regular NOT with alias (not exclusion subquery)
+    expect(result).toContain('NOT')
+    expect(result).toContain('ancestor_0.age')
+    expect(result).not.toContain('NOT IN')
+  })
 })
