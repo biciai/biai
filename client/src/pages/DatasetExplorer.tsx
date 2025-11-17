@@ -1552,7 +1552,8 @@ function DatasetExplorer() {
     options,
     currentValue,
     onSelect,
-    buttonLabel
+    buttonLabel,
+    size = 'default'
   }: {
     menuKey: string
     indicatorColor: string
@@ -1562,9 +1563,15 @@ function DatasetExplorer() {
     currentValue: string
     onSelect: (value: string) => void
     buttonLabel: string
+    size?: 'default' | 'large'
   }) => {
     const isOpen = activeCountMenuKey === menuKey
     const hasBorder = borderColor && borderColor !== indicatorColor
+
+    // Size variants
+    const dimensions = size === 'large'
+      ? { width: hasBorder ? '16px' : '12px', height: '40px' }
+      : { width: hasBorder ? '14px' : '10px', height: '22px' }
 
     return (
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
@@ -1577,8 +1584,8 @@ function DatasetExplorer() {
             setActiveCountMenuKey(prev => (prev === menuKey ? null : menuKey))
           }}
           style={{
-            width: hasBorder ? '14px' : '10px',
-            height: '22px',
+            width: dimensions.width,
+            height: dimensions.height,
             borderRadius: '4px',
             border: hasBorder ? `2px solid ${borderColor}` : 'none',
             background: indicatorColor,
@@ -1689,7 +1696,8 @@ function DatasetExplorer() {
       options,
       currentValue: cacheKey,
       buttonLabel: `Change count-by for ${tableName}`,
-      onSelect: value => handleCountByChange(tableName, value)
+      onSelect: value => handleCountByChange(tableName, value),
+      size: 'large'
     })
   }
 
@@ -5299,13 +5307,15 @@ const renderNumericFilterMenu = (
               gap: '1rem'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <div style={{
-                  background: tableColor,
-                  color: 'white',
-                  width: '8px',
-                  height: '40px',
-                  borderRadius: '4px'
-                }} />
+                {parentOptions.length > 0 ? renderTabCountIndicator(table.name, countByValue) : (
+                  <div style={{
+                    background: tableColor,
+                    color: 'white',
+                    width: '8px',
+                    height: '40px',
+                    borderRadius: '4px'
+                  }} />
+                )}
                 <div>
                   <h3 style={{
                     margin: 0,
@@ -5347,14 +5357,6 @@ const renderNumericFilterMenu = (
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                {parentOptions.length > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                    {renderTabCountIndicator(table.name, countByValue)}
-                    <div style={{ fontSize: '0.7rem', color: '#555' }}>
-                      Counting <strong>{metricLabels.long}</strong>: {tableRowCount.toLocaleString()}
-                    </div>
-                  </div>
-                )}
                 {/* Filter badges */}
                 {directFilterCount > 0 && (
                   <div
