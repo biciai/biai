@@ -5364,14 +5364,15 @@ const renderNumericFilterMenu = (
                 {directFilterCount > 0 && (
                   <div
                     style={{
-                      background: '#1976D2',
+                      background: tableColor,
+                      border: `2px solid ${tableColor}`,
                       color: 'white',
                       fontSize: '0.7rem',
                       padding: '0.3rem 0.6rem',
                       borderRadius: '4px',
                       fontWeight: 600
                     }}
-                    title={`${directFilterCount} direct filter${directFilterCount > 1 ? 's' : ''} applied`}
+                    title={`${directFilterCount} filter${directFilterCount > 1 ? 's' : ''} applied to ${table.displayName || table.name}`}
                   >
                     {directFilterCount} filter{directFilterCount > 1 ? 's' : ''}
                   </div>
@@ -5379,15 +5380,16 @@ const renderNumericFilterMenu = (
                 {propagatedFilterCount > 0 && (
                   <div
                     style={{
-                      background: '#64B5F6',
-                      color: 'white',
+                      background: 'white',
+                      border: `2px solid ${tableColor}`,
+                      color: tableColor,
                       fontSize: '0.7rem',
                       padding: '0.3rem 0.6rem',
                       borderRadius: '4px',
                       fontWeight: 600,
                       fontStyle: 'italic'
                     }}
-                    title={`${propagatedFilterCount} filter${propagatedFilterCount > 1 ? 's' : ''} propagated from related tables${maxPathLength > 0 ? ` (max ${maxPathLength} hop${maxPathLength > 1 ? 's' : ''})` : ''}`}
+                    title={`${propagatedFilterCount} filter${propagatedFilterCount > 1 ? 's' : ''} from related tables affecting ${table.displayName || table.name}${maxPathLength > 0 ? ` (up to ${maxPathLength} relationship${maxPathLength > 1 ? 's' : ''} away)` : ''}`}
                   >
                     +{propagatedFilterCount} linked{maxPathLength > 0 ? ` (${maxPathLength}-hop)` : ''}
                   </div>
