@@ -5365,6 +5365,7 @@ const renderNumericFilterMenu = (
                   <div
                     style={{
                       background: tableColor,
+                      border: `2px solid rgba(0, 0, 0, 0.2)`,
                       color: 'white',
                       fontSize: '0.7rem',
                       padding: '0.3rem 0.6rem',
