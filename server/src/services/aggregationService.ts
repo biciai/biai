@@ -424,6 +424,44 @@ class AggregationService {
   }
 
   /**
+   * Build exclusion subquery for parent-table counting with NOT filters.
+   *
+   * When counting by a parent table with a NOT filter on a child column, we need to exclude
+   * parents where ANY child matches the positive condition (not just filter row-by-row).
+   *
+   * Example: Samples filtered by NOT(sample_type = Primary), counting by Patients
+   * Returns: parent_fk NOT IN (SELECT parent_fk FROM samples WHERE sample_type = 'Primary')
+   *
+   * This ensures parents are excluded if they have ANY child matching the condition.
+   */
+  private buildParentExclusionSubquery(
+    filter: Filter,
+    currentTableName: string,
+    metricContext: MetricContext,
+    currentTableClickhouseName: string
+  ): string | null {
+    // Extract the positive filter from NOT wrapper
+    const positiveFilter = (filter as any).not
+    if (!positiveFilter) return null
+
+    // Build the positive condition
+    const condition = this.buildFilterCondition(positiveFilter, BASE_TABLE_ALIAS)
+    if (!condition) return null
+
+    // Get the parent foreign key column
+    // metricContext.joins[0] should have the foreign key from child to parent
+    const parentFk = metricContext.joins?.[0]?.foreignKey
+    if (!parentFk) return null
+
+    const qualifiedTableName = this.qualifyTableName(currentTableClickhouseName)
+    const columnRef = this.columnRef(parentFk, BASE_TABLE_ALIAS)
+
+    // Build exclusion subquery
+    // Example: parent_id NOT IN (SELECT parent_id FROM samples WHERE sample_type = 'Primary')
+    return `${columnRef} NOT IN (SELECT ${parentFk} FROM ${qualifiedTableName} WHERE ${condition})`
+  }
+
+  /**
    * Build WHERE clause from filters.
    *
    * Supports logical operators (AND, OR, NOT) and cross-table filtering through
@@ -433,6 +471,9 @@ class AggregationService {
    * @param validColumns - Set of valid column names for the current table (optional)
    * @param currentTableName - Name of the table being filtered (required for cross-table)
    * @param allTablesMetadata - Metadata for all tables with relationships (required for cross-table)
+   * @param tableAliasResolver - Function to resolve table names to SQL aliases (for parent counting)
+   * @param metricContext - Context for parent-table counting (to detect NOT filter semantics)
+   * @param currentTableClickhouseName - ClickHouse table name (for parent exclusion subqueries)
    * @returns SQL WHERE clause string (includes 'AND' prefix) or empty string
    */
   private buildWhereClause(
@@ -440,7 +481,9 @@ class AggregationService {
     validColumns?: Set<string>,
     currentTableName?: string,
     allTablesMetadata?: TableMetadata[],
-    tableAliasResolver?: (tableName?: string) => string | undefined
+    tableAliasResolver?: (tableName?: string) => string | undefined,
+    metricContext?: MetricContext,
+    currentTableClickhouseName?: string
   ): string {
     if (!filters) {
       return ''
@@ -457,7 +500,20 @@ class AggregationService {
       const aliasOverride = targetTable ? tableAliasResolver?.(targetTable) : undefined
       const isCrossTable = !aliasOverride && targetTable && currentTableName && allTablesMetadata && targetTable !== currentTableName
 
-      if (aliasOverride && targetTable && aliasOverride !== BASE_TABLE_ALIAS) {
+      // Special handling for NOT filters with parent-table counting
+      // When counting by parent with a NOT filter on a local (child) column,
+      // we need parent-level exclusion semantics, not row-level NOT
+      const hasNot = !!(filter as any).not
+      const isParentCounting = metricContext?.type === 'parent'
+      const isLocalFilter = aliasOverride === BASE_TABLE_ALIAS || (!aliasOverride && !isCrossTable)
+
+      if (hasNot && isParentCounting && isLocalFilter && metricContext && currentTableName && currentTableClickhouseName) {
+        // Use parent-level exclusion: exclude parents where ANY child matches positive condition
+        const subquery = this.buildParentExclusionSubquery(filter, currentTableName, metricContext, currentTableClickhouseName)
+        if (subquery) {
+          crossTableConditions.push(subquery)
+        }
+      } else if (aliasOverride && targetTable && aliasOverride !== BASE_TABLE_ALIAS) {
         aliasFilters.push({ filter, alias: aliasOverride })
       } else if (isCrossTable) {
         // This is a cross-table filter - build subquery
@@ -709,7 +765,7 @@ class AggregationService {
           return metricContext.aliasByTable?.[tableName]
         }
       : undefined
-    const whereClause = this.buildWhereClause(filters, validColumns, effectiveTableName, tableMetadata, aliasResolver)
+    const whereClause = this.buildWhereClause(filters, validColumns, effectiveTableName, tableMetadata, aliasResolver, metricContext, clickhouseTableName)
 
     const fromClause = this.buildFromClause(qualifiedTableName, metricContext)
     const metricAggregation = this.getMetricAggregationExpression(metricContext)
