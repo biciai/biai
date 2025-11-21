@@ -4063,6 +4063,10 @@ const renderNumericFilterMenu = (
               const tableColor = tableName ? getTableColor(tableName) : '#9E9E9E'
               const table = dataset?.tables.find(t => t.name === tableName)
 
+              // Get count-by table color for border
+              const countByTable = targetFromCacheKey(filter.countByKey)
+              const countByColor = countByTable ? getTableColor(countByTable) : tableColor
+
               let displayValue = String(actualFilter.value)
               let logicType = '' // For tooltip
 
@@ -4131,8 +4135,8 @@ const renderNumericFilterMenu = (
               const columnLabel = columnName ?? '(Column)'
               const notPrefix = isNot ? 'NOT: ' : ''
               const tooltipText = tableName
-                ? `${table?.displayName || tableName}.${columnLabel}\n${notPrefix}${logicType}\nValue: ${displayValue}\n\nDebug:\nTable: ${tableName}\nColor: ${tableColor}`
-                : `${columnLabel}\n\nDebug:\nNo tableName!\nColor: ${tableColor}`
+                ? `${table?.displayName || tableName}.${columnLabel}\n${notPrefix}${logicType}\nValue: ${displayValue}\n\nDebug:\nFilter Table: ${tableName} (${tableColor})\nCount-by Table: ${countByTable || 'Rows'} (${countByColor})`
+                : `${columnLabel}\n\nDebug:\nNo tableName!\nColors: ${tableColor} / ${countByColor}`
 
               const showAndSeparator = idx > 0
 
@@ -4158,7 +4162,7 @@ const renderNumericFilterMenu = (
                       display: 'flex',
                       alignItems: 'center',
                       gap: '0.5rem',
-                      outline: `4px solid ${tableColor}`,
+                      outline: `4px solid ${countByColor}`,
                       outlineOffset: '2px',
                       border: isNot ? `2px dashed rgba(255,255,255,0.6)` : 'none',
                       color: 'white',
