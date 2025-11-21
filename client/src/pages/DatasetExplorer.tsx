@@ -4063,6 +4063,10 @@ const renderNumericFilterMenu = (
               const tableColor = tableName ? getTableColor(tableName) : '#9E9E9E'
               const table = dataset?.tables.find(t => t.name === tableName)
 
+              // Extract count-by table for border color
+              const countByTable = targetFromCacheKey(filter.countByKey)
+              const countByColor = countByTable ? getTableColor(countByTable) : tableColor
+
               let displayValue = String(actualFilter.value)
               let logicType = '' // For tooltip
 
@@ -4158,7 +4162,9 @@ const renderNumericFilterMenu = (
                       display: 'flex',
                       alignItems: 'center',
                       gap: '0.5rem',
-                      border: isNot ? `2px dashed ${tableColor}` : `2px solid ${tableColor}`,
+                      outline: `4px solid ${countByColor}`,
+                      outlineOffset: '2px',
+                      border: isNot ? `2px dashed rgba(255,255,255,0.6)` : 'none',
                       color: 'white',
                       fontWeight: 500,
                       opacity: isNot ? 0.9 : 1
