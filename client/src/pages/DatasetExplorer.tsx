@@ -4131,8 +4131,8 @@ const renderNumericFilterMenu = (
               const columnLabel = columnName ?? '(Column)'
               const notPrefix = isNot ? 'NOT: ' : ''
               const tooltipText = tableName
-                ? `${table?.displayName || tableName}.${columnLabel}\n${notPrefix}${logicType}\nValue: ${displayValue}`
-                : columnLabel
+                ? `${table?.displayName || tableName}.${columnLabel}\n${notPrefix}${logicType}\nValue: ${displayValue}\n\nDebug:\nTable: ${tableName}\nColor: ${tableColor}`
+                : `${columnLabel}\n\nDebug:\nNo tableName!\nColor: ${tableColor}`
 
               const showAndSeparator = idx > 0
 
@@ -4158,7 +4158,9 @@ const renderNumericFilterMenu = (
                       display: 'flex',
                       alignItems: 'center',
                       gap: '0.5rem',
-                      border: isNot ? `2px dashed ${tableColor}` : `2px solid ${tableColor}`,
+                      outline: `4px solid ${tableColor}`,
+                      outlineOffset: '2px',
+                      border: isNot ? `2px dashed rgba(255,255,255,0.6)` : 'none',
                       color: 'white',
                       fontWeight: 500,
                       opacity: isNot ? 0.9 : 1
