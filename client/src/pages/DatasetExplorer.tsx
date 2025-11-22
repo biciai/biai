@@ -119,9 +119,18 @@ interface HistogramBin {
   percentage: number
 }
 
+interface SurvivalCurvePoint {
+  time: number
+  atRisk: number
+  events: number
+  censored: number
+  survival: number
+}
+
 interface ColumnAggregation {
   column_name: string
   display_type: string
+  normalized_display_type?: string
   total_rows: number
   null_count: number
   unique_count: number
@@ -195,6 +204,14 @@ type AggregationCacheEntry = {
   timestamp: number
 }
 
+type SurvivalCacheEntry = {
+  data: SurvivalCurvePoint[]
+  filtersKey: string
+  countByKey: string
+  statusColumn: string
+  timestamp: number
+}
+
 function DatasetExplorer() {
   const { id, database } = useParams()
   const navigate = useNavigate()
@@ -215,6 +232,7 @@ function DatasetExplorer() {
   const [loading, setLoading] = useState(true)
   const [columnMetadata, setColumnMetadata] = useState<Record<string, ColumnMetadata[]>>({})
   const [aggregations, setAggregations] = useState<Record<string, Record<string, AggregationCacheEntry>>>({})
+  const [survivalCurves, setSurvivalCurves] = useState<Record<string, Record<string, SurvivalCacheEntry>>>({})
   const [baselineAggregations, setBaselineAggregations] = useState<Record<string, ColumnAggregation[]>>({})
   const [filters, setFilters] = useState<Filter[]>([])
   const [activeFilterMenu, setActiveFilterMenu] = useState<{ tableName: string; columnName: string; countKey?: string } | null>(null)
@@ -244,6 +262,7 @@ function DatasetExplorer() {
   const [activeCountMenuKey, setActiveCountMenuKey] = useState<string | null>(null)
   const [ancestorOptions, setAncestorOptions] = useState<Record<string, AncestorOption[]>>({})
   const [visibleDashboardKeys, setVisibleDashboardKeys] = useState<Record<string, boolean>>({})
+  const survivalRequests = useRef<Set<string>>(new Set())
   const dashboardObserverRef = useRef<IntersectionObserver | null>(null)
   const dashboardCardRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const dashboardElementKeyMap = useRef<Map<Element, string>>(new Map())
@@ -1301,7 +1320,7 @@ function DatasetExplorer() {
     return selection ? `parent:${selection.targetTable}` : ROW_COUNT_KEY
   }
 
-  const isCacheEntryFresh = (entry?: AggregationCacheEntry, filtersKey?: string) => {
+  const isCacheEntryFresh = (entry?: { timestamp: number; filtersKey?: string }, filtersKey?: string) => {
     if (!entry) return false
     if (filtersKey && entry.filtersKey !== filtersKey) return false
     return Date.now() - entry.timestamp < CACHE_TTL_MS
@@ -1312,6 +1331,98 @@ function DatasetExplorer() {
     const entry = aggregations[tableName]?.[cacheKey]
     if (!isCacheEntryFresh(entry, currentFiltersKey)) return undefined
     return entry?.data
+  }
+
+  const getSurvivalEntryKey = (timeColumn: string, statusColumn: string, cacheKey: string) =>
+    `${timeColumn}::${statusColumn}::${cacheKey}`
+
+  const getSurvivalCurve = (
+    tableName: string,
+    timeColumn: string,
+    statusColumn: string,
+    cacheKey?: string
+  ): SurvivalCurvePoint[] | undefined => {
+    const key = cacheKey ?? getCountByCacheKey(tableName)
+    const entryKey = getSurvivalEntryKey(timeColumn, statusColumn, key)
+    const entry = survivalCurves[tableName]?.[entryKey]
+    if (!isCacheEntryFresh(entry, currentFiltersKey)) return undefined
+    return entry?.data
+  }
+
+  const loadSurvivalCurve = async (
+    table: Table,
+    timeColumn: string,
+    statusColumn: string,
+    cacheKey?: string
+  ) => {
+    const key = cacheKey ?? getCountByCacheKey(table.name)
+    const entryKey = getSurvivalEntryKey(timeColumn, statusColumn, key)
+    const cached = survivalCurves[table.name]?.[entryKey]
+    if (isCacheEntryFresh(cached, currentFiltersKey)) return
+
+    const requestKey = `${table.name}|${entryKey}|${currentFiltersKey}`
+    if (survivalRequests.current.has(requestKey)) return
+    survivalRequests.current.add(requestKey)
+
+    try {
+      const params: Record<string, any> = {
+        timeColumn,
+        statusColumn
+      }
+      if (filters.length > 0) {
+        params.filters = JSON.stringify(filters)
+      }
+      const selection = countBySelections[table.name]
+      if (selection?.mode === 'parent') {
+        params.countBy = `parent:${selection.targetTable}`
+      }
+
+      const response = await api.get(`/datasets/${identifier}/tables/${table.id}/survival`, { params })
+      setSurvivalCurves(prev => {
+        const tableCache = prev[table.name] || {}
+        const nextEntry: SurvivalCacheEntry = {
+          data: response.data.curve || [],
+          filtersKey: currentFiltersKey,
+          countByKey: key,
+          statusColumn,
+          timestamp: Date.now()
+        }
+        return {
+          ...prev,
+          [table.name]: {
+            ...tableCache,
+            [entryKey]: nextEntry
+          }
+        }
+      })
+    } catch (error) {
+      console.error('Failed to load survival curve:', error)
+    } finally {
+      survivalRequests.current.delete(requestKey)
+    }
+  }
+
+  const ensureSurvivalCurve = (
+    table: Table,
+    timeColumn: string,
+    statusColumn: string,
+    cacheKey?: string
+  ) => {
+    const key = cacheKey ?? getCountByCacheKey(table.name)
+    const entryKey = getSurvivalEntryKey(timeColumn, statusColumn, key)
+    const cached = survivalCurves[table.name]?.[entryKey]
+    if (isCacheEntryFresh(cached, currentFiltersKey)) return
+    loadSurvivalCurve(table, timeColumn, statusColumn, key)
+  }
+
+  const findSurvivalStatusColumn = (tableName: string, timeColumn: string): string | null => {
+    const metadata = columnMetadata[tableName]
+    if (!metadata) return null
+    const statusColumns = metadata.filter(col => col.display_type === 'survival_status')
+    if (statusColumns.length === 0) return null
+    const base = timeColumn.replace(/_(months|days|time)$/i, '')
+    const matched = statusColumns.find(col => col.column_name.startsWith(base))
+    return (matched || statusColumns[0]).column_name
   }
 
   const getCountByLabelFromTarget = (tableName: string, target: string | null): string => {
@@ -3824,6 +3935,225 @@ const renderNumericFilterMenu = (
     )
   }
 
+  const renderSurvivalChart = (
+    title: string,
+    tableName: string,
+    field: string,
+    tableColor?: string,
+    aggregationOverride?: ColumnAggregation,
+    cacheKeyOverride?: string,
+    countIndicatorOverride?: React.ReactNode
+  ) => {
+    const cacheKey = cacheKeyOverride ?? getEffectiveCacheKeyForChart(tableName, field)
+    const aggregation =
+      aggregationOverride && (!cacheKeyOverride || cacheKeyOverride === cacheKey)
+        ? aggregationOverride
+        : getAggregation(tableName, field, cacheKey)
+    const table = dataset?.tables.find(t => t.name === tableName)
+    if (!aggregation || !table) return null
+
+    const statusColumn = findSurvivalStatusColumn(tableName, field)
+    if (statusColumn) {
+      ensureSurvivalCurve(table, field, statusColumn, cacheKey)
+    }
+    const curve = statusColumn ? getSurvivalCurve(tableName, field, statusColumn, cacheKey) : undefined
+
+    const metadata = getColumnMetadata(tableName, field)
+    const tableDisplayName = getTableDisplayNameByName(tableName) || tableName
+    const tooltipParts = [
+      metadata?.display_name || title,
+      `ID: ${field}`,
+      metadata?.description || '',
+      `Table: ${tableDisplayName}`
+    ]
+    const pathLabel = formatMetricPath(aggregation)
+    if (pathLabel) tooltipParts.push(pathLabel)
+    const tooltipText = tooltipParts.filter(Boolean).join('\n')
+
+    const menuOpen =
+      activeFilterMenu?.tableName === tableName &&
+      activeFilterMenu.columnName === field &&
+      activeFilterMenu.countKey === cacheKey
+    const columnActive = hasColumnFilter(field, cacheKey)
+
+    const actionButtons = (
+      <>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            toggleDashboard(tableName, field)
+          }}
+          style={{
+            border: 'none',
+            background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+            color: isOnDashboard(tableName, field) ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.7rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title={isOnDashboard(tableName, field) ? 'Remove from dashboard' : 'Add to dashboard'}
+        >
+          {isOnDashboard(tableName, field) ? '✓' : '+'}
+        </button>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            setActiveFilterMenu(prev =>
+              prev && prev.tableName === tableName && prev.columnName === field && prev.countKey === cacheKey
+                ? null
+                : { tableName, columnName: field, countKey: cacheKey }
+            )
+          }}
+          style={{
+            border: 'none',
+            background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
+            color: menuOpen || columnActive ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.75rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title="Filter values"
+        >
+          ⚲
+        </button>
+      </>
+    )
+
+    const countIndicator = countIndicatorOverride ?? renderTableCountIndicator(tableName, field, cacheKey)
+    const displayHistogram = getDisplayHistogram(aggregation.histogram ?? [], aggregation.numeric_stats)
+    const binsForPlot = displayHistogram.length > 0 ? displayHistogram : aggregation.histogram || []
+    const histogramPlot =
+      binsForPlot.length > 0 ? (
+        <Plot
+          data={[{
+            type: 'bar',
+            x: binsForPlot.map(bin => (bin.bin_start + bin.bin_end) / 2),
+            y: binsForPlot.map(bin => bin.count),
+            width: binsForPlot.map(bin => bin.bin_end - bin.bin_start),
+            marker: { color: tableColor || '#2196F3', opacity: 0.7 }
+          }]}
+          layout={{
+            height: 180,
+            margin: { t: 20, b: 40, l: 50, r: 10 },
+            xaxis: { title: metadata?.display_name || title, tickfont: { size: 9 } },
+            yaxis: { title: getMetricLabels(aggregation).long, tickfont: { size: 9 } },
+            paper_bgcolor: 'transparent',
+            plot_bgcolor: 'transparent',
+            bargap: 0
+          }}
+          config={{
+            displayModeBar: false,
+            responsive: true,
+            staticPlot: false,
+            scrollZoom: false
+          }}
+          style={{ width: '100%', height: '180px' }}
+        />
+      ) : (
+        <div style={{ padding: '1rem', color: '#777', fontSize: '0.85rem' }}>
+          No histogram data available
+        </div>
+      )
+
+    const survivalPlot = statusColumn
+      ? curve && curve.length > 0 ? (
+        <Plot
+          data={[{
+            type: 'scatter',
+            mode: 'lines',
+            line: { shape: 'hv', color: tableColor || '#1976D2', width: 2 },
+            x: curve.map(p => p.time),
+            y: curve.map(p => p.survival),
+            customdata: curve.map(p => [p.atRisk, p.events, p.censored]),
+            hovertemplate: [
+              'Time: %{x}',
+              'Survival: %{y:.3f}',
+              'At risk: %{customdata[0]}',
+              'Events: %{customdata[1]}',
+              'Censored: %{customdata[2]}'
+            ].join('<br>') + '<extra></extra>'
+          }]}
+          layout={{
+            height: 260,
+            margin: { t: 20, b: 40, l: 50, r: 10 },
+            xaxis: { title: metadata?.display_name || title, tickfont: { size: 10 } },
+            yaxis: { title: 'Survival probability', range: [0, 1], tickfont: { size: 10 } },
+            paper_bgcolor: 'transparent',
+            plot_bgcolor: 'transparent',
+            hovermode: 'closest'
+          }}
+          config={{
+            displayModeBar: false,
+            responsive: true,
+            staticPlot: false,
+            scrollZoom: false
+          }}
+          style={{ width: '100%', height: '260px' }}
+        />
+      ) : (
+        <div style={{ padding: '1rem', color: '#777', fontSize: '0.85rem' }}>
+          {curve ? 'No survival data for current filters' : 'Loading survival curve…'}
+        </div>
+      )
+      : (
+        <div style={{ padding: '1rem', color: '#777', fontSize: '0.85rem' }}>
+          Add a survival status column to plot a Kaplan–Meier curve.
+        </div>
+      )
+
+    const containerStyle: React.CSSProperties = {
+      position: 'relative',
+      background: 'white',
+      padding: '0.5rem',
+      borderRadius: '8px',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+      width: '708px',
+      minHeight: '420px',
+      boxSizing: 'border-box',
+      flexShrink: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      border: tableColor ? `2px solid ${tableColor}20` : undefined
+    }
+
+    const menuStats = aggregation.numeric_stats
+    const displayHistogramForMenu = getDisplayHistogram(aggregation.histogram ?? [], aggregation.numeric_stats)
+
+    return (
+      <div style={containerStyle}>
+        {renderChartHeader({
+          title: metadata?.display_name || title,
+          tooltip: tooltipText,
+          countIndicator,
+          actions: actionButtons
+        })}
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '0.5rem', flex: 1 }}>
+          <div style={{ background: '#fafafa', borderRadius: '6px', padding: '0.35rem' }}>
+            {survivalPlot}
+          </div>
+          <div style={{ background: '#fafafa', borderRadius: '6px', padding: '0.35rem' }}>
+            {histogramPlot}
+          </div>
+        </div>
+        {renderNumericFilterMenu(tableName, field, displayHistogramForMenu, menuStats, cacheKey)}
+      </div>
+    )
+  }
+
   const renderMapChart = (
     title: string,
     tableName: string,
@@ -5387,6 +5717,9 @@ const renderNumericFilterMenu = (
                   const displayTitle = getDisplayTitle(tableName, columnName)
                   const table = dataset.tables.find(t => t.name === tableName)
                   const indicatorNode = renderDashboardCountIndicator(chartIndex, tableName, columnName, overrideKey)
+                  const columnMeta = getColumnMetadata(tableName, columnName)
+                  const metaDisplayType = columnMeta?.display_type
+                  const normalizedDisplayType = aggregation.normalized_display_type || aggregation.display_type
 
                   if (!aggregation) {
                     return (
@@ -5420,7 +5753,7 @@ const renderNumericFilterMenu = (
                     )
                   }
 
-                  if (aggregation.display_type === 'categorical' && aggregation.categories) {
+                  if ((normalizedDisplayType === 'categorical' || metaDisplayType === 'survival_status') && aggregation.categories) {
                     const categoryCount = aggregation.categories.length
                     const viewPref = getViewPreference(tableName, columnName, categoryCount)
                     const allowPie = categoryCount <= MAX_PIE_CATEGORIES
@@ -5475,7 +5808,21 @@ const renderNumericFilterMenu = (
                         )}
                       </div>
                     )
-                  } else if (aggregation.display_type === 'numeric' && aggregation.histogram) {
+                  } else if (metaDisplayType === 'survival_time') {
+                    return (
+                      <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 4' }}>
+                        {renderSurvivalChart(
+                          displayTitle,
+                          tableName,
+                          columnName,
+                          tableColor,
+                          aggregation,
+                          overrideKey,
+                          indicatorNode
+                        )}
+                      </div>
+                    )
+                  } else if (normalizedDisplayType === 'numeric' && aggregation.histogram) {
                     return (
                       <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
                         {renderHistogram(
@@ -5729,8 +6076,11 @@ const renderNumericFilterMenu = (
                 const cacheKey = getEffectiveCacheKeyForChart(table.name, agg.column_name)
                 const defaultKey = getCountByCacheKey(table.name)
                 const aggregationForChart = cacheKey === defaultKey ? agg : undefined
+                const columnMeta = getColumnMetadata(table.name, agg.column_name)
+                const metaDisplayType = columnMeta?.display_type
+                const normalizedDisplayType = agg.normalized_display_type || agg.display_type
 
-                if (agg.display_type === 'categorical' && agg.categories) {
+                if ((normalizedDisplayType === 'categorical' || metaDisplayType === 'survival_status') && agg.categories) {
                   const categoryCount = agg.categories.length
                   const viewPref = getViewPreference(table.name, agg.column_name, categoryCount)
                   const allowPie = categoryCount <= MAX_PIE_CATEGORIES
@@ -5756,7 +6106,13 @@ const renderNumericFilterMenu = (
                       {renderBarChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
                     </div>
                   )
-                } else if (agg.display_type === 'numeric' && agg.histogram) {
+                } else if (metaDisplayType === 'survival_time') {
+                  return (
+                    <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 4' }}>
+                      {renderSurvivalChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
+                    </div>
+                  )
+                } else if (normalizedDisplayType === 'numeric' && agg.histogram) {
                   return (
                     <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2' }}>
                       {renderHistogram(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}

@@ -72,10 +72,7 @@ export class DatasetService {
   }
 
   private normalizeDisplayType(displayType?: string): string {
-    if (!displayType) return ''
-    if (displayType === 'survival_time') return 'numeric'
-    if (displayType === 'survival_status') return 'categorical'
-    return displayType
+    return displayType || ''
   }
 
   private getDatasetConnectionSettings(dataset: Dataset): DatasetConnectionSettings | null {

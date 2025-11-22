@@ -29,6 +29,7 @@ export interface HistogramBin {
 export interface ColumnAggregation {
   column_name: string
   display_type: string
+  normalized_display_type?: string
   total_rows: number
   null_count: number
   unique_count: number
@@ -108,6 +109,14 @@ interface MetricContext {
   pathSegments?: MetricPathSegment[]
   aliasByTable?: Record<string, string>
   parentAlias?: string
+}
+
+export interface SurvivalCurvePoint {
+  time: number
+  atRisk: number
+  events: number
+  censored: number
+  survival: number
 }
 
 const badRequest = (message: string): Error => {
@@ -817,7 +826,8 @@ class AggregationService {
 
     const aggregation: ColumnAggregation = {
       column_name: columnName,
-      display_type: effectiveDisplayType,
+      display_type: displayType,
+      normalized_display_type: effectiveDisplayType,
       total_rows: filteredTotalRows,
       null_count,
       unique_count,
@@ -1194,6 +1204,125 @@ class AggregationService {
       return { database, table }
     }
     return { database: 'biai', table: tableName }
+  }
+
+  /**
+   * Compute survival curve points (Kaplan–Meier style) for a time/status column pair
+   */
+  async getSurvivalCurve(
+    datasetId: string,
+    tableId: string,
+    timeColumn: string,
+    statusColumn: string,
+    filters: Filter[] | Filter = [],
+    countBy?: CountByConfig
+  ): Promise<SurvivalCurvePoint[]> {
+    const tableResult = await clickhouseClient.query({
+      query: `
+        SELECT table_name, clickhouse_table_name
+        FROM biai.dataset_tables
+        WHERE dataset_id = {datasetId:String}
+          AND table_id = {tableId:String}
+        LIMIT 1
+      `,
+      query_params: { datasetId, tableId },
+      format: 'JSONEachRow'
+    })
+
+    const tables = await tableResult.json<{ table_name: string; clickhouse_table_name: string }>()
+    if (tables.length === 0) {
+      throw new Error('Table not found')
+    }
+
+    const clickhouseTableName = tables[0].clickhouse_table_name
+    const qualifiedTableName = this.qualifyTableName(clickhouseTableName)
+    let effectiveTableName = tables[0].table_name
+    let tableMetadata: TableMetadata[] | undefined
+
+    if (countBy && countBy.mode === 'parent') {
+      const { metadata, idToNameMap } = await this.loadDatasetTablesMetadata(datasetId)
+      tableMetadata = metadata
+      effectiveTableName = idToNameMap.get(tableId) || effectiveTableName
+    }
+
+    const metricContext = this.resolveMetricContext(effectiveTableName, countBy, tableMetadata)
+    const validColumns = await this.getTableColumns(clickhouseTableName)
+    const aliasResolver = metricContext.aliasByTable
+      ? (tableName?: string) => {
+          if (!tableName) return undefined
+          return metricContext.aliasByTable?.[tableName]
+        }
+      : undefined
+    const whereClause = this.buildWhereClause(filters, validColumns, effectiveTableName, tableMetadata, aliasResolver, metricContext, clickhouseTableName)
+    const fromClause = this.buildFromClause(qualifiedTableName, metricContext)
+
+    const timeExpr = `toFloat64(${this.columnRef(timeColumn)})`
+    const statusExpr = `lowerUTF8(trimBoth(toString(${this.columnRef(statusColumn)})))`
+    const eventExpr = `
+      coalesce(
+        toInt64OrNull(${this.columnRef(statusColumn)}),
+        multiIf(
+          ${statusExpr} IN ('1','true','t','yes','y','dead','deceased','death','died','event','progressed','progression','relapse'), 1,
+          ${statusExpr} IN ('0','false','f','no','n','alive','living','censored','censor','none','ongoing'), 0,
+          null
+        )
+      )
+    `
+
+    const query = `
+      SELECT
+        time_val,
+        sum(event_flag) AS events,
+        count() - sum(event_flag) AS censored
+      FROM (
+        SELECT
+          ${timeExpr} AS time_val,
+          ${eventExpr} AS event_flag
+        FROM ${fromClause}
+        WHERE 1=1 ${whereClause}
+          AND ${timeExpr} IS NOT NULL
+          AND ${eventExpr} IS NOT NULL
+      )
+      GROUP BY time_val
+      ORDER BY time_val
+    `
+
+    const result = await clickhouseClient.query({
+      query,
+      format: 'JSONEachRow'
+    })
+
+    const rows = await result.json<{ time_val: number; events: number; censored: number }>()
+    if (!rows || rows.length === 0) return []
+
+    // Compute KM-style step survival
+    let atRisk = rows.reduce((sum, row) => sum + row.events + row.censored, 0)
+    let survival = 1
+    const curve: SurvivalCurvePoint[] = []
+
+    for (const row of rows) {
+      const atRiskBefore = atRisk
+      const events = row.events || 0
+      const censored = row.censored || 0
+
+      if (atRiskBefore > 0) {
+        const step = events > 0 ? 1 - events / atRiskBefore : 1
+        survival = survival * step
+      }
+
+      curve.push({
+        time: row.time_val,
+        atRisk: atRiskBefore,
+        events,
+        censored,
+        survival
+      })
+
+      atRisk = atRiskBefore - events - censored
+      if (atRisk < 0) atRisk = 0
+    }
+
+    return curve
   }
 
   /**
