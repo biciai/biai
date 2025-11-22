@@ -4,12 +4,12 @@ const qualifyTableName = (tableName: string): string =>
   tableName.includes('.') ? tableName : `biai.${tableName}`
 
 export interface ColumnAnalysis {
-  display_type: 'categorical' | 'numeric' | 'datetime' | 'survival_time' | 'survival_status' | 'id' | 'text'
+  display_type: 'categorical' | 'numeric' | 'datetime' | 'survival_time' | 'survival_status' | 'id' | 'text' | 'geographic'
   unique_value_count: number
   null_count: number
   min_value: string | null
   max_value: string | null
-  suggested_chart: 'pie' | 'bar' | 'histogram' | 'survival' | 'none'
+  suggested_chart: 'pie' | 'bar' | 'histogram' | 'survival' | 'none' | 'map'
   display_priority: number
   is_hidden: boolean
 }
@@ -172,6 +172,13 @@ function detectDisplayType(
     return 'survival_status'
   }
 
+  // Geographic columns
+  if (nameLower.includes('state') || nameLower.includes('county') ||
+      nameLower.includes('country') || nameLower.includes('region') ||
+      nameLower.includes('province') || nameLower.includes('territory')) {
+    return 'geographic'
+  }
+
   // Datetime columns
   if (columnType.includes('Date') || nameLower.includes('date') || nameLower.includes('time')) {
     return 'datetime'
@@ -208,6 +215,11 @@ function suggestChartType(
   // Survival columns are charted together as survival curves
   if (displayType === 'survival_time' || displayType === 'survival_status') {
     return 'survival'
+  }
+
+  // Geographic columns - render as maps
+  if (displayType === 'geographic') {
+    return 'map'
   }
 
   // Datetime - could be timeline, but skip for now

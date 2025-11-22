@@ -6,6 +6,7 @@ import SafeHtml from '../components/SafeHtml'
 import api from '../services/api'
 import type { MetricPathSegment } from '../types'
 import { findRelationshipPath, type Filter } from '../utils/filterHelpers'
+import { getStateCode, normalizeStateName } from '../data/us-states'
 // Small categorical sets render better as pie charts; beyond this use bars.
 const MAX_PIE_CATEGORIES = 8
 const ROW_COUNT_KEY = 'rows'
@@ -3823,6 +3824,262 @@ const renderNumericFilterMenu = (
     )
   }
 
+  const renderMapChart = (
+    title: string,
+    tableName: string,
+    field: string,
+    tableColor?: string,
+    aggregationOverride?: ColumnAggregation,
+    cacheKeyOverride?: string,
+    countIndicatorOverride?: React.ReactNode
+  ) => {
+    const cacheKey = cacheKeyOverride ?? getEffectiveCacheKeyForChart(tableName, field)
+    const aggregation =
+      aggregationOverride && (!cacheKeyOverride || cacheKeyOverride === cacheKey)
+        ? aggregationOverride
+        : getAggregation(tableName, field, cacheKey)
+
+    if (!aggregation?.categories) return null
+
+    const metadata = getColumnMetadata(tableName, field)
+    const tableDisplayName = getTableDisplayNameByName(tableName) || tableName
+    const tooltipParts = [
+      metadata?.display_name || title,
+      `ID: ${field}`,
+      metadata?.description || '',
+      `Table: ${tableDisplayName}`
+    ]
+    if (aggregation) {
+      const pathLabel = formatMetricPath(aggregation)
+      if (pathLabel) tooltipParts.push(pathLabel)
+    }
+    const tooltipText = tooltipParts.filter(Boolean).join('\n')
+
+    const menuOpen =
+      activeFilterMenu?.tableName === tableName &&
+      activeFilterMenu.columnName === field &&
+      activeFilterMenu.countKey === cacheKey
+    const columnActive = hasColumnFilter(field, cacheKey)
+
+    const actionButtons = (
+      <>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            toggleDashboard(tableName, field)
+          }}
+          style={{
+            border: 'none',
+            background: isOnDashboard(tableName, field) ? '#4CAF50' : '#f0f0f0',
+            color: isOnDashboard(tableName, field) ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.7rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title={isOnDashboard(tableName, field) ? 'Remove from dashboard' : 'Add to dashboard'}
+        >
+          {isOnDashboard(tableName, field) ? '✓' : '+'}
+        </button>
+        <button
+          type="button"
+          onClick={event => {
+            event.stopPropagation()
+            setActiveFilterMenu(prev =>
+              prev && prev.tableName === tableName && prev.columnName === field && prev.countKey === cacheKey
+                ? null
+                : { tableName, columnName: field, countKey: cacheKey }
+            )
+          }}
+          style={{
+            border: 'none',
+            background: menuOpen || columnActive ? '#1976D2' : '#f0f0f0',
+            color: menuOpen || columnActive ? 'white' : '#333',
+            borderRadius: '50%',
+            width: '20px',
+            height: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '0.7rem',
+            cursor: 'pointer',
+            lineHeight: 1
+          }}
+          title={columnActive ? 'Active filter' : 'Filter'}
+        >
+          ≡
+        </button>
+      </>
+    )
+
+    const containerStyle: React.CSSProperties = {
+      position: 'relative',
+      background: 'white',
+      padding: '0.5rem',
+      borderRadius: '8px',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+      width: '708px',
+      minHeight: '400px',
+      boxSizing: 'border-box',
+      flexShrink: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      border: tableColor ? `2px solid ${tableColor}20` : undefined
+    }
+
+    const countIndicator = countIndicatorOverride ?? renderTableCountIndicator(tableName, field, cacheKey)
+
+    const metricLabels = getMetricLabels(aggregation)
+    const pathLabel = formatMetricPath(aggregation)
+
+    // Map state values to codes for Plotly choropleth
+    const locationCodes: (string | null)[] = []
+    const zValues: number[] = []
+    const hoverTexts: string[] = []
+    const filterValues: any[] = []
+
+    aggregation.categories.forEach(category => {
+      const stateValue = category.value === '' ? '(Empty)' : String(category.value)
+      const normalizedName = normalizeStateName(stateValue)
+      const stateCode = getStateCode(normalizedName)
+
+      if (stateCode) {
+        locationCodes.push(stateCode)
+        zValues.push(category.count)
+        hoverTexts.push(normalizedName)
+        filterValues.push(normalizeFilterValue(category.value))
+      }
+    })
+
+    if (locationCodes.length === 0) {
+      return (
+        <div style={containerStyle}>
+          {renderChartHeader({
+            title: metadata?.display_name || title,
+            tooltip: tooltipText,
+            countIndicator,
+            actions: actionButtons
+          })}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flex: 1,
+            color: '#666',
+            fontSize: '0.875rem'
+          }}>
+            No valid US state data found
+          </div>
+        </div>
+      )
+    }
+
+    const totalCount = aggregation.total_rows ?? zValues.reduce((sum, val) => sum + val, 0)
+
+    const baselineAggregation = getBaselineAggregation(tableName, field)
+    const categoriesForMenu =
+      metricsMatch(baselineAggregation, aggregation) && baselineAggregation?.categories?.length
+        ? baselineAggregation.categories
+        : aggregation.categories
+
+    return (
+      <div style={containerStyle}>
+        {renderChartHeader({
+          title: metadata?.display_name || title,
+          tooltip: tooltipText,
+          countIndicator,
+          actions: actionButtons
+        })}
+        <Plot
+          data={[{
+            type: 'choropleth',
+            locationmode: 'USA-states',
+            locations: locationCodes,
+            z: zValues,
+            text: hoverTexts,
+            hovertemplate: `${['%{text}', `Count (${metricLabels.short}): %{z}`, 'Percent: %{customdata}%']
+              .concat(pathLabel ? [pathLabel] : [])
+              .join('<br>')}<extra></extra>`,
+            customdata: zValues.map(val =>
+              totalCount > 0 ? ((val / totalCount) * 100).toFixed(1) : '0'
+            ),
+            colorscale: [
+              [0, tableColor ? `${tableColor}40` : '#E3F2FD'],
+              [1, tableColor || '#2196F3']
+            ],
+            marker: {
+              line: {
+                color: locationCodes.map((_code, idx) =>
+                  isValueFiltered(field, filterValues[idx], cacheKey) ? '#000' : 'white'
+                ),
+                width: locationCodes.map((_code, idx) =>
+                  isValueFiltered(field, filterValues[idx], cacheKey) ? 3 : 1
+                )
+              }
+            },
+            showscale: true,
+            colorbar: {
+              title: metricLabels.short,
+              titleside: 'right',
+              tickfont: { size: 10 },
+              len: 0.7
+            }
+          }]}
+          layout={{
+            geo: {
+              scope: 'usa',
+              projection: { type: 'albers usa' },
+              showlakes: true,
+              lakecolor: 'rgb(255, 255, 255)'
+            },
+            height: 380,
+            margin: { t: 5, b: 5, l: 5, r: 5 },
+            paper_bgcolor: 'transparent',
+            dragmode: false
+          }}
+          config={{
+            displayModeBar: false,
+            responsive: true,
+            staticPlot: false,
+            scrollZoom: false
+          }}
+          style={{ width: '698px', height: '380px', cursor: 'pointer' }}
+          onClick={(event: PlotMouseEvent) => {
+            const point = event.points?.[0]
+            if (!point) return
+
+            const pointIndex = point.pointIndex
+            if (typeof pointIndex === 'number' && pointIndex >= 0 && pointIndex < filterValues.length) {
+              const clickedValue = filterValues[pointIndex]
+              toggleFilter(field, clickedValue, tableName, cacheKey)
+            }
+          }}
+          onSelected={(event: PlotSelectionEvent) => {
+            if (!event?.points || event.points.length === 0) return
+            const selectedValues = event.points
+              .map(p => p.pointIndex)
+              .filter((idx): idx is number => typeof idx === 'number' && idx >= 0 && idx < filterValues.length)
+              .map(idx => filterValues[idx])
+
+            if (selectedValues.length > 0) {
+              setFilters(prev => [
+                ...removeColumnFilters(prev, field, cacheKey),
+                { column: field, operator: 'in', value: selectedValues, tableName, countByKey: cacheKey }
+              ])
+            }
+          }}
+        />
+        {renderFilterMenu(tableName, field, categoriesForMenu, cacheKey)}
+      </div>
+    )
+  }
+
 
   if (loading) return <p>Loading explorer...</p>
   if (!dataset) return <p>Dataset not found</p>
@@ -5224,6 +5481,20 @@ const renderNumericFilterMenu = (
                         )}
                       </div>
                     )
+                  } else if (aggregation.display_type === 'geographic' && aggregation.categories) {
+                    return (
+                      <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 4' }}>
+                        {renderMapChart(
+                          displayTitle,
+                          tableName,
+                          columnName,
+                          tableColor,
+                          aggregation,
+                          overrideKey,
+                          indicatorNode
+                        )}
+                      </div>
+                    )
                   }
                   return null
                 })}
@@ -5481,6 +5752,12 @@ const renderNumericFilterMenu = (
                   return (
                     <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2' }}>
                       {renderHistogram(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
+                    </div>
+                  )
+                } else if (agg.display_type === 'geographic' && agg.categories) {
+                  return (
+                    <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 4' }}>
+                      {renderMapChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
                     </div>
                   )
                 }
