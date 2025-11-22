@@ -1,0 +1,101 @@
+patient_id,state,age,diagnosis,treatment_cost,outcome
+1,California,45,Cancer,125000,Remission
+2,Texas,62,Diabetes,45000,Stable
+3,New York,38,Cancer,135000,Remission
+4,Florida,55,Heart Disease,85000,Improved
+5,California,71,Diabetes,52000,Stable
+6,Illinois,49,Cancer,118000,Remission
+7,Pennsylvania,58,Heart Disease,92000,Improved
+8,Ohio,43,Cancer,122000,Deceased
+9,Georgia,67,Diabetes,48000,Stable
+10,North Carolina,52,Heart Disease,88000,Improved
+11,Michigan,39,Cancer,128000,Remission
+12,New Jersey,61,Diabetes,51000,Stable
+13,Virginia,47,Cancer,115000,Remission
+14,Washington,54,Heart Disease,89000,Improved
+15,Arizona,68,Diabetes,49000,Stable
+16,Massachusetts,41,Cancer,132000,Remission
+17,Tennessee,59,Heart Disease,91000,Improved
+18,Indiana,44,Cancer,119000,Remission
+19,Missouri,65,Diabetes,47000,Stable
+20,Maryland,50,Heart Disease,87000,Improved
+21,Wisconsin,42,Cancer,121000,Remission
+22,Colorado,63,Diabetes,50000,Stable
+23,Minnesota,48,Cancer,117000,Deceased
+24,South Carolina,57,Heart Disease,90000,Improved
+25,Alabama,69,Diabetes,46000,Stable
+26,Louisiana,46,Cancer,124000,Remission
+27,Kentucky,60,Heart Disease,86000,Improved
+28,Oregon,40,Cancer,130000,Remission
+29,Oklahoma,66,Diabetes,48500,Stable
+30,Connecticut,51,Heart Disease,88500,Improved
+31,Iowa,43,Cancer,120000,Remission
+32,Utah,64,Diabetes,49500,Stable
+33,Nevada,53,Heart Disease,89500,Improved
+34,Arkansas,70,Diabetes,45500,Stable
+35,Mississippi,56,Heart Disease,87500,Improved
+36,Kansas,44,Cancer,123000,Remission
+37,New Mexico,62,Diabetes,50500,Stable
+38,Nebraska,49,Cancer,116000,Remission
+39,West Virginia,58,Heart Disease,91500,Improved
+40,Idaho,45,Cancer,125500,Remission
+41,Hawaii,67,Diabetes,47500,Stable
+42,New Hampshire,52,Heart Disease,88000,Improved
+43,Maine,41,Cancer,129000,Remission
+44,Montana,63,Diabetes,49000,Stable
+45,Rhode Island,48,Cancer,118500,Remission
+46,Delaware,59,Heart Disease,90500,Improved
+47,South Dakota,46,Cancer,124500,Remission
+48,North Dakota,65,Diabetes,48000,Stable
+49,Alaska,54,Heart Disease,89000,Improved
+50,Vermont,42,Cancer,127000,Remission
+51,Wyoming,68,Diabetes,46500,Stable
+52,CA,37,Cancer,133000,Remission
+53,TX,72,Diabetes,44000,Stable
+54,NY,56,Heart Disease,92500,Improved
+55,California,48,Cancer,119500,Deceased
+56,Texas,61,Diabetes,50000,Stable
+57,Florida,39,Cancer,131000,Remission
+58,Illinois,66,Diabetes,47000,Stable
+59,Pennsylvania,53,Heart Disease,88500,Improved
+60,Ohio,44,Cancer,121500,Remission
+61,Georgia,69,Diabetes,45000,Stable
+62,North Carolina,51,Heart Disease,87000,Improved
+63,Michigan,40,Cancer,129500,Remission
+64,New Jersey,64,Diabetes,49500,Stable
+65,Virginia,49,Cancer,117500,Remission
+66,Washington,58,Heart Disease,90000,Improved
+67,Arizona,71,Diabetes,44500,Stable
+68,Massachusetts,43,Cancer,126000,Remission
+69,Tennessee,62,Heart Disease,86500,Improved
+70,Indiana,47,Cancer,120500,Remission
+71,Missouri,68,Diabetes,46000,Stable
+72,Maryland,52,Heart Disease,88500,Improved
+73,Wisconsin,41,Cancer,128500,Remission
+74,Colorado,65,Diabetes,48500,Stable
+75,Minnesota,50,Cancer,118000,Remission
+76,South Carolina,59,Heart Disease,91000,Improved
+77,Alabama,72,Diabetes,43500,Stable
+78,Louisiana,48,Cancer,122500,Remission
+79,Kentucky,63,Heart Disease,87500,Improved
+80,Oregon,42,Cancer,127500,Remission
+81,Oklahoma,69,Diabetes,45500,Stable
+82,Connecticut,54,Heart Disease,89500,Improved
+83,Iowa,45,Cancer,123500,Remission
+84,Utah,67,Diabetes,47500,Stable
+85,Nevada,55,Heart Disease,90500,Improved
+86,Arkansas,73,Diabetes,42500,Stable
+87,Mississippi,60,Heart Disease,86000,Improved
+88,Kansas,46,Cancer,121000,Remission
+89,New Mexico,64,Diabetes,48000,Stable
+90,Nebraska,51,Cancer,119000,Remission
+91,West Virginia,61,Heart Disease,87000,Improved
+92,Idaho,47,Cancer,122000,Remission
+93,Hawaii,70,Diabetes,44000,Stable
+94,New Hampshire,54,Heart Disease,89000,Improved
+95,Maine,43,Cancer,126500,Remission
+96,Montana,66,Diabetes,46500,Stable
+97,Rhode Island,50,Cancer,120000,Remission
+98,Delaware,62,Heart Disease,88000,Improved
+99,South Dakota,48,Cancer,121500,Remission
+100,North Dakota,68,Diabetes,45000,Stable

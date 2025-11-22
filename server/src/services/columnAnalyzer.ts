@@ -4,12 +4,12 @@ const qualifyTableName = (tableName: string): string =>
   tableName.includes('.') ? tableName : `biai.${tableName}`
 
 export interface ColumnAnalysis {
-  display_type: 'categorical' | 'numeric' | 'datetime' | 'survival_time' | 'survival_status' | 'id' | 'text'
+  display_type: 'categorical' | 'numeric' | 'datetime' | 'survival_time' | 'survival_status' | 'id' | 'text' | 'geographic'
   unique_value_count: number
   null_count: number
   min_value: string | null
   max_value: string | null
-  suggested_chart: 'pie' | 'bar' | 'histogram' | 'survival' | 'none'
+  suggested_chart: 'pie' | 'bar' | 'histogram' | 'survival' | 'none' | 'map'
   display_priority: number
   is_hidden: boolean
 }
@@ -172,6 +172,32 @@ function detectDisplayType(
     return 'survival_status'
   }
 
+  // Geographic columns - use exact matches or word boundaries to avoid false positives
+  // (e.g., don't match "prostate_status" or "estate_value")
+  const geographicPatterns = [
+    /^state$/,           // exact: "state"
+    /^state_/,           // prefix: "state_code", "state_name"
+    /_state$/,           // suffix: "patient_state", "billing_state"
+    /^county$/,          // exact: "county"
+    /^county_/,          // prefix: "county_name", "county_code"
+    /_county$/,          // suffix: "residence_county"
+    /^country$/,         // exact: "country"
+    /^country_/,         // prefix: "country_code", "country_name"
+    /_country$/,         // suffix: "birth_country"
+    /^region$/,          // exact: "region"
+    /^region_/,          // prefix: "region_name", "region_code"
+    /_region$/,          // suffix: "geographic_region"
+    /^province$/,        // exact: "province"
+    /^province_/,        // prefix: "province_name"
+    /_province$/,        // suffix: "birth_province"
+    /^territory$/,       // exact: "territory"
+    /^territory_/,       // prefix: "territory_name"
+    /_territory$/        // suffix: "home_territory"
+  ]
+  if (geographicPatterns.some(pattern => pattern.test(nameLower))) {
+    return 'geographic'
+  }
+
   // Datetime columns
   if (columnType.includes('Date') || nameLower.includes('date') || nameLower.includes('time')) {
     return 'datetime'
@@ -208,6 +234,11 @@ function suggestChartType(
   // Survival columns are charted together as survival curves
   if (displayType === 'survival_time' || displayType === 'survival_status') {
     return 'survival'
+  }
+
+  // Geographic columns - render as maps
+  if (displayType === 'geographic') {
+    return 'map'
   }
 
   // Datetime - could be timeline, but skip for now

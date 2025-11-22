@@ -1363,6 +1363,7 @@ function DatasetManage() {
                           <option value="numeric">Numeric</option>
                           <option value="text">Text</option>
                           <option value="date">Date</option>
+                          <option value="geographic">Geographic</option>
                           <option value="boolean">Boolean</option>
                         </select>
                       </div>
