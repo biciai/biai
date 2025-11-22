@@ -3975,26 +3975,8 @@ const renderNumericFilterMenu = (
     })
 
     if (locationCodes.length === 0) {
-      return (
-        <div style={containerStyle}>
-          {renderChartHeader({
-            title: metadata?.display_name || title,
-            tooltip: tooltipText,
-            countIndicator,
-            actions: actionButtons
-          })}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flex: 1,
-            color: '#666',
-            fontSize: '0.875rem'
-          }}>
-            No valid US state data found
-          </div>
-        </div>
-      )
+      // No valid US state data - fall back to categorical table view
+      return renderTableView(title, tableName, field, tableColor, aggregationOverride, cacheKeyOverride, countIndicatorOverride)
     }
 
     const totalCount = aggregation.total_rows ?? zValues.reduce((sum, val) => sum + val, 0)

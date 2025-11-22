@@ -2,7 +2,7 @@ patient_id,state,age,diagnosis,treatment_cost,outcome
 1,California,45,Cancer,125000,Remission
 2,Texas,62,Diabetes,45000,Stable
 3,New York,38,Cancer,135000,Remission
-4,FL,55,Heart Disease,85000,Improved
+4,Florida,55,Heart Disease,85000,Improved
 5,California,71,Diabetes,52000,Stable
 6,Illinois,49,Cancer,118000,Remission
 7,Pennsylvania,58,Heart Disease,92000,Improved

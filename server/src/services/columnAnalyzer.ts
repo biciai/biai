@@ -172,10 +172,29 @@ function detectDisplayType(
     return 'survival_status'
   }
 
-  // Geographic columns
-  if (nameLower.includes('state') || nameLower.includes('county') ||
-      nameLower.includes('country') || nameLower.includes('region') ||
-      nameLower.includes('province') || nameLower.includes('territory')) {
+  // Geographic columns - use exact matches or word boundaries to avoid false positives
+  // (e.g., don't match "prostate_status" or "estate_value")
+  const geographicPatterns = [
+    /^state$/,           // exact: "state"
+    /^state_/,           // prefix: "state_code", "state_name"
+    /_state$/,           // suffix: "patient_state", "billing_state"
+    /^county$/,          // exact: "county"
+    /^county_/,          // prefix: "county_name", "county_code"
+    /_county$/,          // suffix: "residence_county"
+    /^country$/,         // exact: "country"
+    /^country_/,         // prefix: "country_code", "country_name"
+    /_country$/,         // suffix: "birth_country"
+    /^region$/,          // exact: "region"
+    /^region_/,          // prefix: "region_name", "region_code"
+    /_region$/,          // suffix: "geographic_region"
+    /^province$/,        // exact: "province"
+    /^province_/,        // prefix: "province_name"
+    /_province$/,        // suffix: "birth_province"
+    /^territory$/,       // exact: "territory"
+    /^territory_/,       // prefix: "territory_name"
+    /_territory$/        // suffix: "home_territory"
+  ]
+  if (geographicPatterns.some(pattern => pattern.test(nameLower))) {
     return 'geographic'
   }
 
