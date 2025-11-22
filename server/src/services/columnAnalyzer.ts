@@ -158,20 +158,6 @@ function detectDisplayType(
     return 'id'
   }
 
-  // Survival time columns
-  if ((nameLower.includes('months') || nameLower.includes('days') || nameLower.includes('time')) &&
-      (nameLower.includes('survival') || nameLower.includes('os') ||
-       nameLower.includes('pfs') || nameLower.includes('dfs') || nameLower.includes('dss'))) {
-    return 'survival_time'
-  }
-
-  // Survival status columns
-  if (nameLower.includes('status') &&
-      (nameLower.includes('survival') || nameLower.includes('os') ||
-       nameLower.includes('pfs') || nameLower.includes('dfs') || nameLower.includes('dss'))) {
-    return 'survival_status'
-  }
-
   // Geographic columns - use exact matches or word boundaries to avoid false positives
   // (e.g., don't match "prostate_status" or "estate_value")
   const geographicPatterns = [
@@ -231,9 +217,12 @@ function suggestChartType(
     return 'none'
   }
 
-  // Survival columns are charted together as survival curves
-  if (displayType === 'survival_time' || displayType === 'survival_status') {
-    return 'survival'
+  // Treat survival columns like their base types so they still render
+  if (displayType === 'survival_time') {
+    return stats.unique_count >= 10 ? 'histogram' : 'none'
+  }
+  if (displayType === 'survival_status') {
+    return 'bar'
   }
 
   // Geographic columns - render as maps
@@ -283,11 +272,6 @@ function calculatePriority(
 ): number {
   const nameLower = columnName.toLowerCase()
   let priority = 0
-
-  // Survival curves get highest priority
-  if (displayType === 'survival_time' || displayType === 'survival_status') {
-    priority = 1000
-  }
 
   // Common demographic/clinical fields
   const highPriorityFields = ['sex', 'gender', 'age', 'race', 'ethnicity', 'status', 'type', 'stage', 'grade']

@@ -808,9 +808,16 @@ class AggregationService {
     const basicStats = await basicStatsResult.json<{ null_count: number; unique_count: number }>()
     const { null_count, unique_count } = basicStats[0]
 
+    const effectiveDisplayType =
+      displayType === 'survival_time'
+        ? 'numeric'
+        : displayType === 'survival_status'
+          ? 'categorical'
+          : displayType
+
     const aggregation: ColumnAggregation = {
       column_name: columnName,
-      display_type: displayType,
+      display_type: effectiveDisplayType,
       total_rows: filteredTotalRows,
       null_count,
       unique_count,
@@ -821,9 +828,9 @@ class AggregationService {
     }
 
     // Get aggregation based on display type
-    if (displayType === 'categorical' || displayType === 'id' || displayType === 'geographic') {
+    if (effectiveDisplayType === 'categorical' || effectiveDisplayType === 'id' || effectiveDisplayType === 'geographic') {
       // Use higher limit for geographic columns (to include all US states/territories)
-      const categoryLimit = displayType === 'geographic' ? 100 : 50
+      const categoryLimit = effectiveDisplayType === 'geographic' ? 100 : 50
       aggregation.categories = await this.getCategoricalAggregation(
         qualifiedTableName,
         columnName,
@@ -832,7 +839,7 @@ class AggregationService {
         whereClause,
         metricContext
       )
-    } else if (displayType === 'numeric') {
+    } else if (effectiveDisplayType === 'numeric') {
       aggregation.numeric_stats = await this.getNumericStats(
         qualifiedTableName,
         columnName,
