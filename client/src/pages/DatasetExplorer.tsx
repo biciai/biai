@@ -3939,10 +3939,8 @@ const renderNumericFilterMenu = (
     const pathLabel = formatMetricPath(aggregation)
 
     // Map state values to codes for Plotly choropleth
-    const locationCodes: (string | null)[] = []
-    const zValues: number[] = []
-    const hoverTexts: string[] = []
-    const filterValues: any[] = []
+    // Aggregate counts by state code (to handle both "CA" and "California")
+    const stateMap = new Map<string, { count: number, name: string, originalValues: any[] }>()
 
     aggregation.categories.forEach(category => {
       const stateValue = category.value === '' ? '(Empty)' : String(category.value)
@@ -3950,11 +3948,30 @@ const renderNumericFilterMenu = (
       const stateCode = getStateCode(normalizedName)
 
       if (stateCode) {
-        locationCodes.push(stateCode)
-        zValues.push(category.count)
-        hoverTexts.push(normalizedName)
-        filterValues.push(normalizeFilterValue(category.value))
+        const existing = stateMap.get(stateCode)
+        if (existing) {
+          existing.count += category.count
+          existing.originalValues.push(normalizeFilterValue(category.value))
+        } else {
+          stateMap.set(stateCode, {
+            count: category.count,
+            name: normalizedName,
+            originalValues: [normalizeFilterValue(category.value)]
+          })
+        }
       }
+    })
+
+    const locationCodes: string[] = []
+    const zValues: number[] = []
+    const hoverTexts: string[] = []
+    const filterValues: any[][] = []
+
+    stateMap.forEach((data, code) => {
+      locationCodes.push(code)
+      zValues.push(data.count)
+      hoverTexts.push(data.name)
+      filterValues.push(data.originalValues)
     })
 
     if (locationCodes.length === 0) {
@@ -4016,10 +4033,10 @@ const renderNumericFilterMenu = (
             marker: {
               line: {
                 color: locationCodes.map((_code, idx) =>
-                  isValueFiltered(field, filterValues[idx], cacheKey) ? '#000' : 'white'
+                  filterValues[idx].some(v => isValueFiltered(field, v, cacheKey)) ? '#000' : 'white'
                 ),
                 width: locationCodes.map((_code, idx) =>
-                  isValueFiltered(field, filterValues[idx], cacheKey) ? 3 : 1
+                  filterValues[idx].some(v => isValueFiltered(field, v, cacheKey)) ? 3 : 1
                 )
               }
             },
@@ -4056,8 +4073,17 @@ const renderNumericFilterMenu = (
 
             const pointIndex = point.pointIndex
             if (typeof pointIndex === 'number' && pointIndex >= 0 && pointIndex < filterValues.length) {
-              const clickedValue = filterValues[pointIndex]
-              toggleFilter(field, clickedValue, tableName, cacheKey)
+              const stateValues = filterValues[pointIndex]
+              // If state has multiple representations (e.g., "CA" and "California"), handle as multi-value
+              if (stateValues.length === 1) {
+                toggleFilter(field, stateValues[0], tableName, cacheKey)
+              } else {
+                // Create/toggle filter with all state representations
+                setFilters(prev => [
+                  ...removeColumnFilters(prev, field, cacheKey),
+                  { column: field, operator: 'in', value: stateValues, tableName, countByKey: cacheKey }
+                ])
+              }
             }
           }}
           onSelected={(event: PlotSelectionEvent) => {
@@ -4065,7 +4091,7 @@ const renderNumericFilterMenu = (
             const selectedValues = event.points
               .map(p => p.pointIndex)
               .filter((idx): idx is number => typeof idx === 'number' && idx >= 0 && idx < filterValues.length)
-              .map(idx => filterValues[idx])
+              .flatMap(idx => filterValues[idx]) // Flatten all state value arrays
 
             if (selectedValues.length > 0) {
               setFilters(prev => [
