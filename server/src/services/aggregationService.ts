@@ -821,7 +821,7 @@ class AggregationService {
     }
 
     // Get aggregation based on display type
-    if (displayType === 'categorical' || displayType === 'id') {
+    if (displayType === 'categorical' || displayType === 'id' || displayType === 'geographic') {
       aggregation.categories = await this.getCategoricalAggregation(
         qualifiedTableName,
         columnName,
