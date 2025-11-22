@@ -158,6 +158,17 @@ function detectDisplayType(
     return 'id'
   }
 
+  // Survival time/status columns (keep semantic detection)
+  const nameTokens = nameLower.split(/[^a-z0-9]+/).filter(Boolean)
+  const hasSurvivalToken = nameTokens.some(token => ['survival', 'os', 'pfs', 'dfs', 'dss'].includes(token))
+  const looksLikeTime = nameLower.includes('months') || nameLower.includes('days') || nameLower.includes('time')
+  if (hasSurvivalToken && looksLikeTime) {
+    return 'survival_time'
+  }
+  if (hasSurvivalToken && nameLower.includes('status')) {
+    return 'survival_status'
+  }
+
   // Geographic columns - use exact matches or word boundaries to avoid false positives
   // (e.g., don't match "prostate_status" or "estate_value")
   const geographicPatterns = [

@@ -73,7 +73,23 @@ describe('Column Analyzer', () => {
       const result = await analyzeColumn('test_table', 'description', 'String')
       // 95/100 unique values is still categorical (threshold is >95%)
       expect(result.display_type).toBe('categorical')
-      expect(result.suggested_chart).toBe('none')
+      expect(result.suggested_chart).toBe('bar')
+    })
+
+    test('should identify survival time columns', async () => {
+      mockNumericStats({ unique_count: 50, null_count: 2, min_value: '0', max_value: '120' })
+      const result = await analyzeColumn('test_table', 'os_months', 'Float64')
+      expect(result.display_type).toBe('survival_time')
+      expect(result.suggested_chart).toBe('histogram')
+      expect(result.is_hidden).toBe(false)
+    })
+
+    test('should identify survival status columns', async () => {
+      mockColumnStats({ unique_count: 3, null_count: 0 })
+      const result = await analyzeColumn('test_table', 'os_status', 'String')
+      expect(result.display_type).toBe('survival_status')
+      expect(result.suggested_chart).toBe('bar')
+      expect(result.is_hidden).toBe(false)
     })
   })
 
