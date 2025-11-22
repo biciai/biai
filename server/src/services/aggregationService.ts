@@ -822,11 +822,13 @@ class AggregationService {
 
     // Get aggregation based on display type
     if (displayType === 'categorical' || displayType === 'id' || displayType === 'geographic') {
+      // Use higher limit for geographic columns (to include all US states/territories)
+      const categoryLimit = displayType === 'geographic' ? 100 : 50
       aggregation.categories = await this.getCategoricalAggregation(
         qualifiedTableName,
         columnName,
         filteredTotalRows,
-        50,
+        categoryLimit,
         whereClause,
         metricContext
       )
