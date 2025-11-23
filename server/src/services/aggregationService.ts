@@ -1263,7 +1263,9 @@ class AggregationService {
         toInt64OrNull(${this.columnRef(statusColumn)}),
         multiIf(
           ${statusExpr} IN ('1','true','t','yes','y','dead','deceased','death','died','event','progressed','progression','relapse'), 1,
+          startsWith(${statusExpr}, '1') OR startsWith(${statusExpr}, 'event') OR position(${statusExpr}, 'deceased') > 0 OR position(${statusExpr}, 'death') > 0 OR position(${statusExpr}, 'dead') > 0, 1,
           ${statusExpr} IN ('0','false','f','no','n','alive','living','censored','censor','none','ongoing'), 0,
+          startsWith(${statusExpr}, '0') OR position(${statusExpr}, 'alive') > 0 OR position(${statusExpr}, 'living') > 0 OR position(${statusExpr}, 'censor') > 0, 0,
           null
         )
       )
