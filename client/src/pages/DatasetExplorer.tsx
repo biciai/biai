@@ -262,6 +262,7 @@ function DatasetExplorer() {
   const [activeCountMenuKey, setActiveCountMenuKey] = useState<string | null>(null)
   const [ancestorOptions, setAncestorOptions] = useState<Record<string, AncestorOption[]>>({})
   const [visibleDashboardKeys, setVisibleDashboardKeys] = useState<Record<string, boolean>>({})
+  const [survivalViewPreferences, setSurvivalViewPreferences] = useState<Record<string, 'histogram' | 'km'>>({})
   const survivalRequests = useRef<Set<string>>(new Set())
   const dashboardObserverRef = useRef<IntersectionObserver | null>(null)
   const dashboardCardRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -521,6 +522,21 @@ function DatasetExplorer() {
         console.error('Failed to save view preferences:', error)
       }
       return updated
+    })
+  }
+
+  // Survival view preferences (histogram vs KM)
+  const getSurvivalViewPreference = (tableName: string, columnName: string): 'histogram' | 'km' => {
+    const key = `${tableName}.${columnName}`
+    return survivalViewPreferences[key] || 'histogram'
+  }
+
+  const toggleSurvivalViewPreference = (tableName: string, columnName: string) => {
+    const key = `${tableName}.${columnName}`
+    setSurvivalViewPreferences(prev => {
+      const current = prev[key] || 'histogram'
+      const next = current === 'histogram' ? 'km' : 'histogram'
+      return { ...prev, [key]: next }
     })
   }
 
@@ -3699,7 +3715,8 @@ const renderNumericFilterMenu = (
     tableColor?: string,
     aggregationOverride?: ColumnAggregation,
     cacheKeyOverride?: string,
-    countIndicatorOverride?: React.ReactNode
+    countIndicatorOverride?: React.ReactNode,
+    extraActions?: React.ReactNode
   ) => {
     const cacheKey = cacheKeyOverride ?? getEffectiveCacheKeyForChart(tableName, field)
     const aggregation =
@@ -3801,6 +3818,7 @@ const renderNumericFilterMenu = (
         >
           ⚲
         </button>
+        {extraActions}
       </>
     )
 
@@ -3942,7 +3960,8 @@ const renderNumericFilterMenu = (
     tableColor?: string,
     aggregationOverride?: ColumnAggregation,
     cacheKeyOverride?: string,
-    countIndicatorOverride?: React.ReactNode
+    countIndicatorOverride?: React.ReactNode,
+    extraActions?: React.ReactNode
   ) => {
     const cacheKey = cacheKeyOverride ?? getEffectiveCacheKeyForChart(tableName, field)
     const aggregation =
@@ -4030,6 +4049,7 @@ const renderNumericFilterMenu = (
         >
           ⚲
         </button>
+        {extraActions}
       </>
     )
 
@@ -5810,16 +5830,37 @@ const renderNumericFilterMenu = (
                       </div>
                     )
                   } else if (metaDisplayType === 'survival_time') {
-                    const kmKey = `${cardKey}-km`
-                    const histKey = `${cardKey}-hist`
-                    return [
-                      (
-                        <div
-                          key={kmKey}
-                          ref={kmKey === cardKey ? cardRef : undefined}
-                          data-dashboard-key={kmKey}
-                          style={{ gridColumn: 'span 4', gridRow: 'span 3' }}
-                        >
+                    const view = getSurvivalViewPreference(tableName, columnName)
+                    const toggleButton = (
+                      <button
+                        type="button"
+                        onClick={event => {
+                          event.stopPropagation()
+                          toggleSurvivalViewPreference(tableName, columnName)
+                        }}
+                        style={{
+                          border: 'none',
+                          background: '#f0f0f0',
+                          color: '#333',
+                          borderRadius: '50%',
+                          width: '20px',
+                          height: '20px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '0.7rem',
+                          cursor: 'pointer',
+                          lineHeight: 1
+                        }}
+                        title={view === 'km' ? 'Show histogram' : 'Show survival curve'}
+                      >
+                        {view === 'km' ? 'H' : 'KM'}
+                      </button>
+                    )
+
+                    if (view === 'km') {
+                      return (
+                        <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 4', gridRow: 'span 2' }}>
                           {renderSurvivalChart(
                             displayTitle,
                             tableName,
@@ -5827,24 +5868,27 @@ const renderNumericFilterMenu = (
                             tableColor,
                             aggregation,
                             overrideKey,
-                            indicatorNode
-                          )}
-                        </div>
-                      ),
-                      (
-                        <div key={histKey} data-dashboard-key={histKey} style={{ gridColumn: 'span 2' }}>
-                          {renderHistogram(
-                            `${displayTitle} (histogram)`,
-                            tableName,
-                            columnName,
-                            tableColor,
-                            aggregation,
-                            overrideKey,
-                            indicatorNode
+                            indicatorNode,
+                            toggleButton
                           )}
                         </div>
                       )
-                    ]
+                    }
+
+                    return (
+                      <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
+                        {renderHistogram(
+                          displayTitle,
+                          tableName,
+                          columnName,
+                          tableColor,
+                          aggregation,
+                          overrideKey,
+                          indicatorNode,
+                          toggleButton
+                        )}
+                      </div>
+                    )
                   } else if (normalizedDisplayType === 'numeric' && aggregation.histogram) {
                     return (
                       <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
@@ -6131,20 +6175,47 @@ const renderNumericFilterMenu = (
                     </div>
                   )
                 } else if (metaDisplayType === 'survival_time') {
-                  const kmKey = `${table.name}_${agg.column_name}_km`
-                  const histKey = `${table.name}_${agg.column_name}_hist`
-                  return [
-                    (
-                      <div key={kmKey} style={{ gridColumn: 'span 4', gridRow: 'span 3' }}>
-                        {renderSurvivalChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
-                      </div>
-                    ),
-                    (
-                      <div key={histKey} style={{ gridColumn: 'span 2' }}>
-                        {renderHistogram(`${displayTitle} (histogram)`, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
+                  const view = getSurvivalViewPreference(table.name, agg.column_name)
+                  const toggleButton = (
+                    <button
+                      type="button"
+                      onClick={event => {
+                        event.stopPropagation()
+                        toggleSurvivalViewPreference(table.name, agg.column_name)
+                      }}
+                      style={{
+                        border: 'none',
+                        background: '#f0f0f0',
+                        color: '#333',
+                        borderRadius: '50%',
+                        width: '20px',
+                        height: '20px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '0.7rem',
+                        cursor: 'pointer',
+                        lineHeight: 1
+                      }}
+                      title={view === 'km' ? 'Show histogram' : 'Show survival curve'}
+                    >
+                      {view === 'km' ? 'H' : 'KM'}
+                    </button>
+                  )
+
+                  if (view === 'km') {
+                    return (
+                      <div key={`${table.name}_${agg.column_name}_km`} style={{ gridColumn: 'span 4', gridRow: 'span 2' }}>
+                        {renderSurvivalChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey, undefined, toggleButton)}
                       </div>
                     )
-                  ]
+                  }
+
+                  return (
+                    <div key={`${table.name}_${agg.column_name}_hist`} style={{ gridColumn: 'span 2' }}>
+                      {renderHistogram(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey, undefined, toggleButton)}
+                    </div>
+                  )
                 } else if (normalizedDisplayType === 'numeric' && agg.histogram) {
                   return (
                     <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2' }}>
