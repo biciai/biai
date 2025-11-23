@@ -3961,7 +3961,8 @@ const renderNumericFilterMenu = (
     aggregationOverride?: ColumnAggregation,
     cacheKeyOverride?: string,
     countIndicatorOverride?: React.ReactNode,
-    extraActions?: React.ReactNode
+    extraActions?: React.ReactNode,
+    showHistogram: boolean = true
   ) => {
     const cacheKey = cacheKeyOverride ?? getEffectiveCacheKeyForChart(tableName, field)
     const aggregation =
@@ -4142,7 +4143,7 @@ const renderNumericFilterMenu = (
       borderRadius: '8px',
       boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
       width: '100%',
-      minHeight: '420px',
+      minHeight: showHistogram ? '420px' : '320px',
       boxSizing: 'border-box',
       flexShrink: 0,
       display: 'flex',
@@ -4161,13 +4162,15 @@ const renderNumericFilterMenu = (
           countIndicator,
           actions: actionButtons
         })}
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '0.5rem', flex: 1 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: showHistogram ? '2fr 1fr' : '1fr', gap: '0.5rem', flex: 1 }}>
           <div style={{ background: '#fafafa', borderRadius: '6px', padding: '0.35rem' }}>
             {survivalPlot}
           </div>
-          <div style={{ background: '#fafafa', borderRadius: '6px', padding: '0.35rem' }}>
-            {histogramPlot}
-          </div>
+          {showHistogram && (
+            <div style={{ background: '#fafafa', borderRadius: '6px', padding: '0.35rem' }}>
+              {histogramPlot}
+            </div>
+          )}
         </div>
         {renderNumericFilterMenu(tableName, field, displayHistogramForMenu, menuStats, cacheKey)}
       </div>
@@ -5856,7 +5859,7 @@ const renderNumericFilterMenu = (
                         }}
                         title={view === 'km' ? 'Show histogram' : 'Show survival curve'}
                       >
-                        {view === 'km' ? 'H' : 'KM'}
+                        {view === 'km' ? '▦' : '↗'}
                       </button>
                     )
 
@@ -5871,7 +5874,8 @@ const renderNumericFilterMenu = (
                             aggregation,
                             overrideKey,
                             indicatorNode,
-                            toggleButton
+                            toggleButton,
+                            false
                           )}
                         </div>
                       )
@@ -6202,14 +6206,14 @@ const renderNumericFilterMenu = (
                       }}
                       title={view === 'km' ? 'Show histogram' : 'Show survival curve'}
                     >
-                      {view === 'km' ? 'H' : 'KM'}
+                      {view === 'km' ? '▦' : '↗'}
                     </button>
                   )
 
                   if (view === 'km') {
                     return (
                       <div key={`${table.name}_${agg.column_name}_km`} style={{ gridColumn: 'span 4', gridRow: 'span 2' }}>
-                        {renderSurvivalChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey, undefined, toggleButton)}
+                        {renderSurvivalChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey, undefined, toggleButton, false)}
                       </div>
                     )
                   }
