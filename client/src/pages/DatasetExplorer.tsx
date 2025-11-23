@@ -5719,7 +5719,8 @@ const renderNumericFilterMenu = (
                   const indicatorNode = renderDashboardCountIndicator(chartIndex, tableName, columnName, overrideKey)
                   const columnMeta = getColumnMetadata(tableName, columnName)
                   const metaDisplayType = columnMeta?.display_type
-                  const normalizedDisplayType = aggregation.normalized_display_type || aggregation.display_type
+                  const normalizedDisplayType =
+                    aggregation?.normalized_display_type || aggregation?.display_type || metaDisplayType || ''
 
                   if (!aggregation) {
                     return (
@@ -6078,7 +6079,8 @@ const renderNumericFilterMenu = (
                 const aggregationForChart = cacheKey === defaultKey ? agg : undefined
                 const columnMeta = getColumnMetadata(table.name, agg.column_name)
                 const metaDisplayType = columnMeta?.display_type
-                const normalizedDisplayType = agg.normalized_display_type || agg.display_type
+                const normalizedDisplayType =
+                  agg?.normalized_display_type || agg?.display_type || metaDisplayType || ''
 
                 if ((normalizedDisplayType === 'categorical' || metaDisplayType === 'survival_status') && agg.categories) {
                   const categoryCount = agg.categories.length
