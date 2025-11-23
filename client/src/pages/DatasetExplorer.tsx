@@ -5865,7 +5865,7 @@ const renderNumericFilterMenu = (
 
                     if (view === 'km') {
                       return (
-                        <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 4', gridRow: 'span 2' }}>
+                        <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2', gridRow: 'span 2' }}>
                           {renderSurvivalChart(
                             displayTitle,
                             tableName,
@@ -6212,7 +6212,7 @@ const renderNumericFilterMenu = (
 
                   if (view === 'km') {
                     return (
-                      <div key={`${table.name}_${agg.column_name}_km`} style={{ gridColumn: 'span 4', gridRow: 'span 2' }}>
+                      <div key={`${table.name}_${agg.column_name}_km`} style={{ gridColumn: 'span 2', gridRow: 'span 2' }}>
                         {renderSurvivalChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey, undefined, toggleButton, false)}
                       </div>
                     )
