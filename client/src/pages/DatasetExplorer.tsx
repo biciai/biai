@@ -5859,7 +5859,7 @@ const renderNumericFilterMenu = (
                         }}
                         title={view === 'km' ? 'Show histogram' : 'Show survival curve'}
                       >
-                        {view === 'km' ? '📊' : '📈'}
+                        {view === 'km' ? '📊' : '↖'}
                       </button>
                     )
 
@@ -6206,7 +6206,7 @@ const renderNumericFilterMenu = (
                       }}
                       title={view === 'km' ? 'Show histogram' : 'Show survival curve'}
                     >
-                      {view === 'km' ? '📊' : '📈'}
+                      {view === 'km' ? '📊' : '↖'}
                     </button>
                   )
 
