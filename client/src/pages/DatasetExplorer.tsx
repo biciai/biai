@@ -3998,6 +3998,7 @@ const renderNumericFilterMenu = (
 
     const actionButtons = (
       <>
+        {extraActions}
         <button
           type="button"
           onClick={event => {
@@ -4050,7 +4051,6 @@ const renderNumericFilterMenu = (
         >
           ⚲
         </button>
-        {extraActions}
       </>
     )
 
