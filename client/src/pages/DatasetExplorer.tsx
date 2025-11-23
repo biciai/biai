@@ -4121,7 +4121,7 @@ const renderNumericFilterMenu = (
       padding: '0.5rem',
       borderRadius: '8px',
       boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-      width: '708px',
+      width: '100%',
       minHeight: '420px',
       boxSizing: 'border-box',
       flexShrink: 0,
@@ -5810,19 +5810,41 @@ const renderNumericFilterMenu = (
                       </div>
                     )
                   } else if (metaDisplayType === 'survival_time') {
-                    return (
-                      <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 4' }}>
-                        {renderSurvivalChart(
-                          displayTitle,
-                          tableName,
-                          columnName,
-                          tableColor,
-                          aggregation,
-                          overrideKey,
-                          indicatorNode
-                        )}
-                      </div>
-                    )
+                    const kmKey = `${cardKey}-km`
+                    const histKey = `${cardKey}-hist`
+                    return [
+                      (
+                        <div
+                          key={kmKey}
+                          ref={kmKey === cardKey ? cardRef : undefined}
+                          data-dashboard-key={kmKey}
+                          style={{ gridColumn: 'span 4', gridRow: 'span 3' }}
+                        >
+                          {renderSurvivalChart(
+                            displayTitle,
+                            tableName,
+                            columnName,
+                            tableColor,
+                            aggregation,
+                            overrideKey,
+                            indicatorNode
+                          )}
+                        </div>
+                      ),
+                      (
+                        <div key={histKey} data-dashboard-key={histKey} style={{ gridColumn: 'span 2' }}>
+                          {renderHistogram(
+                            `${displayTitle} (histogram)`,
+                            tableName,
+                            columnName,
+                            tableColor,
+                            aggregation,
+                            overrideKey,
+                            indicatorNode
+                          )}
+                        </div>
+                      )
+                    ]
                   } else if (normalizedDisplayType === 'numeric' && aggregation.histogram) {
                     return (
                       <div key={cardKey} ref={cardRef} data-dashboard-key={cardKey} style={{ gridColumn: 'span 2' }}>
@@ -6109,11 +6131,20 @@ const renderNumericFilterMenu = (
                     </div>
                   )
                 } else if (metaDisplayType === 'survival_time') {
-                  return (
-                    <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 4' }}>
-                      {renderSurvivalChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
-                    </div>
-                  )
+                  const kmKey = `${table.name}_${agg.column_name}_km`
+                  const histKey = `${table.name}_${agg.column_name}_hist`
+                  return [
+                    (
+                      <div key={kmKey} style={{ gridColumn: 'span 4', gridRow: 'span 3' }}>
+                        {renderSurvivalChart(displayTitle, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
+                      </div>
+                    ),
+                    (
+                      <div key={histKey} style={{ gridColumn: 'span 2' }}>
+                        {renderHistogram(`${displayTitle} (histogram)`, table.name, agg.column_name, tableColor, aggregationForChart, cacheKey)}
+                      </div>
+                    )
+                  ]
                 } else if (normalizedDisplayType === 'numeric' && agg.histogram) {
                   return (
                     <div key={`${table.name}_${agg.column_name}`} style={{ gridColumn: 'span 2' }}>
