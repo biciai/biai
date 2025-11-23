@@ -648,6 +648,49 @@ router.get('/:id/tables/:tableId/columns/:columnName/aggregation', async (req, r
   }
 })
 
+// Get survival curve for a time/status column pair
+router.get('/:id/tables/:tableId/survival', async (req, res) => {
+  try {
+    const { timeColumn, statusColumn } = req.query
+    if (!timeColumn || !statusColumn) {
+      return res.status(400).json({ error: 'timeColumn and statusColumn query parameters are required' })
+    }
+
+    let filters = []
+    if (req.query.filters) {
+      try {
+        filters = JSON.parse(req.query.filters as string)
+      } catch (e) {
+        return res.status(400).json({ error: 'Invalid filters JSON' })
+      }
+    }
+
+    const rawCountBy = typeof req.query.countBy === 'string' ? req.query.countBy : undefined
+    const { config: countByConfig, error: countByError } = parseCountByQuery(rawCountBy)
+    if (countByError) {
+      return res.status(400).json({ error: countByError })
+    }
+
+    const curve = await aggregationService.getSurvivalCurve(
+      req.params.id,
+      req.params.tableId,
+      String(timeColumn),
+      String(statusColumn),
+      filters,
+      countByConfig
+    )
+
+    return res.json({ curve })
+  } catch (error: any) {
+    const status = error?.status || 500
+    console.error('Get survival curve error:', error)
+    return res.status(status).json({
+      error: status === 400 ? 'Invalid request' : 'Failed to get survival curve',
+      message: error.message
+    })
+  }
+})
+
 // Dashboard routes
 
 // Get all dashboards for a dataset

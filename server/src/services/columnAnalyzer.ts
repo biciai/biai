@@ -158,17 +158,14 @@ function detectDisplayType(
     return 'id'
   }
 
-  // Survival time columns
-  if ((nameLower.includes('months') || nameLower.includes('days') || nameLower.includes('time')) &&
-      (nameLower.includes('survival') || nameLower.includes('os') ||
-       nameLower.includes('pfs') || nameLower.includes('dfs') || nameLower.includes('dss'))) {
+  // Survival time/status columns (keep semantic detection)
+  const nameTokens = nameLower.split(/[^a-z0-9]+/).filter(Boolean)
+  const hasSurvivalToken = nameTokens.some(token => ['survival', 'os', 'pfs', 'dfs', 'dss'].includes(token))
+  const looksLikeTime = nameLower.includes('months') || nameLower.includes('days') || nameLower.includes('time')
+  if (hasSurvivalToken && looksLikeTime) {
     return 'survival_time'
   }
-
-  // Survival status columns
-  if (nameLower.includes('status') &&
-      (nameLower.includes('survival') || nameLower.includes('os') ||
-       nameLower.includes('pfs') || nameLower.includes('dfs') || nameLower.includes('dss'))) {
+  if (hasSurvivalToken && nameLower.includes('status')) {
     return 'survival_status'
   }
 
@@ -231,9 +228,12 @@ function suggestChartType(
     return 'none'
   }
 
-  // Survival columns are charted together as survival curves
-  if (displayType === 'survival_time' || displayType === 'survival_status') {
-    return 'survival'
+  // Treat survival columns like their base types so they still render
+  if (displayType === 'survival_time') {
+    return stats.unique_count >= 10 ? 'histogram' : 'none'
+  }
+  if (displayType === 'survival_status') {
+    return 'bar'
   }
 
   // Geographic columns - render as maps
@@ -283,11 +283,6 @@ function calculatePriority(
 ): number {
   const nameLower = columnName.toLowerCase()
   let priority = 0
-
-  // Survival curves get highest priority
-  if (displayType === 'survival_time' || displayType === 'survival_status') {
-    priority = 1000
-  }
 
   // Common demographic/clinical fields
   const highPriorityFields = ['sex', 'gender', 'age', 'race', 'ethnicity', 'status', 'type', 'stage', 'grade']
